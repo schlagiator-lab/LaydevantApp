@@ -220,15 +220,31 @@ L'application doit donc :
 
 ## 9. Déploiement
 
-Build statique. Deux points à vérifier avant de choisir l'hébergeur :
+Cloudflare Workers avec static assets (et non Cloudflare Pages, déprécié
+pour les nouveaux projets). Build statique, déploiement automatique depuis
+GitHub à chaque push sur `main`.
 
-- **GitHub Pages ne sert pas les dépôts privés sur le plan gratuit.** Le dépôt
-  devant rester privé, envisager Cloudflare Pages ou Netlify (gratuits, dépôts
-  privés supportés) ou l'hébergement Hostinger existant.
-- **HTTPS obligatoire** : sans lui, pas de service worker, donc pas de PWA.
+Créer un `wrangler.jsonc` à la racine :
 
-Manifest : `theme_color` `#1E3A6B`, `display: standalone`, icônes dérivées du
-logo Laydevant.
+{
+  "name": "laydevant-app",
+  "compatibility_date": "2026-07-24",
+  "assets": {
+    "directory": "./dist/",
+    "not_found_handling": "single-page-application"
+  }
+}
+
+Le mode `single-page-application` gère le routage côté client : inutile
+d'ajouter un fichier `_redirects`.
+
+Les variables VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY doivent être
+configurées dans les paramètres du projet Cloudflare : Vite les inscrit
+en dur au moment du build, elles ne sont pas lues à l'exécution, et
+`.env.local` n'est pas versionné.
+
+HTTPS est fourni automatiquement — indispensable, sans lui pas de service
+worker donc pas de PWA.
 
 ---
 
