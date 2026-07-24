@@ -220,35 +220,47 @@ L'application doit donc :
 
 ## 9. Déploiement
 
-**Cloudflare Workers avec Static Assets** (pas Cloudflare Pages). Le build
-Vite (`dist/`) est servi comme assets statiques par un Worker sans script
-serveur — configuré dans `wrangler.jsonc` à la racine du dépôt.
+Cloudflare Workers avec static assets (et non Cloudflare Pages, déprécié
+pour les nouveaux projets). Build statique, déploiement automatique depuis
+GitHub à chaque push sur `main`.
 
-- **HTTPS obligatoire** : sans lui, pas de service worker, donc pas de PWA.
-  Fourni automatiquement par Cloudflare.
-- Dépôt privé : sans rapport avec l'hébergeur ici (Workers ne dépend pas de
-  la visibilité du dépôt GitHub comme le ferait GitHub Pages), mais le dépôt
-  reste privé de toute façon.
-- Déploiement : `npm run build` puis `wrangler deploy`. Pas de redéploiement
-  automatique sur push configuré pour l'instant — à faire manuellement ou via
-  une CI dédiée plus tard.
+Créer un `wrangler.jsonc` à la racine :
 
-Manifest : `theme_color` `#1E3A6B`, `display: standalone`, icônes dérivées du
-logo Laydevant.
+{
+  "name": "laydevant-app",
+  "compatibility_date": "2026-07-24",
+  "assets": {
+    "directory": "./dist/",
+    "not_found_handling": "single-page-application"
+  }
+}
+
+Le mode `single-page-application` gère le routage côté client : inutile
+d'ajouter un fichier `_redirects`.
+
+Les variables VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY doivent être
+configurées dans les paramètres du projet Cloudflare : Vite les inscrit
+en dur au moment du build, elles ne sont pas lues à l'exécution, et
+`.env.local` n'est pas versionné.
+
+HTTPS est fourni automatiquement — indispensable, sans lui pas de service
+worker donc pas de PWA.
 
 ---
 
 ## 10. À tester tôt, avant d'aller loin
 
-**La persistance du cache sur iOS.** Les navigateurs mobiles peuvent évincer le
-stockage d'un site sous pression mémoire, et les règles diffèrent entre iOS et
-Android, entre navigateur et PWA installée sur l'écran d'accueil. Si les PDF
-épinglés disparaissent au bout de quelques jours, toute la promesse de
-l'application s'effondre.
+Parc d'appareils : Android uniquement (aucun iOS). Chrome implémente
+`navigator.storage.persist()` et l'accorde en principe automatiquement aux
+PWA installées sur l'écran d'accueil.
 
-Appeler `navigator.storage.persist()` pour demander un stockage persistant, et
-exposer `navigator.storage.estimate()` dans un écran de diagnostic. **Vérifier le
-comportement réel sur un appareil de chaque type avant de déployer à l'équipe.**
+Vérifier malgré tout sur un appareil réel : appeler `navigator.storage.persist()`
+au démarrage, contrôler que `navigator.storage.persisted()` renvoie bien true
+une fois la PWA installée, et confirmer que les documents épinglés survivent
+à plusieurs jours sans ouverture de l'application.
+
+L'application doit être INSTALLÉE sur l'écran d'accueil, pas consultée dans un
+onglet : la garantie de persistance en dépend.
 
 ---
 
