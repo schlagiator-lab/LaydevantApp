@@ -220,12 +220,18 @@ L'application doit donc :
 
 ## 9. Déploiement
 
-Build statique. Deux points à vérifier avant de choisir l'hébergeur :
+**Cloudflare Workers avec Static Assets** (pas Cloudflare Pages). Le build
+Vite (`dist/`) est servi comme assets statiques par un Worker sans script
+serveur — configuré dans `wrangler.jsonc` à la racine du dépôt.
 
-- **GitHub Pages ne sert pas les dépôts privés sur le plan gratuit.** Le dépôt
-  devant rester privé, envisager Cloudflare Pages ou Netlify (gratuits, dépôts
-  privés supportés) ou l'hébergement Hostinger existant.
 - **HTTPS obligatoire** : sans lui, pas de service worker, donc pas de PWA.
+  Fourni automatiquement par Cloudflare.
+- Dépôt privé : sans rapport avec l'hébergeur ici (Workers ne dépend pas de
+  la visibilité du dépôt GitHub comme le ferait GitHub Pages), mais le dépôt
+  reste privé de toute façon.
+- Déploiement : `npm run build` puis `wrangler deploy`. Pas de redéploiement
+  automatique sur push configuré pour l'instant — à faire manuellement ou via
+  une CI dédiée plus tard.
 
 Manifest : `theme_color` `#1E3A6B`, `display: standalone`, icônes dérivées du
 logo Laydevant.
