@@ -250,15 +250,17 @@ worker donc pas de PWA.
 
 ## 10. À tester tôt, avant d'aller loin
 
-**La persistance du cache sur iOS.** Les navigateurs mobiles peuvent évincer le
-stockage d'un site sous pression mémoire, et les règles diffèrent entre iOS et
-Android, entre navigateur et PWA installée sur l'écran d'accueil. Si les PDF
-épinglés disparaissent au bout de quelques jours, toute la promesse de
-l'application s'effondre.
+Parc d'appareils : Android uniquement (aucun iOS). Chrome implémente
+`navigator.storage.persist()` et l'accorde en principe automatiquement aux
+PWA installées sur l'écran d'accueil.
 
-Appeler `navigator.storage.persist()` pour demander un stockage persistant, et
-exposer `navigator.storage.estimate()` dans un écran de diagnostic. **Vérifier le
-comportement réel sur un appareil de chaque type avant de déployer à l'équipe.**
+Vérifier malgré tout sur un appareil réel : appeler `navigator.storage.persist()`
+au démarrage, contrôler que `navigator.storage.persisted()` renvoie bien true
+une fois la PWA installée, et confirmer que les documents épinglés survivent
+à plusieurs jours sans ouverture de l'application.
+
+L'application doit être INSTALLÉE sur l'écran d'accueil, pas consultée dans un
+onglet : la garantie de persistance en dépend.
 
 ---
 
