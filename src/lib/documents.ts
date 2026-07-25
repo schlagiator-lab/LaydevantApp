@@ -64,3 +64,21 @@ export async function getSignedDocumentUrl(filePath: string, expiresInSeconds = 
   if (error) throw error;
   return data.signedUrl;
 }
+
+/**
+ * Fetches the PDF and re-wraps it with an explicit MIME type instead of
+ * pointing the viewer straight at the signed URL. Storage objects uploaded
+ * through the n8n workflow can carry the wrong (or no) Content-Type; an
+ * `<iframe>` given that URL directly then falls back to Chrome's
+ * undisplayable-content placeholder (a plain filename + "Ouvrir" link)
+ * instead of rendering the PDF inline. Forcing the type here mirrors what
+ * pdfCache.putPdf does for the pinned/offline path, so both paths behave
+ * the same way.
+ */
+export async function fetchPdfBlob(filePath: string, mimeType: string | null): Promise<Blob> {
+  const signedUrl = await getSignedDocumentUrl(filePath);
+  const response = await fetch(signedUrl);
+  if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
+  const blob = await response.blob();
+  return new Blob([blob], { type: mimeType || 'application/pdf' });
+}

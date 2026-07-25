@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DocumentRow } from '../types/database';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import { getPinnedDocument, deletePinnedDocument, recordRecentDocument } from '../lib/db';
 import { getDocumentDetail } from '../lib/documentDetail';
-import { getSignedDocumentUrl } from '../lib/documents';
+import { fetchPdfBlob } from '../lib/documents';
 import { getPdf } from '../lib/pdfCache';
 import { pinDocument, unpinDocument, isPinnedOnAccount } from '../lib/pinning';
 import { StatusPill } from '../components/StatusPill';
@@ -35,6 +35,23 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // pdfUrl is always an object URL we created ourselves (never a raw signed
+  // URL) — see fetchPdfBlob's doc comment for why. This ref lets any of the
+  // several call sites that produce one (initial online fetch, retry, pin
+  // removal) revoke the previous URL before replacing it, plus a final
+  // revoke on unmount.
+  const pdfObjectUrlRef = useRef<string | null>(null);
+  const setPdfObjectUrl = useCallback((url: string | null) => {
+    if (pdfObjectUrlRef.current) URL.revokeObjectURL(pdfObjectUrlRef.current);
+    pdfObjectUrlRef.current = url;
+    setPdfUrl(url);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (pdfObjectUrlRef.current) URL.revokeObjectURL(pdfObjectUrlRef.current);
+    };
+  }, []);
+
   const fetchOnlineDetail = useCallback(
     async (id: string, uid: string) => {
       try {
@@ -44,24 +61,23 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
         setDepartmentName(detail.departmentName);
         setProductLabel(detail.productLabel);
         void recordRecentDocument({ documentId: id, title: detail.doc.title, specialtyName: detail.specialtyName });
-        const signedUrl = await getSignedDocumentUrl(detail.doc.file_path);
-        setPdfUrl(signedUrl);
+        const blob = await fetchPdfBlob(detail.doc.file_path, detail.doc.mime_type);
+        setPdfObjectUrl(URL.createObjectURL(blob));
         const account = await isPinnedOnAccount(id, uid).catch(() => false);
         setIsPinnedElsewhere(account);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : String(err));
       }
     },
-    [],
+    [setPdfObjectUrl],
   );
 
   // Pinned-local check, then online fallback. Deliberately NOT keyed on
   // isOnline: the object URL created for a pinned PDF must only be revoked
   // when the document changes or the screen unmounts, never on a
-  // connectivity flip while it's still on screen (see cleanup below).
+  // connectivity flip while it's still on screen.
   useEffect(() => {
     let cancelled = false;
-    let createdObjectUrl: string | null = null;
 
     async function load() {
       const pinnedRecord = await getPinnedDocument(documentId);
@@ -82,8 +98,7 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
             title: pinnedRecord.title,
             specialtyName: pinnedRecord.specialtyName,
           });
-          createdObjectUrl = URL.createObjectURL(blob);
-          setPdfUrl(createdObjectUrl);
+          setPdfObjectUrl(URL.createObjectURL(blob));
           return;
         }
 
@@ -102,9 +117,8 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
     void load();
     return () => {
       cancelled = true;
-      if (createdObjectUrl) URL.revokeObjectURL(createdObjectUrl);
     };
-  }, [documentId, userId, fetchOnlineDetail]);
+  }, [documentId, userId, fetchOnlineDetail, setPdfObjectUrl]);
 
   // Retry once back online, if the first attempt never got data (opened this
   // document for the first time while offline).
@@ -144,12 +158,12 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       setIsPinnedOnDevice(false);
       if (isOnline) {
         try {
-          setPdfUrl(await getSignedDocumentUrl(doc.file_path));
+          setPdfObjectUrl(URL.createObjectURL(await fetchPdfBlob(doc.file_path, doc.mime_type)));
         } catch {
-          setPdfUrl(null);
+          setPdfObjectUrl(null);
         }
       } else {
-        setPdfUrl(null);
+        setPdfObjectUrl(null);
       }
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Échec du retrait.');

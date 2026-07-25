@@ -17,7 +17,7 @@ export async function pinDocument(detail: DocumentDetail, userId: string): Promi
   if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
   const blob = await response.blob();
 
-  await putPdf(detail.doc.id, blob);
+  await putPdf(detail.doc.id, blob, detail.doc.mime_type || 'application/pdf');
 
   const record: PinnedDocumentRecord = {
     ...detail.doc,
