@@ -17,6 +17,7 @@
     "@supabase/supabase-js": "^2.110.8",
     "idb": "^8.0.3",
     "minisearch": "^7.2.0",
+    "pdfjs-dist": "^6.1.200",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },

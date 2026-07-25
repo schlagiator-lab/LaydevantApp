@@ -64,3 +64,18 @@ export async function getSignedDocumentUrl(filePath: string, expiresInSeconds = 
   if (error) throw error;
   return data.signedUrl;
 }
+
+/**
+ * Fetches the PDF and re-wraps it with an explicit MIME type instead of
+ * trusting the storage response's Content-Type. Objects uploaded through the
+ * n8n workflow can carry the wrong (or no) Content-Type; pdf.js and
+ * window.open()'d blob URLs both need a correct `application/pdf` type to be
+ * recognized. Mirrors what pdfCache.putPdf does for the pinned/offline path.
+ */
+export async function fetchPdfBlob(filePath: string, mimeType: string | null): Promise<Blob> {
+  const signedUrl = await getSignedDocumentUrl(filePath);
+  const response = await fetch(signedUrl);
+  if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
+  const blob = await response.blob();
+  return new Blob([blob], { type: mimeType || 'application/pdf' });
+}

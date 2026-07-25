@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import type { DocumentRow } from '../types/database';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import { getPinnedDocument, deletePinnedDocument, recordRecentDocument } from '../lib/db';
 import { getDocumentDetail } from '../lib/documentDetail';
-import { getSignedDocumentUrl } from '../lib/documents';
+import { fetchPdfBlob } from '../lib/documents';
 import { getPdf } from '../lib/pdfCache';
 import { pinDocument, unpinDocument, isPinnedOnAccount } from '../lib/pinning';
 import { StatusPill } from '../components/StatusPill';
 import { docTypeLabel } from '../lib/docType';
 import { colors, fonts, textA } from '../styles/tokens';
+
+// pdf.js (~1 MB with its worker) is only needed once a document is actually
+// opened — code-split it out so Home/Search/Department screens don't pay for
+// it on first load, which matters on the flaky connections this app targets.
+const PdfViewer = lazy(() => import('../components/PdfViewer').then((m) => ({ default: m.PdfViewer })));
 
 function formatFetchedDate(iso: string | null): string | null {
   if (!iso) return null;
@@ -33,7 +38,12 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
   const [isPinnedElsewhere, setIsPinnedElsewhere] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [opening, setOpening] = useState(false);
+
+  // The same blob feeds both the in-app pdf.js preview and the "Voir en
+  // plein écran" fallback (window.open) — fetched once, reused for both
+  // instead of downloading the PDF twice.
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const fetchOnlineDetail = useCallback(async (id: string, uid: string) => {
     try {
@@ -45,6 +55,11 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       void recordRecentDocument({ documentId: id, title: detail.doc.title, specialtyName: detail.specialtyName });
       const account = await isPinnedOnAccount(id, uid).catch(() => false);
       setIsPinnedElsewhere(account);
+      try {
+        setPdfBlob(await fetchPdfBlob(detail.doc.file_path, detail.doc.mime_type));
+      } catch (err) {
+        setPdfError(err instanceof Error ? err.message : String(err));
+      }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
@@ -59,15 +74,16 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       if (cancelled) return;
 
       if (pinnedRecord) {
-        const hasBlob = (await getPdf(documentId)) !== undefined;
+        const blob = await getPdf(documentId);
         if (cancelled) return;
 
-        if (hasBlob) {
+        if (blob) {
           setDoc(pinnedRecord);
           setSpecialtyName(pinnedRecord.specialtyName);
           setDepartmentName(pinnedRecord.departmentName);
           setProductLabel(pinnedRecord.productLabel);
           setIsPinnedOnDevice(true);
+          setPdfBlob(blob);
           void recordRecentDocument({
             documentId,
             title: pinnedRecord.title,
@@ -136,48 +152,19 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
   };
 
   /**
-   * Android Chrome doesn't render PDFs inline inside an `<iframe>` — only
-   * desktop Chrome's embedded PDFium plugin does that. Confirmed on-device:
-   * the iframe fell back to an undisplayable-content placeholder regardless
-   * of the blob's Content-Type. So instead of embedding, this opens the PDF
-   * as a full top-level navigation (`window.open`), which is what actually
-   * invokes Android's native PDF viewer — the same thing that already
-   * worked for the online "Ouvrir" fallback link before any of this.
-   *
-   * Signed URLs are fetched here, on tap, rather than stored — CLAUDE.md §8:
-   * they expire in 1h and shouldn't be kept around, only regenerated on
-   * demand.
+   * Secondary action next to the in-app pdf.js preview: hands the same
+   * already-fetched blob to Android's native full-screen PDF viewer via
+   * window.open(), for anyone who prefers it (e.g. to use its search/zoom).
    */
-  const handleOpenPdf = async () => {
-    if (!doc) return;
-    setOpening(true);
-    try {
-      if (isPinnedOnDevice) {
-        const blob = await getPdf(doc.id);
-        if (!blob) {
-          showToast('Fichier introuvable sur cet appareil.');
-          return;
-        }
-        const objectUrl = URL.createObjectURL(blob);
-        window.open(objectUrl, '_blank', 'noopener');
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-        return;
-      }
-      if (!isOnline) {
-        showToast('Connexion réseau requise pour ouvrir ce document.');
-        return;
-      }
-      const signedUrl = await getSignedDocumentUrl(doc.file_path);
-      window.open(signedUrl, '_blank', 'noopener');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Impossible d'ouvrir le document.");
-    } finally {
-      setOpening(false);
-    }
+  const handleOpenFullscreen = () => {
+    if (!pdfBlob) return;
+    const objectUrl = URL.createObjectURL(pdfBlob);
+    window.open(objectUrl, '_blank', 'noopener');
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
   };
 
   const fetchedDate = doc ? formatFetchedDate(doc.retrieved_at) : null;
-  const canOpen = !!doc && (isPinnedOnDevice || isOnline);
+  const viewerBlocked = !doc || (!pdfBlob && !isPinnedOnDevice && !pdfError);
 
   return (
     <div
@@ -308,54 +295,52 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: 24,
+          padding: pdfBlob ? 8 : 24,
           textAlign: 'center',
           overflow: 'hidden',
         }}
       >
-        {doc ? (
-          canOpen ? (
-            <button
-              type="button"
-              onClick={() => void handleOpenPdf()}
-              disabled={opening}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 12,
-                background: 'transparent',
-                border: 'none',
-                cursor: opening ? 'default' : 'pointer',
-                color: colors.text,
-                opacity: opening ? 0.6 : 1,
-              }}
-            >
-              <svg width="40" height="40" viewBox="0 0 20 20" aria-hidden="true">
-                <path
-                  d="M5 2.5h7l3 3v12H5z"
-                  fill="none"
-                  stroke={textA(0.6)}
-                  strokeWidth="1.4"
-                  strokeLinejoin="round"
-                />
-                <path d="M12 2.5v3h3" fill="none" stroke={textA(0.6)} strokeWidth="1.4" strokeLinejoin="round" />
-              </svg>
-              <span style={{ fontFamily: fonts.mono, fontSize: 13.5, fontWeight: 700, color: colors.accent }}>
-                {opening ? 'Ouverture…' : 'Voir le PDF'}
+        {pdfBlob ? (
+          <Suspense
+            fallback={
+              <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
+                Chargement de l'aperçu…
               </span>
-            </button>
-          ) : (
-            <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55), lineHeight: 1.6 }}>
-              Aperçu indisponible hors ligne — enregistrez ce document en ligne pour le consulter sans réseau.
-            </span>
-          )
+            }
+          >
+            <PdfViewer blob={pdfBlob} />
+          </Suspense>
         ) : (
           <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55), lineHeight: 1.6 }}>
-            {loadError ?? 'Chargement du document…'}
+            {loadError ??
+              pdfError ??
+              (viewerBlocked
+                ? "Aperçu indisponible hors ligne — enregistrez ce document en ligne pour le consulter sans réseau."
+                : 'Chargement du document…')}
           </span>
         )}
       </div>
+
+      {pdfBlob && (
+        <div style={{ flex: 'none', display: 'flex', justifyContent: 'center', padding: '8px 16px 0' }}>
+          <button
+            type="button"
+            onClick={handleOpenFullscreen}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: textA(0.55),
+              fontSize: 12.5,
+              fontWeight: 600,
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            Voir en plein écran
+          </button>
+        </div>
+      )}
 
       <div style={{ flex: 'none', padding: '14px 16px 8px' }}>
         {isPinnedOnDevice ? (
