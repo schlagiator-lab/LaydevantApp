@@ -120,9 +120,14 @@ export function DiagnosticScreen() {
 
       <div style={{ background: colors.card, borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <Row
-          label="navigator.onLine (en direct)"
+          label="Connectivité détectée (sonde active)"
           value={isOnline ? 'En ligne' : 'Hors ligne'}
           valueColor={isOnline ? colors.success : colors.accent}
+        />
+        <Row
+          label="navigator.onLine (brut)"
+          value={navigator.onLine ? 'En ligne' : 'Hors ligne'}
+          valueColor={navigator.onLine ? colors.success : colors.accent}
         />
         <Row label="Stockage persistant" value={persisted === null ? 'Non supporté par ce navigateur' : persisted ? 'Accordé' : 'Non accordé'} />
         <Row label="Espace utilisé" value={formatBytes(estimate?.usageBytes ?? null)} />
