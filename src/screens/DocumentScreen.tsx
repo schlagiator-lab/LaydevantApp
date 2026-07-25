@@ -3,7 +3,7 @@ import type { DocumentRow } from '../types/database';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
-import { getPinnedDocument, recordRecentDocument } from '../lib/db';
+import { getPinnedDocument, deletePinnedDocument, recordRecentDocument } from '../lib/db';
 import { getDocumentDetail } from '../lib/documentDetail';
 import { getSignedDocumentUrl } from '../lib/documents';
 import { getPdf } from '../lib/pdfCache';
@@ -68,22 +68,30 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       if (cancelled) return;
 
       if (pinnedRecord) {
-        setDoc(pinnedRecord);
-        setSpecialtyName(pinnedRecord.specialtyName);
-        setDepartmentName(pinnedRecord.departmentName);
-        setProductLabel(pinnedRecord.productLabel);
-        setIsPinnedOnDevice(true);
-        void recordRecentDocument({
-          documentId,
-          title: pinnedRecord.title,
-          specialtyName: pinnedRecord.specialtyName,
-        });
         const blob = await getPdf(documentId);
-        if (!cancelled && blob) {
+        if (cancelled) return;
+
+        if (blob) {
+          setDoc(pinnedRecord);
+          setSpecialtyName(pinnedRecord.specialtyName);
+          setDepartmentName(pinnedRecord.departmentName);
+          setProductLabel(pinnedRecord.productLabel);
+          setIsPinnedOnDevice(true);
+          void recordRecentDocument({
+            documentId,
+            title: pinnedRecord.title,
+            specialtyName: pinnedRecord.specialtyName,
+          });
           createdObjectUrl = URL.createObjectURL(blob);
           setPdfUrl(createdObjectUrl);
+          return;
         }
-        return;
+
+        // Metadata says pinned, but the blob is gone from this device's Cache
+        // API (e.g. evicted under storage pressure). Drop the stale record so
+        // the UI doesn't show "Disponible hors ligne" for a file that isn't
+        // actually there — falls through to the online path below.
+        await deletePinnedDocument(documentId);
       }
 
       setIsPinnedOnDevice(false);
