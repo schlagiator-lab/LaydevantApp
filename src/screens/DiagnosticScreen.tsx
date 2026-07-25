@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigation } from '../lib/useNavigation';
 import { getAllPinnedDocuments, type PinnedDocumentRecord } from '../lib/db';
-import { hasPdf } from '../lib/pdfCache';
+import { getPdf } from '../lib/pdfCache';
 import { useOnlineStatus } from '../lib/network';
 import {
   requestPersistentStorage,
@@ -14,7 +14,13 @@ import { colors, fonts, textA } from '../styles/tokens';
 
 interface PinnedDiagnosticRow {
   doc: PinnedDocumentRecord;
-  blobPresent: boolean;
+  blobType: string;
+  blobSize: number | null;
+}
+
+interface NetworkEvent {
+  type: 'online' | 'offline';
+  at: string;
 }
 
 export function DiagnosticScreen() {
@@ -24,6 +30,7 @@ export function DiagnosticScreen() {
   const [estimate, setEstimate] = useState<StorageEstimate | null>(null);
   const [pinnedRows, setPinnedRows] = useState<PinnedDiagnosticRow[] | null>(null);
   const [requesting, setRequesting] = useState(false);
+  const [events, setEvents] = useState<NetworkEvent[]>([]);
 
   const refresh = async () => {
     const [p, e, pinned] = await Promise.all([
@@ -34,7 +41,10 @@ export function DiagnosticScreen() {
     setPersisted(p);
     setEstimate(e);
     const rows = await Promise.all(
-      pinned.map(async (doc) => ({ doc, blobPresent: await hasPdf(doc.id) })),
+      pinned.map(async (doc) => {
+        const blob = await getPdf(doc.id);
+        return { doc, blobType: blob?.type || '(vide)', blobSize: blob?.size ?? null };
+      }),
     );
     setPinnedRows(rows);
   };
@@ -46,6 +56,22 @@ export function DiagnosticScreen() {
     void load();
   }, []);
 
+  // Independent of useOnlineStatus — logs raw window events with a
+  // timestamp so we can see directly whether the browser ever fires them
+  // on this device, instead of only the latest snapshot.
+  useEffect(() => {
+    const logEvent = (type: NetworkEvent['type']) => () =>
+      setEvents((prev) => [...prev, { type, at: new Date().toLocaleTimeString('fr-CH') }].slice(-10));
+    const onOnline = logEvent('online');
+    const onOffline = logEvent('offline');
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
   const handleRequest = async () => {
     setRequesting(true);
     await requestPersistentStorage();
@@ -55,7 +81,7 @@ export function DiagnosticScreen() {
 
   const usagePct =
     estimate?.usageBytes != null && estimate.quotaBytes ? (estimate.usageBytes / estimate.quotaBytes) * 100 : null;
-  const missingBlobCount = pinnedRows?.filter((r) => !r.blobPresent).length ?? 0;
+  const missingBlobCount = pinnedRows?.filter((r) => r.blobSize === null).length ?? 0;
 
   return (
     <div
@@ -112,26 +138,49 @@ export function DiagnosticScreen() {
         )}
       </div>
 
+      <div style={{ background: colors.card, borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: textA(0.6) }}>
+          Événements réseau reçus par le navigateur (10 derniers)
+        </span>
+        {events.length === 0 ? (
+          <span style={{ fontSize: 12.5, color: textA(0.5) }}>
+            Aucun pour l'instant — bascule le mode avion pendant que cet écran est ouvert.
+          </span>
+        ) : (
+          events.map((ev, i) => (
+            <span
+              key={i}
+              style={{ fontSize: 12.5, fontWeight: 600, color: ev.type === 'online' ? colors.success : colors.accent }}
+            >
+              {ev.at} — {ev.type === 'online' ? 'online' : 'offline'}
+            </span>
+          ))
+        )}
+      </div>
+
       {pinnedRows !== null && pinnedRows.length > 0 && (
         <div style={{ background: colors.card, borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: textA(0.6) }}>Détail par document épinglé</span>
-          {pinnedRows.map(({ doc, blobPresent }) => (
-            <div key={doc.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-              <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {doc.title}
-              </span>
-              <span
-                style={{
-                  fontSize: 12.5,
-                  fontWeight: 700,
-                  flex: 'none',
-                  color: blobPresent ? colors.success : colors.accent,
-                }}
-              >
-                {blobPresent ? 'Blob présent' : 'Blob absent'}
-              </span>
-            </div>
-          ))}
+          {pinnedRows.map(({ doc, blobType, blobSize }) => {
+            const sizeMismatch = doc.file_size != null && blobSize != null && blobSize !== doc.file_size;
+            return (
+              <div key={doc.id} style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingBottom: 6, borderBottom: `1px solid ${textA(0.08)}` }}>
+                <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {doc.title}
+                </span>
+                <span style={{ fontSize: 12, color: blobSize === null ? colors.accent : textA(0.55) }}>
+                  {blobSize === null
+                    ? 'Blob absent du Cache API'
+                    : `type: ${blobType} · taille en cache: ${formatBytes(blobSize)}${doc.file_size != null ? ` (attendu: ${formatBytes(doc.file_size)})` : ''}`}
+                </span>
+                {sizeMismatch && (
+                  <span style={{ fontSize: 12, fontWeight: 700, color: colors.accent }}>
+                    ⚠ taille différente de celle attendue
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
