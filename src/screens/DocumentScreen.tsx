@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { DocumentRow } from '../types/database';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import { getPinnedDocument, deletePinnedDocument, recordRecentDocument } from '../lib/db';
 import { getDocumentDetail } from '../lib/documentDetail';
-import { fetchPdfBlob } from '../lib/documents';
+import { getSignedDocumentUrl } from '../lib/documents';
 import { getPdf } from '../lib/pdfCache';
 import { pinDocument, unpinDocument, isPinnedOnAccount } from '../lib/pinning';
 import { StatusPill } from '../components/StatusPill';
@@ -31,51 +31,26 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
   const [productLabel, setProductLabel] = useState<string | null>(null);
   const [isPinnedOnDevice, setIsPinnedOnDevice] = useState(false);
   const [isPinnedElsewhere, setIsPinnedElsewhere] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [opening, setOpening] = useState(false);
 
-  // pdfUrl is always an object URL we created ourselves (never a raw signed
-  // URL) — see fetchPdfBlob's doc comment for why. This ref lets any of the
-  // several call sites that produce one (initial online fetch, retry, pin
-  // removal) revoke the previous URL before replacing it, plus a final
-  // revoke on unmount.
-  const pdfObjectUrlRef = useRef<string | null>(null);
-  const setPdfObjectUrl = useCallback((url: string | null) => {
-    if (pdfObjectUrlRef.current) URL.revokeObjectURL(pdfObjectUrlRef.current);
-    pdfObjectUrlRef.current = url;
-    setPdfUrl(url);
+  const fetchOnlineDetail = useCallback(async (id: string, uid: string) => {
+    try {
+      const detail = await getDocumentDetail(id);
+      setDoc(detail.doc);
+      setSpecialtyName(detail.specialtyName);
+      setDepartmentName(detail.departmentName);
+      setProductLabel(detail.productLabel);
+      void recordRecentDocument({ documentId: id, title: detail.doc.title, specialtyName: detail.specialtyName });
+      const account = await isPinnedOnAccount(id, uid).catch(() => false);
+      setIsPinnedElsewhere(account);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
   }, []);
-  useEffect(() => {
-    return () => {
-      if (pdfObjectUrlRef.current) URL.revokeObjectURL(pdfObjectUrlRef.current);
-    };
-  }, []);
 
-  const fetchOnlineDetail = useCallback(
-    async (id: string, uid: string) => {
-      try {
-        const detail = await getDocumentDetail(id);
-        setDoc(detail.doc);
-        setSpecialtyName(detail.specialtyName);
-        setDepartmentName(detail.departmentName);
-        setProductLabel(detail.productLabel);
-        void recordRecentDocument({ documentId: id, title: detail.doc.title, specialtyName: detail.specialtyName });
-        const blob = await fetchPdfBlob(detail.doc.file_path, detail.doc.mime_type);
-        setPdfObjectUrl(URL.createObjectURL(blob));
-        const account = await isPinnedOnAccount(id, uid).catch(() => false);
-        setIsPinnedElsewhere(account);
-      } catch (err) {
-        setLoadError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [setPdfObjectUrl],
-  );
-
-  // Pinned-local check, then online fallback. Deliberately NOT keyed on
-  // isOnline: the object URL created for a pinned PDF must only be revoked
-  // when the document changes or the screen unmounts, never on a
-  // connectivity flip while it's still on screen.
+  // Pinned-local check, then online fallback.
   useEffect(() => {
     let cancelled = false;
 
@@ -84,10 +59,10 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       if (cancelled) return;
 
       if (pinnedRecord) {
-        const blob = await getPdf(documentId);
+        const hasBlob = (await getPdf(documentId)) !== undefined;
         if (cancelled) return;
 
-        if (blob) {
+        if (hasBlob) {
           setDoc(pinnedRecord);
           setSpecialtyName(pinnedRecord.specialtyName);
           setDepartmentName(pinnedRecord.departmentName);
@@ -98,7 +73,6 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
             title: pinnedRecord.title,
             specialtyName: pinnedRecord.specialtyName,
           });
-          setPdfObjectUrl(URL.createObjectURL(blob));
           return;
         }
 
@@ -118,7 +92,7 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [documentId, userId, fetchOnlineDetail, setPdfObjectUrl]);
+  }, [documentId, userId, fetchOnlineDetail]);
 
   // Retry once back online, if the first attempt never got data (opened this
   // document for the first time while offline).
@@ -156,22 +130,54 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
     try {
       await unpinDocument(doc.id, userId, isOnline);
       setIsPinnedOnDevice(false);
-      if (isOnline) {
-        try {
-          setPdfObjectUrl(URL.createObjectURL(await fetchPdfBlob(doc.file_path, doc.mime_type)));
-        } catch {
-          setPdfObjectUrl(null);
-        }
-      } else {
-        setPdfObjectUrl(null);
-      }
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Échec du retrait.');
     }
   };
 
+  /**
+   * Android Chrome doesn't render PDFs inline inside an `<iframe>` — only
+   * desktop Chrome's embedded PDFium plugin does that. Confirmed on-device:
+   * the iframe fell back to an undisplayable-content placeholder regardless
+   * of the blob's Content-Type. So instead of embedding, this opens the PDF
+   * as a full top-level navigation (`window.open`), which is what actually
+   * invokes Android's native PDF viewer — the same thing that already
+   * worked for the online "Ouvrir" fallback link before any of this.
+   *
+   * Signed URLs are fetched here, on tap, rather than stored — CLAUDE.md §8:
+   * they expire in 1h and shouldn't be kept around, only regenerated on
+   * demand.
+   */
+  const handleOpenPdf = async () => {
+    if (!doc) return;
+    setOpening(true);
+    try {
+      if (isPinnedOnDevice) {
+        const blob = await getPdf(doc.id);
+        if (!blob) {
+          showToast('Fichier introuvable sur cet appareil.');
+          return;
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, '_blank', 'noopener');
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+        return;
+      }
+      if (!isOnline) {
+        showToast('Connexion réseau requise pour ouvrir ce document.');
+        return;
+      }
+      const signedUrl = await getSignedDocumentUrl(doc.file_path);
+      window.open(signedUrl, '_blank', 'noopener');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Impossible d'ouvrir le document.");
+    } finally {
+      setOpening(false);
+    }
+  };
+
   const fetchedDate = doc ? formatFetchedDate(doc.retrieved_at) : null;
-  const viewerBlocked = !doc || (!pdfUrl && !isPinnedOnDevice);
+  const canOpen = !!doc && (isPinnedOnDevice || isOnline);
 
   return (
     <div
@@ -307,17 +313,46 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
           overflow: 'hidden',
         }}
       >
-        {pdfUrl ? (
-          <iframe
-            src={pdfUrl}
-            title={doc?.title ?? 'Document PDF'}
-            style={{ width: '100%', height: '100%', minHeight: 280, border: 'none', borderRadius: 14 }}
-          />
+        {doc ? (
+          canOpen ? (
+            <button
+              type="button"
+              onClick={() => void handleOpenPdf()}
+              disabled={opening}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 12,
+                background: 'transparent',
+                border: 'none',
+                cursor: opening ? 'default' : 'pointer',
+                color: colors.text,
+                opacity: opening ? 0.6 : 1,
+              }}
+            >
+              <svg width="40" height="40" viewBox="0 0 20 20" aria-hidden="true">
+                <path
+                  d="M5 2.5h7l3 3v12H5z"
+                  fill="none"
+                  stroke={textA(0.6)}
+                  strokeWidth="1.4"
+                  strokeLinejoin="round"
+                />
+                <path d="M12 2.5v3h3" fill="none" stroke={textA(0.6)} strokeWidth="1.4" strokeLinejoin="round" />
+              </svg>
+              <span style={{ fontFamily: fonts.mono, fontSize: 13.5, fontWeight: 700, color: colors.accent }}>
+                {opening ? 'Ouverture…' : 'Voir le PDF'}
+              </span>
+            </button>
+          ) : (
+            <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55), lineHeight: 1.6 }}>
+              Aperçu indisponible hors ligne — enregistrez ce document en ligne pour le consulter sans réseau.
+            </span>
+          )
         ) : (
           <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55), lineHeight: 1.6 }}>
-            {viewerBlocked && !loadError
-              ? "Aperçu indisponible hors ligne — enregistrez ce document en ligne pour le consulter sans réseau."
-              : (loadError ?? 'Chargement du document…')}
+            {loadError ?? 'Chargement du document…'}
           </span>
         )}
       </div>
