@@ -7,12 +7,18 @@ import { getLocalDepartments, getLocalSpecialties, getAllPinnedDocuments, type P
 import { searchDocuments, listDocuments } from '../lib/documents';
 import { buildOfflineIndex, searchOfflineIds, buildOfflineExcerptHtml } from '../lib/offlineSearch';
 import { sanitizeHeadline } from '../lib/excerpt';
-import type { Department, Specialty } from '../types/database';
+import { docTypeLabel } from '../lib/docType';
+import type { Department, DocType, Specialty } from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { DocumentCard, type DocumentCardProps } from '../components/DocumentCard';
 import { colors, fonts, textA } from '../styles/tokens';
 
-type ResultItem = Omit<DocumentCardProps, 'onTap'> & { id: string };
+// `brand` only ever comes from the browse-mode query (products.brand) — the
+// search_documents RPC and pinned/offline records only carry a combined
+// "brand model" product_label, with no reliable way to split brand back out.
+// It's carried on the item purely to build the manufacturer filter, never
+// rendered by DocumentCard.
+type ResultItem = Omit<DocumentCardProps, 'onTap'> & { id: string; brand: string | null };
 
 export function SearchScreen({ params }: { params: SearchParams }) {
   const { isOnline } = useAuth();
@@ -27,8 +33,10 @@ export function SearchScreen({ params }: { params: SearchParams }) {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
   const [pinnedDocs, setPinnedDocs] = useState<PinnedDocumentRecord[]>([]);
-  const [results, setResults] = useState<ResultItem[] | null>(null);
+  const [rawResults, setRawResults] = useState<ResultItem[] | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
+  const [docTypeFilter, setDocTypeFilter] = useState<DocType | null>(null);
+  const [brandFilter, setBrandFilter] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +63,13 @@ export function SearchScreen({ params }: { params: SearchParams }) {
   const restrictToPinned = pinnedOnly || !isOnline;
   const trimmedQuery = query.trim();
   const hasQuery = trimmedQuery.length > 0;
+  // Already narrowed to a branch (came from Department/Specialty drill-down,
+  // or picked a chip before that row got replaced below) — department chips
+  // no longer earn their space, swap them for doc-type/manufacturer filters.
+  const scoped = departmentId !== null;
+  // Manufacturer is only ever known separately from the browse-mode query
+  // (products.brand) — see the ResultItem comment above.
+  const brandFilterUsable = scoped && !restrictToPinned && !hasQuery;
 
   useEffect(() => {
     let cancelled = false;
@@ -66,7 +81,7 @@ export function SearchScreen({ params }: { params: SearchParams }) {
     };
 
     async function run() {
-      setResults(null);
+      setRawResults(null);
       setResultsError(null);
       try {
         if (restrictToPinned) {
@@ -81,6 +96,7 @@ export function SearchScreen({ params }: { params: SearchParams }) {
                   docType: doc.doc_type,
                   specialtyName: doc.specialtyName,
                   productLabel: doc.productLabel,
+                  brand: null,
                   excerptHtml: buildOfflineExcerptHtml(doc.content ?? '', trimmedQuery),
                   pinned: true,
                   dim: false,
@@ -94,11 +110,12 @@ export function SearchScreen({ params }: { params: SearchParams }) {
                   docType: doc.doc_type,
                   specialtyName: doc.specialtyName,
                   productLabel: doc.productLabel,
+                  brand: null,
                   excerptHtml: null,
                   pinned: true,
                   dim: false,
                 }));
-          if (!cancelled) setResults(items);
+          if (!cancelled) setRawResults(items);
         } else if (hasQuery) {
           const rows = await searchDocuments({
             q: trimmedQuery,
@@ -106,13 +123,14 @@ export function SearchScreen({ params }: { params: SearchParams }) {
             specialtySlug: specialtyId ? (specialtiesById.get(specialtyId)?.slug ?? null) : null,
           });
           if (cancelled) return;
-          setResults(
+          setRawResults(
             rows.map((r) => ({
               id: r.id,
               title: r.title,
               docType: r.doc_type,
               specialtyName: r.specialty_name,
               productLabel: r.product_label,
+              brand: null,
               excerptHtml: sanitizeHeadline(r.extrait),
               pinned: pinnedIds.has(r.id),
               dim: !pinnedIds.has(r.id) && !isOnline,
@@ -126,13 +144,14 @@ export function SearchScreen({ params }: { params: SearchParams }) {
               : undefined;
           const rows = await listDocuments(scopeIds);
           if (cancelled) return;
-          setResults(
+          setRawResults(
             rows.map((r) => ({
               id: r.id,
               title: r.title,
               docType: r.doc_type,
               specialtyName: r.specialties?.name ?? '',
               productLabel: [r.products?.brand, r.products?.model].filter(Boolean).join(' ') || null,
+              brand: r.products?.brand ?? null,
               excerptHtml: null,
               pinned: pinnedIds.has(r.id),
               dim: !pinnedIds.has(r.id) && !isOnline,
@@ -160,6 +179,38 @@ export function SearchScreen({ params }: { params: SearchParams }) {
     pinnedIds,
     isOnline,
   ]);
+
+  // Fresh branch — any filter picked in a different one no longer applies.
+  // Reset during render (not an effect) per React's "adjusting state when a
+  // prop changes" pattern, to avoid an extra render pass.
+  const scopeKey = `${departmentId ?? ''}|${specialtyId ?? ''}`;
+  const [prevScopeKey, setPrevScopeKey] = useState(scopeKey);
+  if (scopeKey !== prevScopeKey) {
+    setPrevScopeKey(scopeKey);
+    setDocTypeFilter(null);
+    setBrandFilter(null);
+  }
+
+  const availableDocTypes = useMemo(
+    () => Array.from(new Set((rawResults ?? []).map((r) => r.docType))),
+    [rawResults],
+  );
+  const availableBrands = useMemo(
+    () =>
+      Array.from(new Set((rawResults ?? []).map((r) => r.brand).filter((b): b is string => !!b))).sort((a, b) =>
+        a.localeCompare(b),
+      ),
+    [rawResults],
+  );
+
+  const results = useMemo(() => {
+    if (!rawResults) return null;
+    return rawResults.filter(
+      (r) =>
+        (!docTypeFilter || r.docType === docTypeFilter) &&
+        (!brandFilterUsable || !brandFilter || r.brand === brandFilter),
+    );
+  }, [rawResults, docTypeFilter, brandFilter, brandFilterUsable]);
 
   const handleResultTap = (item: ResultItem) => {
     if (!item.pinned && !isOnline) {
@@ -307,28 +358,80 @@ export function SearchScreen({ params }: { params: SearchParams }) {
           )}
         </div>
 
-        <div
-          className="no-scrollbar chip-row"
-          style={{ display: 'flex', flexWrap: 'nowrap', gap: 8, marginTop: 12, overflowX: 'auto' }}
-        >
-          <button
-            type="button"
-            onClick={() => selectDepartmentChip(null)}
-            style={chipStyle(departmentId === null)}
-          >
-            Tout
-          </button>
-          {departments.map((dept) => (
-            <button
-              key={dept.id}
-              type="button"
-              onClick={() => selectDepartmentChip(dept.id)}
-              style={chipStyle(departmentId === dept.id)}
+        {scoped ? (
+          <>
+            <div
+              className="no-scrollbar chip-row"
+              style={{ display: 'flex', flexWrap: 'nowrap', gap: 8, marginTop: 12, overflowX: 'auto' }}
             >
-              {dept.name}
+              <button
+                type="button"
+                onClick={() => setDocTypeFilter(null)}
+                style={chipStyle(docTypeFilter === null)}
+              >
+                Tout type
+              </button>
+              {availableDocTypes.map((dt) => (
+                <button
+                  key={dt}
+                  type="button"
+                  onClick={() => setDocTypeFilter(dt)}
+                  style={chipStyle(docTypeFilter === dt)}
+                >
+                  {docTypeLabel(dt)}
+                </button>
+              ))}
+            </div>
+
+            {brandFilterUsable && availableBrands.length > 0 && (
+              <div
+                className="no-scrollbar chip-row"
+                style={{ display: 'flex', flexWrap: 'nowrap', gap: 8, marginTop: 8, overflowX: 'auto' }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setBrandFilter(null)}
+                  style={chipStyle(brandFilter === null)}
+                >
+                  Tout fabricant
+                </button>
+                {availableBrands.map((brand) => (
+                  <button
+                    key={brand}
+                    type="button"
+                    onClick={() => setBrandFilter(brand)}
+                    style={chipStyle(brandFilter === brand)}
+                  >
+                    {brand}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div
+            className="no-scrollbar chip-row"
+            style={{ display: 'flex', flexWrap: 'nowrap', gap: 8, marginTop: 12, overflowX: 'auto' }}
+          >
+            <button
+              type="button"
+              onClick={() => selectDepartmentChip(null)}
+              style={chipStyle(departmentId === null)}
+            >
+              Tout
             </button>
-          ))}
-        </div>
+            {departments.map((dept) => (
+              <button
+                key={dept.id}
+                type="button"
+                onClick={() => selectDepartmentChip(dept.id)}
+                style={chipStyle(departmentId === dept.id)}
+              >
+                {dept.name}
+              </button>
+            ))}
+          </div>
+        )}
 
         {!isOnline && (
           <div
