@@ -1,5 +1,5 @@
 import { createContext } from 'react';
-import type { Department } from '../types/database';
+import type { Department, Specialty } from '../types/database';
 
 export interface SearchParams {
   query: string;
@@ -13,6 +13,10 @@ export interface SearchParams {
 export type NavState =
   | { screen: 'home' }
   | { screen: 'department'; department: Department }
+  /** A specialty that itself contains specialties (parent, per the
+   * specialties.parent_id hierarchy) — one extra browse level before
+   * reaching leaves. */
+  | { screen: 'specialtyGroup'; department: Department; parent: Specialty }
   | { screen: 'search'; params: SearchParams }
   | { screen: 'document'; documentId: string }
   | { screen: 'diagnostic' };
@@ -29,6 +33,7 @@ export interface NavigationContextValue {
   canGoBack: boolean;
   goHome: () => void;
   goDepartment: (department: Department) => void;
+  goSpecialtyGroup: (department: Department, parent: Specialty) => void;
   /** Blank search — used by the home search bar and "Toute la documentation". */
   goSearchBlank: () => void;
   goPinned: () => void;

@@ -20,6 +20,8 @@ function Screens() {
       return <HomeScreen />;
     case 'department':
       return <DepartmentScreen department={nav.state.department} />;
+    case 'specialtyGroup':
+      return <DepartmentScreen department={nav.state.department} parent={nav.state.parent} />;
     case 'search':
       return <SearchScreen params={nav.state.params} />;
     case 'document':

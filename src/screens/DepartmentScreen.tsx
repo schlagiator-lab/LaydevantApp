@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Department, Specialty } from '../types/database';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
@@ -12,18 +12,52 @@ function countLabel(count: number): string {
   return count === 0 ? 'Aucun document' : `${count} document${count === 1 ? '' : 's'}`;
 }
 
-export function DepartmentScreen({ department }: { department: Department }) {
+/** Sum of a parent specialty's own document count over its full subtree —
+ * a parent never holds documents directly (CLAUDE.md), so its count is
+ * entirely its children's, recursively. Null = unknown (offline / not yet
+ * loaded), matching the existing "no count shown" behavior of a leaf. */
+function aggregateCount(
+  specialtyId: string,
+  childrenByParent: Map<string, Specialty[]>,
+  leafCounts: Record<string, number>,
+  memo: Map<string, number | null>,
+): number | null {
+  if (memo.has(specialtyId)) return memo.get(specialtyId) ?? null;
+  const children = childrenByParent.get(specialtyId);
+  let value: number | null;
+  if (!children || children.length === 0) {
+    value = specialtyId in leafCounts ? leafCounts[specialtyId] : null;
+  } else {
+    let total = 0;
+    let any = false;
+    for (const child of children) {
+      const c = aggregateCount(child.id, childrenByParent, leafCounts, memo);
+      if (c !== null) {
+        total += c;
+        any = true;
+      }
+    }
+    value = any ? total : null;
+  }
+  memo.set(specialtyId, value);
+  return value;
+}
+
+export function DepartmentScreen({ department, parent }: { department: Department; parent?: Specialty }) {
   const { isOnline } = useAuth();
   const nav = useNavigation();
-  const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [allSpecialties, setAllSpecialties] = useState<Specialty[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      // All levels for the department in one shot — small referentiel data
+      // (CLAUDE.md §4), lets every browse level (however deep) derive its
+      // children client-side without extra round-trips.
       const local = await getLocalSpecialties(department.id);
       if (cancelled) return;
-      setSpecialties(local);
+      setAllSpecialties(local);
       // Counts require a network round-trip (no local index of document
       // counts) — skip it offline rather than show a stale or fabricated number.
       if (isOnline) {
@@ -41,16 +75,42 @@ export function DepartmentScreen({ department }: { department: Department }) {
     };
   }, [department.id, isOnline]);
 
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, Specialty[]>();
+    for (const s of allSpecialties) {
+      if (s.parent_id) {
+        const list = map.get(s.parent_id) ?? [];
+        list.push(s);
+        map.set(s.parent_id, list);
+      }
+    }
+    for (const list of map.values()) list.sort((a, b) => a.sort_order - b.sort_order);
+    return map;
+  }, [allSpecialties]);
+
+  const visibleSpecialties = useMemo(() => {
+    const list = parent
+      ? (childrenByParent.get(parent.id) ?? [])
+      : allSpecialties.filter((s) => s.parent_id === null);
+    return list.slice().sort((a, b) => a.sort_order - b.sort_order);
+  }, [allSpecialties, childrenByParent, parent]);
+
   const quickSearch = () =>
     nav.goSearch({ query: '', departmentId: null, specialtyId: null, pinnedOnly: false });
 
-  const openSpecialty = (specialty: Specialty) =>
+  const openSpecialty = (specialty: Specialty) => {
+    const children = childrenByParent.get(specialty.id);
+    if (children && children.length > 0) {
+      nav.goSpecialtyGroup(department, specialty);
+      return;
+    }
     nav.goSearch({
       query: '',
       departmentId: department.id,
       specialtyId: specialty.id,
       pinnedOnly: false,
     });
+  };
 
   return (
     <div
@@ -79,8 +139,8 @@ export function DepartmentScreen({ department }: { department: Department }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button
               type="button"
-              onClick={nav.goHome}
-              aria-label="Accueil"
+              onClick={parent ? nav.goBack : nav.goHome}
+              aria-label="Retour"
               style={{
                 flex: 'none',
                 width: 32,
@@ -104,7 +164,7 @@ export function DepartmentScreen({ department }: { department: Department }) {
                 color: textA(0.55),
               }}
             >
-              Département
+              {parent ? department.name : 'Département'}
             </span>
           </div>
           <StatusPill online={isOnline} />
@@ -112,42 +172,45 @@ export function DepartmentScreen({ department }: { department: Department }) {
         <div style={{ marginBottom: 12 }}>
           <SearchBarButton onClick={quickSearch} />
         </div>
-        <div style={{ fontSize: 26, fontWeight: 700, color: colors.text }}>{department.name}</div>
+        <div style={{ fontSize: 26, fontWeight: 700, color: colors.text }}>{parent ? parent.name : department.name}</div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', padding: '8px 16px 24px' }}>
-        {specialties.map((specialty) => (
-          <button
-            key={specialty.id}
-            type="button"
-            onClick={() => openSpecialty(specialty)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              width: '100%',
-              minHeight: 64,
-              background: 'transparent',
-              border: 'none',
-              borderBottom: `1px solid ${textA(0.1)}`,
-              padding: '0 4px',
-              cursor: 'pointer',
-              textAlign: 'left',
-              boxSizing: 'border-box',
-            }}
-          >
-            <span style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>{specialty.name}</span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
-              {specialty.id in counts && (
-                <span style={{ fontSize: 13, fontWeight: 600, color: textA(0.55) }}>
-                  {countLabel(counts[specialty.id])}
-                </span>
-              )}
-              <span style={{ color: textA(0.35), fontSize: 20 }}>›</span>
-            </span>
-          </button>
-        ))}
+        {visibleSpecialties.map((specialty) => {
+          const count = aggregateCount(specialty.id, childrenByParent, counts, new Map());
+          return (
+            <button
+              key={specialty.id}
+              type="button"
+              onClick={() => openSpecialty(specialty)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                width: '100%',
+                minHeight: 64,
+                background: 'transparent',
+                border: 'none',
+                borderBottom: `1px solid ${textA(0.1)}`,
+                padding: '0 4px',
+                cursor: 'pointer',
+                textAlign: 'left',
+                boxSizing: 'border-box',
+              }}
+            >
+              <span style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>{specialty.name}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+                {count !== null && (
+                  <span style={{ fontSize: 13, fontWeight: 600, color: textA(0.55) }}>
+                    {countLabel(count)}
+                  </span>
+                )}
+                <span style={{ color: textA(0.35), fontSize: 20 }}>›</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

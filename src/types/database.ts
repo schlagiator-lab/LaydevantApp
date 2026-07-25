@@ -23,6 +23,9 @@ export interface Department {
 export interface Specialty {
   id: string;
   department_id: string;
+  /** Self-referencing FK. Null = top-level. A specialty either holds
+   * documents (leaf) or holds other specialties (parent) — never both. */
+  parent_id: string | null;
   name: string;
   slug: string;
   sort_order: number;
