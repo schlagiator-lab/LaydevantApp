@@ -19,7 +19,8 @@ export type NavState =
   | { screen: 'specialtyGroup'; department: Department; parent: Specialty }
   | { screen: 'search'; params: SearchParams }
   | { screen: 'document'; documentId: string }
-  | { screen: 'diagnostic' };
+  | { screen: 'diagnostic' }
+  | { screen: 'webSearch'; context: WebSearchContext };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -27,6 +28,13 @@ export const BLANK_SEARCH: SearchParams = {
   specialtyId: null,
   pinnedOnly: false,
 };
+
+/** Contexte de filtre actif transmis depuis l'écran de recherche, pour
+ * affiner la requête web sans que l'utilisateur ait à le ressaisir (§4). */
+export interface WebSearchContext {
+  departmentName: string | null;
+  specialtyName: string | null;
+}
 
 export interface NavigationContextValue {
   state: NavState;
@@ -41,6 +49,8 @@ export interface NavigationContextValue {
   goDocument: (documentId: string) => void;
   /** Storage diagnostic screen (CLAUDE.md §10) — not part of the core 4-screen UX. */
   goDiagnostic: () => void;
+  /** Recherche web de notices (Feature recherche web notices.md, §4) — en ligne uniquement. */
+  goWebSearch: (context: WebSearchContext) => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }

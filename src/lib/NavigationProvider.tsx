@@ -5,6 +5,7 @@ import {
   BLANK_SEARCH,
   type NavState,
   type SearchParams,
+  type WebSearchContext,
 } from './navigationContext';
 
 const HOME: NavState = { screen: 'home' };
@@ -24,6 +25,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goSearch = (params: SearchParams) => push({ screen: 'search', params });
   const goDocument = (documentId: string) => push({ screen: 'document', documentId });
   const goDiagnostic = () => push({ screen: 'diagnostic' });
+  const goWebSearch = (context: WebSearchContext) => push({ screen: 'webSearch', context });
   const goBack = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
 
   return (
@@ -39,6 +41,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goSearch,
         goDocument,
         goDiagnostic,
+        goWebSearch,
         goBack,
       }}
     >

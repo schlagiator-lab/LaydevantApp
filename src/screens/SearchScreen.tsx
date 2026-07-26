@@ -453,6 +453,31 @@ export function SearchScreen({ params }: { params: SearchParams }) {
             </span>
           </div>
         )}
+
+        {isOnline && (
+          <button
+            type="button"
+            onClick={() =>
+              nav.goWebSearch({
+                departmentName: departmentId ? (departmentsById.get(departmentId)?.name ?? null) : null,
+                specialtyName: specialtyId ? (specialtiesById.get(specialtyId)?.name ?? null) : null,
+              })
+            }
+            style={{
+              display: 'block',
+              marginTop: 12,
+              background: 'transparent',
+              border: 'none',
+              color: colors.accent,
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            Introuvable ici ? Chercher sur le web ›
+          </button>
+        )}
       </div>
 
       <div
