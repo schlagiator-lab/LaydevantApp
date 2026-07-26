@@ -22,7 +22,10 @@ export async function submitIngestFromUrl(payload: IngestFromUrlPayload): Promis
 
   const response = await fetch(webhookUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-webhook-secret': import.meta.env.VITE_N8N_INGEST_SECRET,
+    },
     body: JSON.stringify(payload),
   });
 
