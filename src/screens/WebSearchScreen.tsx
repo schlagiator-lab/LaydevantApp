@@ -27,6 +27,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
 
   const [brand, setBrand] = useState('');
   const [model, setModel] = useState('');
+  const [equipmentType, setEquipmentType] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<WebSearchResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +49,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
         model: trimmedModel,
         departmentName: context.departmentName,
         specialtyName: context.specialtyName,
+        equipmentType,
       });
       setResults(rows);
     } catch (err) {
@@ -110,6 +112,12 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
                 style={{ ...inputStyle, flex: 1 }}
               />
             </div>
+            <input
+              value={equipmentType}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setEquipmentType(e.target.value)}
+              placeholder="Type d'équipement (optionnel, ex. disjoncteur)"
+              style={inputStyle}
+            />
             <button type="submit" disabled={!canSearch} style={{ ...primaryButtonStyle, opacity: canSearch ? 1 : 0.5 }}>
               {loading ? 'Recherche en cours…' : 'Chercher sur le web'}
             </button>
@@ -146,17 +154,18 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
                   {docTypeLabel(result.type)} · {result.source}
                 </div>
                 <div style={{ fontSize: 16.5, fontWeight: 700, lineHeight: 1.3 }}>{result.title}</div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: 8 }}>
                   <span style={confidenceBadgeStyle(result.confidence)}>{CONFIDENCE_LABELS[result.confidence]}</span>
-                  {result.is_pdf ? (
-                    <button type="button" onClick={() => setCaptureTarget(result)} style={smallPrimaryButtonStyle}>
-                      Ajouter à la bibliothèque
-                    </button>
-                  ) : (
+                  <div style={{ display: 'flex', gap: 8 }}>
                     <button type="button" onClick={() => handleOpen(result)} style={smallSecondaryButtonStyle}>
-                      Ouvrir
+                      {result.is_pdf ? 'Consulter' : 'Ouvrir'}
                     </button>
-                  )}
+                    {result.is_pdf && (
+                      <button type="button" onClick={() => setCaptureTarget(result)} style={smallPrimaryButtonStyle}>
+                        Ajouter à la bibliothèque
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

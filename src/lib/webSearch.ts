@@ -7,6 +7,8 @@ export interface WebSearchNoticesParams {
   /** Contexte de filtre actif au moment de la saisie, pour affiner la requête (§3). */
   departmentName?: string | null;
   specialtyName?: string | null;
+  /** Contexte libre et facultatif saisi par l'utilisateur (ex. "disjoncteur"). */
+  equipmentType?: string | null;
 }
 
 /** Recherche web de notices (Feature recherche web notices.md, §3-4). En ligne uniquement. */
@@ -19,6 +21,7 @@ export async function searchWebNotices(params: WebSearchNoticesParams): Promise<
         model: params.model,
         department_name: params.departmentName ?? null,
         specialty_name: params.specialtyName ?? null,
+        equipment_type: params.equipmentType?.trim() || null,
       },
     },
   );

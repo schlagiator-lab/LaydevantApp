@@ -71,8 +71,9 @@ function buildPrompt(
   model: string,
   departmentName: string | null,
   specialtyName: string | null,
+  equipmentType: string | null,
 ): string {
-  const context = [departmentName, specialtyName].filter(Boolean).join(' / ');
+  const context = [equipmentType, departmentName, specialtyName].filter(Boolean).join(' / ');
 
   return `Tu aides un technicien de terrain à retrouver la documentation officielle d'un équipement.
 
@@ -86,6 +87,12 @@ ta requête pour écarter le bruit (par exemple préférer "${model} disjoncteur
 Privilégie fortement les sources fabricant et les liens PDF directs. Écarte
 explicitement les pages commerciales, les revendeurs, les places de marché et
 les forums.
+
+Le technicien lit le français. Quand plusieurs versions linguistiques du même
+document existent (ex. un fabricant qui publie sa notice en français, allemand
+et anglais), choisis en priorité la version française. N'inclus une version
+dans une autre langue que si aucune version française n'est disponible pour ce
+produit.
 
 Pour chaque résultat retenu, indique son type parmi exactement ces valeurs :
 "notice_installation", "manuel_programmation", "fiche_technique", "autre".
@@ -125,7 +132,13 @@ Deno.serve(async (req) => {
   const userId = userIdFromAuthHeader(authHeader);
   if (!userId) return jsonResponse({ error: 'unauthorized' }, 401);
 
-  let body: { brand?: string; model?: string; department_name?: string | null; specialty_name?: string | null };
+  let body: {
+    brand?: string;
+    model?: string;
+    department_name?: string | null;
+    specialty_name?: string | null;
+    equipment_type?: string | null;
+  };
   try {
     body = await req.json();
   } catch {
@@ -182,7 +195,13 @@ Deno.serve(async (req) => {
         messages: [
           {
             role: 'user',
-            content: buildPrompt(brand, model, body.department_name ?? null, body.specialty_name ?? null),
+            content: buildPrompt(
+              brand,
+              model,
+              body.department_name ?? null,
+              body.specialty_name ?? null,
+              body.equipment_type?.trim() || null,
+            ),
           },
         ],
       }),
