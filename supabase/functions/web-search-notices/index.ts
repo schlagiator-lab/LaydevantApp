@@ -18,7 +18,19 @@ const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY');
 // et la version datée de l'outil de recherche web évoluent (feature doc §3).
 // Réglables sans toucher au code via les secrets de la fonction.
 const ANTHROPIC_MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-5';
-const WEB_SEARCH_TOOL_TYPE = Deno.env.get('ANTHROPIC_WEB_SEARCH_TOOL_TYPE') ?? 'web_search_20250305';
+// Variante à filtrage dynamique : Claude exécute le tri des résultats
+// côté serveur avant qu'ils n'atteignent le contexte du modèle, ce qui
+// réduit le volume de texte lu (et donc le coût) par rapport à la variante
+// de base. Repli possible vers 'web_search_20250305' via ce secret si le
+// modèle configuré ne la supporte pas.
+const WEB_SEARCH_TOOL_TYPE = Deno.env.get('ANTHROPIC_WEB_SEARCH_TOOL_TYPE') ?? 'web_search_20260209';
+// Maîtrise du coût : une recherche = un seul appel à l'outil web_search.
+// C'est le levier principal — chaque "use" facture la recherche elle-même
+// ET le texte des résultats renvoyés au modèle ; en laisser plusieurs par
+// requête (l'ancien défaut était 5) multiplie directement la facture pour
+// un gain de pertinence marginal, la requête étant déjà formulée pour viser
+// juste dès le premier essai (voir le prompt système).
+const WEB_SEARCH_MAX_USES = Number(Deno.env.get('WEB_SEARCH_MAX_USES') ?? '1');
 const DAILY_LIMIT = Number(Deno.env.get('WEB_SEARCH_DAILY_LIMIT') ?? '50');
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
@@ -66,7 +78,106 @@ function userIdFromAuthHeader(authHeader: string | null): string | null {
   }
 }
 
-function buildPrompt(
+// Contenu figé (aucune valeur interpolée) pour rester un préfixe identique
+// d'un appel à l'autre : c'est ce qui rend le cache_control efficace
+// (maîtrise du coût, voir plus bas). Volontairement détaillé — la taille
+// compte aussi : en dessous du minimum de mise en cache du modèle (1024
+// tokens pour Sonnet 5), Anthropic ne met simplement rien en cache, sans
+// erreur ni avertissement, et ce bloc ne sert plus à rien.
+const SYSTEM_PROMPT = `Tu aides un technicien de terrain (électricité, télécom, portes automatiques) à
+retrouver la documentation officielle d'un équipement à partir de sa marque et
+de son modèle, lus directement sur l'étiquette du produit.
+
+## Objectif
+
+Trouver, pour le produit demandé, les documents suivants s'ils existent :
+notices d'installation, manuels de programmation, fiches techniques. Rien
+d'autre — ni page produit commerciale, ni fiche revendeur, ni forum.
+
+## Méthode de recherche
+
+Une seule recherche web, formulée le plus précisément possible dès le départ :
+marque + modèle exacts, affinés par le contexte métier fourni dans le message
+utilisateur s'il est présent (par exemple ajouter "disjoncteur" à la requête
+écarte une grande partie du bruit pour une référence électrique ambiguë). Ne
+multiplie pas les recherches successives "pour voir" — le budget de recherche
+est volontairement limité, une requête bien ciblée vaut mieux que plusieurs
+approximatives.
+
+## Critères de sélection, dans cet ordre de priorité
+
+1. Source fabricant officielle en priorité absolue. Une source non fabricante
+   (distributeur technique, base documentaire tierce) ne peut être retenue que
+   si aucune source fabricant n'existe pour ce produit précis.
+2. Lien PDF direct de préférence à une page HTML intermédiaire. Le champ
+   \`is_pdf\` doit refléter cela exactement : \`true\` uniquement si l'URL pointe
+   un fichier PDF téléchargeable directement, jamais une page qui contient
+   seulement un lien vers un PDF.
+3. Version française du document en priorité, quand plusieurs langues
+   existent pour le même document (cas fréquent chez les fabricants
+   européens qui publient en français, allemand, anglais...). N'inclus une
+   version dans une autre langue que si aucune version française n'existe
+   pour ce produit précis — ne retiens jamais une version allemande ou
+   anglaise "à défaut de mieux" si le français existe ailleurs.
+4. Exclus explicitement : places de marché (Amazon, eBay, Cdiscount...),
+   sites de revendeurs et grossistes électriques, forums et blogs, comparateurs
+   de prix, pages de fiche produit purement commerciales sans documentation
+   technique jointe.
+
+## Domaines concernés (pour t'aider à juger la pertinence du contexte)
+
+- Électricité : disjoncteurs, interrupteurs différentiels, tableaux,
+  contacteurs, relais, variateurs, détecteurs.
+- Télécom : centraux téléphoniques, interphones, visiophones, baies de
+  brassage, systèmes de vidéosurveillance.
+- Portes automatiques : opérateurs de porte, motorisations de portail,
+  cellules photoélectriques, radars, commandes d'accès.
+
+## Classification
+
+Pour chaque résultat retenu, attribue exactement un type parmi :
+- "notice_installation" : procédure de montage, câblage, raccordement, mise
+  en service.
+- "manuel_programmation" : configuration, codes d'accès technicien, réglages
+  avancés, paramétrage.
+- "fiche_technique" : caractéristiques, dimensions, données électriques,
+  courbes de performance.
+- "autre" : document pertinent qui ne rentre dans aucune des catégories
+  ci-dessus (schéma électrique isolé, notice d'entretien...).
+
+## Niveau de confiance
+
+- "haute" : source fabricant, document correspondant exactement à la
+  référence demandée.
+- "moyenne" : source fabricant sur une gamme proche mais pas la référence
+  exacte, ou source tierce reconnue avec un document manifestement
+  correspondant.
+- "faible" : correspondance incertaine — modèle proche mais pas identique,
+  ou document générique à toute une gamme plutôt qu'à la référence précise.
+
+## Cas "rien de fiable trouvé"
+
+Si aucun document fiable n'est trouvé, renvoie une liste de résultats vide.
+N'invente jamais une URL, un titre ou un nom de source qui ne provient pas
+directement d'un résultat de recherche réel — un lien cassé ou inventé est
+pire qu'une liste vide pour un technicien qui compte dessus sur le terrain.
+
+## Format de réponse
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans texte autour, sans balises
+Markdown, sans commentaire ni explication. Structure exacte :
+
+{"results": [{"type": "notice_installation", "title": "Titre exact du document", "url": "https://exemple-fabricant.com/notice.pdf", "is_pdf": true, "source": "exemple-fabricant.com", "confidence": "haute"}]}
+
+Exemple pour une recherche "Hager, TN225, contexte : disjoncteur" :
+
+{"results": [{"type": "notice_installation", "title": "Hager TN225 - Notice de montage", "url": "https://hager.com/fr/documentation/tn225-notice.pdf", "is_pdf": true, "source": "hager.com", "confidence": "haute"}, {"type": "fiche_technique", "title": "Hager TN225 - Caractéristiques techniques", "url": "https://hager.com/fr/documentation/tn225-fiche.pdf", "is_pdf": true, "source": "hager.com", "confidence": "haute"}]}
+
+Si rien de fiable n'est trouvé pour le produit demandé :
+
+{"results": []}`;
+
+function buildUserMessage(
   brand: string,
   model: string,
   departmentName: string | null,
@@ -74,35 +185,7 @@ function buildPrompt(
   equipmentType: string | null,
 ): string {
   const context = [equipmentType, departmentName, specialtyName].filter(Boolean).join(' / ');
-
-  return `Tu aides un technicien de terrain à retrouver la documentation officielle d'un équipement.
-
-Produit recherché : ${brand} ${model}${context ? ` (contexte métier : ${context})` : ''}
-
-Recherche spécifiquement les notices d'installation, manuels de programmation
-et fiches techniques de ce produit exact. Intègre le contexte métier fourni à
-ta requête pour écarter le bruit (par exemple préférer "${model} disjoncteur"
-à "${model}" seul si le contexte l'indique).
-
-Privilégie fortement les sources fabricant et les liens PDF directs. Écarte
-explicitement les pages commerciales, les revendeurs, les places de marché et
-les forums.
-
-Le technicien lit le français. Quand plusieurs versions linguistiques du même
-document existent (ex. un fabricant qui publie sa notice en français, allemand
-et anglais), choisis en priorité la version française. N'inclus une version
-dans une autre langue que si aucune version française n'est disponible pour ce
-produit.
-
-Pour chaque résultat retenu, indique son type parmi exactement ces valeurs :
-"notice_installation", "manuel_programmation", "fiche_technique", "autre".
-
-Si tu ne trouves rien de fiable, renvoie une liste vide — n'invente jamais
-d'URL ni de titre.
-
-Réponds UNIQUEMENT avec le JSON suivant, sans texte autour, sans balises
-Markdown :
-{"results": [{"type": "notice_installation", "title": "...", "url": "https://...", "is_pdf": true, "source": "nom-de-domaine.com", "confidence": "haute"}]}`;
+  return `Produit recherché : ${brand} ${model}${context ? ` (contexte métier : ${context})` : ''}`;
 }
 
 function extractFinalText(content: Array<{ type: string; text?: string }>): string {
@@ -191,11 +274,18 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
         max_tokens: 2048,
-        tools: [{ type: WEB_SEARCH_TOOL_TYPE, name: 'web_search', max_uses: 5 }],
+        // system en cache : identique à chaque appel (aucune valeur
+        // interpolée), donc mis en cache une fois puis relu à ~10% du prix
+        // par toutes les recherches suivantes, tous utilisateurs confondus,
+        // tant que le cache reste chaud (TTL glissant de 5 minutes par
+        // défaut). Seule la ligne "Produit recherché" varie, dans le
+        // message user, hors du cache.
+        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+        tools: [{ type: WEB_SEARCH_TOOL_TYPE, name: 'web_search', max_uses: WEB_SEARCH_MAX_USES }],
         messages: [
           {
             role: 'user',
-            content: buildPrompt(
+            content: buildUserMessage(
               brand,
               model,
               body.department_name ?? null,
