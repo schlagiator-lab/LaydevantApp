@@ -24,13 +24,18 @@ const ANTHROPIC_MODEL = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-5';
 // de base. Repli possible vers 'web_search_20250305' via ce secret si le
 // modèle configuré ne la supporte pas.
 const WEB_SEARCH_TOOL_TYPE = Deno.env.get('ANTHROPIC_WEB_SEARCH_TOOL_TYPE') ?? 'web_search_20260209';
-// Maîtrise du coût : une recherche = un seul appel à l'outil web_search.
-// C'est le levier principal — chaque "use" facture la recherche elle-même
-// ET le texte des résultats renvoyés au modèle ; en laisser plusieurs par
-// requête (l'ancien défaut était 5) multiplie directement la facture pour
-// un gain de pertinence marginal, la requête étant déjà formulée pour viser
-// juste dès le premier essai (voir le prompt système).
-const WEB_SEARCH_MAX_USES = Number(Deno.env.get('WEB_SEARCH_MAX_USES') ?? '1');
+// Maîtrise du coût : chaque "use" facture la recherche elle-même ET le texte
+// des résultats renvoyés au modèle. L'ancien défaut (5) multipliait la
+// facture pour un gain de pertinence marginal — mais le ramener à 1 s'est
+// révélé trop agressif : sans deuxième essai, une requête trop étroite ou un
+// premier lot de résultats bruités renvoie une liste vide au lieu d'une
+// requête reformulée, ce qui a fait chuter le taux de résultats trouvés.
+// 3 est le compromis retenu : la variante à filtrage dynamique (ci-dessus)
+// et le cache du prompt système (ci-dessous) font déjà l'essentiel du travail
+// de réduction de coût, donc quelques essais de recherche supplémentaires
+// restent marginaux — alors qu'ils redonnent à Claude la marge nécessaire
+// pour reformuler sa requête si le premier essai ne donne rien de fiable.
+const WEB_SEARCH_MAX_USES = Number(Deno.env.get('WEB_SEARCH_MAX_USES') ?? '3');
 const DAILY_LIMIT = Number(Deno.env.get('WEB_SEARCH_DAILY_LIMIT') ?? '50');
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
@@ -96,13 +101,17 @@ d'autre — ni page produit commerciale, ni fiche revendeur, ni forum.
 
 ## Méthode de recherche
 
-Une seule recherche web, formulée le plus précisément possible dès le départ :
-marque + modèle exacts, affinés par le contexte métier fourni dans le message
+Commence par une recherche web formulée le plus précisément possible : marque
++ modèle exacts, affinés par le contexte métier fourni dans le message
 utilisateur s'il est présent (par exemple ajouter "disjoncteur" à la requête
-écarte une grande partie du bruit pour une référence électrique ambiguë). Ne
-multiplie pas les recherches successives "pour voir" — le budget de recherche
-est volontairement limité, une requête bien ciblée vaut mieux que plusieurs
-approximatives.
+écarte une grande partie du bruit pour une référence électrique ambiguë). Le
+budget de recherche est limité (quelques essais au maximum) — ne multiplie pas
+les variantes "pour voir". Mais si ce premier essai ne renvoie rien de fiable
+(page produit sans documentation, résultats hors sujet, référence introuvable
+telle quelle), reformule une fois ou deux avant de conclure à l'absence de
+notice : essaie une orthographe alternative de la référence, retire ou change
+le terme de contexte métier, ou cible directement le site du fabricant si tu
+l'as identifié. N'abandonne pas après un seul essai raté.
 
 ## Critères de sélection, dans cet ordre de priorité
 

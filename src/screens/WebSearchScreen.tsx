@@ -130,9 +130,14 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
         style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 24px', boxSizing: 'border-box' }}
       >
         {loading && (
-          <p style={{ fontSize: 14, color: textA(0.55), textAlign: 'center', marginTop: 40 }}>
-            Recherche sur le web… quelques secondes.
-          </p>
+          <div style={{ marginTop: 40 }}>
+            <div style={loadingBarTrackStyle}>
+              <div style={loadingBarFillStyle} />
+            </div>
+            <p style={{ fontSize: 14, color: textA(0.55), textAlign: 'center', marginTop: 14 }}>
+              Recherche sur le web… quelques secondes.
+            </p>
+          </div>
         )}
 
         {error && <p style={{ fontSize: 14, color: colors.accent }}>{error}</p>}
@@ -238,6 +243,25 @@ const primaryButtonStyle: React.CSSProperties = {
   fontSize: 15,
   fontWeight: 700,
   cursor: 'pointer',
+};
+
+const loadingBarTrackStyle: React.CSSProperties = {
+  position: 'relative',
+  height: 4,
+  borderRadius: 100,
+  background: textA(0.1),
+  overflow: 'hidden',
+  maxWidth: 220,
+  margin: '0 auto',
+};
+
+const loadingBarFillStyle: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  width: '28%',
+  borderRadius: 100,
+  background: colors.accent,
+  animation: 'web-search-loading 1.1s ease-in-out infinite',
 };
 
 const cardStyle: React.CSSProperties = {

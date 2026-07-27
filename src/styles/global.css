@@ -52,3 +52,15 @@ body {
     width: 100%;
   }
 }
+
+/* Recherche web (§3/§4) : la recherche interroge un modèle qui peut
+   reformuler sa requête plusieurs fois, donc sa durée n'est pas prévisible —
+   barre indéterminée plutôt qu'une progression en pourcentage. */
+@keyframes web-search-loading {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
