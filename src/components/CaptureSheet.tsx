@@ -27,9 +27,7 @@ export interface CaptureSheetProps {
  * Feuille de confirmation avant capture vers la bibliothèque (Feature
  * recherche web notices.md, §5) : les métadonnées auto-détectées par la
  * recherche web ne sont pas fiables à 100 %, tout reste éditable, et la
- * spécialité doit être choisie parmi les feuilles existantes (jamais un
- * département/spécialité parent — CLAUDE.md, une spécialité parente ne
- * porte jamais de documents directement).
+ * spécialité doit être choisie parmi celles de la base (CLAUDE.md §3).
  */
 export function CaptureSheet({ result, brand, model, onClose, onCaptured }: CaptureSheetProps) {
   const { showToast } = useToast();
@@ -57,13 +55,9 @@ export function CaptureSheet({ result, brand, model, onClose, onCaptured }: Capt
     };
   }, []);
 
-  // Feuilles uniquement : une spécialité qui a des enfants n'accueille jamais
-  // de documents directement (voir DepartmentScreen pour la même règle).
-  const leavesByDepartment = useMemo(() => {
-    const hasChildren = new Set(specialties.filter((s) => s.parent_id).map((s) => s.parent_id!));
+  const specialtiesByDepartment = useMemo(() => {
     const map = new Map<string, Specialty[]>();
     for (const s of specialties) {
-      if (hasChildren.has(s.id)) continue;
       const list = map.get(s.department_id) ?? [];
       list.push(s);
       map.set(s.department_id, list);
@@ -153,11 +147,11 @@ export function CaptureSheet({ result, brand, model, onClose, onCaptured }: Capt
             <select value={specialtyId} onChange={(e) => setSpecialtyId(e.target.value)} style={inputStyle}>
               <option value="">Choisir…</option>
               {departments.map((dept) => {
-                const leaves = leavesByDepartment.get(dept.id) ?? [];
-                if (leaves.length === 0) return null;
+                const deptSpecialties = specialtiesByDepartment.get(dept.id) ?? [];
+                if (deptSpecialties.length === 0) return null;
                 return (
                   <optgroup key={dept.id} label={dept.name}>
-                    {leaves.map((s) => (
+                    {deptSpecialties.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
                       </option>
