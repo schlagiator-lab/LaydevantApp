@@ -16,6 +16,7 @@ import { StatusPill } from '../components/StatusPill';
 import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
+import { ConfirmSheet } from '../components/ConfirmSheet';
 import { colors, fonts, textA } from '../styles/tokens';
 
 /**
@@ -36,6 +37,8 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showAddEquipment, setShowAddEquipment] = useState(false);
   const [showAddDocument, setShowAddDocument] = useState(false);
+  const [pendingRemoveEquipment, setPendingRemoveEquipment] = useState<DossierEquipment | null>(null);
+  const [pendingRemoveDocument, setPendingRemoveDocument] = useState<DossierDocumentComplet | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +82,18 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Échec du retrait.');
     }
+  };
+
+  const confirmRemoveEquipment = async () => {
+    if (!pendingRemoveEquipment) return;
+    await handleRemoveEquipment(pendingRemoveEquipment.productId);
+    setPendingRemoveEquipment(null);
+  };
+
+  const confirmRemoveDocument = async () => {
+    if (!pendingRemoveDocument) return;
+    await handleRemoveDocument(pendingRemoveDocument.id);
+    setPendingRemoveDocument(null);
   };
 
   const handleOpenDocument = (doc: DossierDocumentComplet) => {
@@ -174,7 +189,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                     </div>
                     <button
                       type="button"
-                      onClick={() => void handleRemoveEquipment(eq.productId)}
+                      onClick={() => setPendingRemoveEquipment(eq)}
                       disabled={!isOnline}
                       style={{ ...removeButtonStyle, opacity: isOnline ? 1 : 0.4 }}
                     >
@@ -212,7 +227,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                         {doc.origine === 'direct' ? (
                           <button
                             type="button"
-                            onClick={() => void handleRemoveDocument(doc.id)}
+                            onClick={() => setPendingRemoveDocument(doc)}
                             disabled={!isOnline}
                             style={{ ...linkButtonStyle, opacity: isOnline ? 1 : 0.4 }}
                           >
@@ -263,6 +278,24 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           onAdded={() => {
             void getDossierDocumentsComplets(dossier.id).then(setDocuments);
           }}
+        />
+      )}
+
+      {pendingRemoveEquipment && (
+        <ConfirmSheet
+          title="Retirer cet équipement ?"
+          message={`« ${pendingRemoveEquipment.productLabel} » sera retiré du dossier. Les documents qui n'étaient rattachés que via cet équipement disparaîtront aussi de la documentation du dossier.`}
+          onCancel={() => setPendingRemoveEquipment(null)}
+          onConfirm={() => void confirmRemoveEquipment()}
+        />
+      )}
+
+      {pendingRemoveDocument && (
+        <ConfirmSheet
+          title="Retirer ce document ?"
+          message={`« ${pendingRemoveDocument.title} » sera retiré de la documentation du dossier.`}
+          onCancel={() => setPendingRemoveDocument(null)}
+          onConfirm={() => void confirmRemoveDocument()}
         />
       )}
     </div>

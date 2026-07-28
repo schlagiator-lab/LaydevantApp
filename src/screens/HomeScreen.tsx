@@ -192,7 +192,7 @@ export function HomeScreen() {
               >
                 D
               </span>
-              <span style={{ flex: 1, fontSize: 16, fontWeight: 700, color: colors.text }}>Dossiers</span>
+              <span style={{ flex: 1, fontSize: 16, fontWeight: 700, color: colors.text }}>Dossiers clients</span>
               <span style={{ color: textA(0.35), fontSize: 18 }}>›</span>
             </button>
           );
