@@ -122,7 +122,7 @@ product_label, extrait, rank`.
 
 - `product_label` est **souvent null** (documents sans produit rattaché).
 - `extrait` est du **HTML** contenant des balises `<b>` autour des termes
-  trouvés. Voir §9 pour le traitement obligatoire.
+  trouvés. Voir §11 pour le traitement obligatoire.
 - La fonction exige une requête. Elle ne sert pas au mode parcours (§7).
 
 **`search_dossiers(q)`** — liste/filtre les dossiers clients par nom ou
@@ -184,7 +184,7 @@ ajouté ou renommé côté base sans toucher au code.
 
 ## 5. Architecture hors ligne (bibliothèque uniquement)
 
-C'est le cœur du projet pour la partie bibliothèque. Trois couches de stockage
+C'est le cœur du projet pour la partie bibliothèque. Quatre couches de stockage
 local :
 
 | Donnée | Support | Contenu |
@@ -273,7 +273,7 @@ demande sur le `content` des documents épinglés uniquement (pas d'index
 persistant : le nombre de documents épinglés reste petit, reconstruire à
 chaque recherche est plus simple qu'un maintien incrémental). Il produit des
 extraits surlignés en repassant par la **même fonction** `sanitizeHeadline`
-que le moteur en ligne (§9) : les deux moteurs sont donc garantis visuellement
+que le moteur en ligne (§11) : les deux moteurs sont donc garantis visuellement
 identiques par construction, pas par coïncidence.
 
 L'écran de recherche bascule automatiquement en mode « épinglés uniquement »
@@ -423,6 +423,8 @@ construite :
 - chiffrement **côté client** (WebCrypto), jamais de secret en clair envoyé au
   backend ;
 - **un fichier par dossier** (pas une colonne en clair dans `dossiers`) ;
+- prévoir une **clé de récupération** dès la création du coffre — un mot de
+  passe maître perdu rend les données définitivement irrécupérables ;
 - le reste de l'architecture (schéma exact, gestion de la clé, RLS associée)
   reste à spécifier — ne rien construire dans cette direction sans une
   spécification dédiée, au même titre que `Feature recherche web notices.md`
@@ -458,9 +460,18 @@ espacement disloque le mot.
 - **`ANTHROPIC_API_KEY` ne vit que dans les secrets de l'Edge Function**
   `web-search-notices`, jamais dans le front ni dans Git.
 - `VITE_N8N_INGEST_SECRET` (header `x-webhook-secret` du webhook de capture)
-  suit la même règle que le reste des `VITE_*` : figé au build, jamais commité
-  (`.env*` est dans `.gitignore`, seul `.env.example` — sans valeurs — est
-  versionné).
+  n'est **pas** un vrai secret. Comme tout `VITE_*`, il est figé au build donc
+  inscrit en dur dans le bundle JS — lui-même servi en static asset public,
+  avant tout login. Il est donc extractible par quiconque ouvre l'URL : c'est
+  un garde-fou faible (obfuscation), pas une authentification. Sa seule
+  fonction est d'écarter les appels accidentels au webhook. Le risque associé
+  — écriture non authentifiée vers la bibliothèque (pollution, conso
+  n8n/Supabase, pas d'exfiltration) — est **accepté à ce stade** car l'outil
+  est interne. Pour un durcissement réel, router la capture par une Edge
+  Function `verify_jwt` (comme la recherche web, §8) qui rappellerait n8n avec
+  un secret côté serveur — à faire dans un cycle dédié si besoin. Reste malgré
+  tout jamais commité (`.env*` dans `.gitignore`, seul `.env.example` sans
+  valeurs est versionné).
 - La clé `anon` est publique par conception ; c'est la RLS qui protège les
   données.
 - Les URL signées expirent (1 h). Ne pas les stocker : les régénérer à la
