@@ -74,24 +74,24 @@ create trigger trg_vault_user_keys_guard
 -- Lecture : sa propre ligne, ou tout pour un admin (panneau admin).
 drop policy if exists vault_user_keys_select on public.vault_user_keys;
 create policy vault_user_keys_select on public.vault_user_keys
-  for select using (user_id = auth.uid() or public.is_vault_admin());
+  for select to authenticated using (user_id = auth.uid() or public.is_vault_admin());
 
 -- Création : uniquement sa propre ligne.
 drop policy if exists vault_user_keys_insert on public.vault_user_keys;
 create policy vault_user_keys_insert on public.vault_user_keys
-  for insert with check (user_id = auth.uid());
+  for insert to authenticated with check (user_id = auth.uid());
 
 -- Mise à jour : sa propre ligne, ou un admin (pour activer l'accès).
 -- Le trigger empêche un non-admin de modifier access_enabled.
 drop policy if exists vault_user_keys_update on public.vault_user_keys;
 create policy vault_user_keys_update on public.vault_user_keys
-  for update using (user_id = auth.uid() or public.is_vault_admin())
+  for update to authenticated using (user_id = auth.uid() or public.is_vault_admin())
   with check (user_id = auth.uid() or public.is_vault_admin());
 
 -- Suppression : admin uniquement (nettoyage de compte).
 drop policy if exists vault_user_keys_delete on public.vault_user_keys;
 create policy vault_user_keys_delete on public.vault_user_keys
-  for delete using (public.is_vault_admin());
+  for delete to authenticated using (public.is_vault_admin());
 
 -- --- Vue des clés publiques emballables -----------------------------
 -- Expose (user_id, public_key) des SEULS utilisateurs autorisés, à tout

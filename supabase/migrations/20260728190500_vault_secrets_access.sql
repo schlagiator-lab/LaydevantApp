@@ -53,25 +53,25 @@ alter table public.vault_dossier_access enable row level security;
 -- Lecture : ses propres lignes (pour déballer sa DEK), ou tout pour un admin.
 drop policy if exists vault_dossier_access_select on public.vault_dossier_access;
 create policy vault_dossier_access_select on public.vault_dossier_access
-  for select using (user_id = auth.uid() or public.is_vault_admin());
+  for select to authenticated using (user_id = auth.uid() or public.is_vault_admin());
 
 -- Octroi : tout utilisateur autorisé peut emballer (création de dossier),
 -- l'admin aussi. La valeur emballée n'a de sens que produite correctement,
 -- donc une ligne "bidon" ne donne accès à rien.
 drop policy if exists vault_dossier_access_insert on public.vault_dossier_access;
 create policy vault_dossier_access_insert on public.vault_dossier_access
-  for insert with check (public.has_vault_access() or public.is_vault_admin());
+  for insert to authenticated with check (public.has_vault_access() or public.is_vault_admin());
 
 -- Mise à jour (rotation : réécriture de wrapped_dek/dek_version).
 drop policy if exists vault_dossier_access_update on public.vault_dossier_access;
 create policy vault_dossier_access_update on public.vault_dossier_access
-  for update using (public.has_vault_access() or public.is_vault_admin())
+  for update to authenticated using (public.has_vault_access() or public.is_vault_admin())
   with check (public.has_vault_access() or public.is_vault_admin());
 
 -- Révocation : admin uniquement.
 drop policy if exists vault_dossier_access_delete on public.vault_dossier_access;
 create policy vault_dossier_access_delete on public.vault_dossier_access
-  for delete using (public.is_vault_admin());
+  for delete to authenticated using (public.is_vault_admin());
 
 -- L'appelant a-t-il une ligne d'accès pour CE dossier ? (défini ici,
 -- maintenant que vault_dossier_access existe)
@@ -118,7 +118,7 @@ create trigger trg_vault_secrets_touch
 -- ciphertext reste chiffré de toute façon), ou admin.
 drop policy if exists vault_secrets_select on public.vault_secrets;
 create policy vault_secrets_select on public.vault_secrets
-  for select using (
+  for select to authenticated using (
     public.has_dossier_vault_access(dossier_id) or public.is_vault_admin()
   );
 
@@ -127,12 +127,12 @@ create policy vault_secrets_select on public.vault_secrets
 -- les lignes vault_dossier_access correspondantes.
 drop policy if exists vault_secrets_insert on public.vault_secrets;
 create policy vault_secrets_insert on public.vault_secrets
-  for insert with check (public.has_vault_access() or public.is_vault_admin());
+  for insert to authenticated with check (public.has_vault_access() or public.is_vault_admin());
 
 -- Édition du contenu / rotation : réservée aux ayants droit du dossier.
 drop policy if exists vault_secrets_update on public.vault_secrets;
 create policy vault_secrets_update on public.vault_secrets
-  for update using (
+  for update to authenticated using (
     public.has_dossier_vault_access(dossier_id) or public.is_vault_admin()
   ) with check (
     public.has_dossier_vault_access(dossier_id) or public.is_vault_admin()
@@ -141,4 +141,4 @@ create policy vault_secrets_update on public.vault_secrets
 -- Suppression du coffre : admin uniquement (destructif).
 drop policy if exists vault_secrets_delete on public.vault_secrets;
 create policy vault_secrets_delete on public.vault_secrets
-  for delete using (public.is_vault_admin());
+  for delete to authenticated using (public.is_vault_admin());
