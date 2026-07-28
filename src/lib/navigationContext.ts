@@ -16,7 +16,9 @@ export type NavState =
   | { screen: 'search'; params: SearchParams }
   | { screen: 'document'; documentId: string }
   | { screen: 'diagnostic' }
-  | { screen: 'webSearch'; context: WebSearchContext };
+  | { screen: 'webSearch'; context: WebSearchContext }
+  | { screen: 'dossiers' }
+  | { screen: 'dossier'; dossierId: string };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -46,6 +48,9 @@ export interface NavigationContextValue {
   goDiagnostic: () => void;
   /** Recherche web de notices (Feature recherche web notices.md, §4) — en ligne uniquement. */
   goWebSearch: (context: WebSearchContext) => void;
+  /** Dossiers clients — liste (brief dossiers clients, étape A). */
+  goDossiers: () => void;
+  goDossier: (dossierId: string) => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }

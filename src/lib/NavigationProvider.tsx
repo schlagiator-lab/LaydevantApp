@@ -24,6 +24,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goDocument = (documentId: string) => push({ screen: 'document', documentId });
   const goDiagnostic = () => push({ screen: 'diagnostic' });
   const goWebSearch = (context: WebSearchContext) => push({ screen: 'webSearch', context });
+  const goDossiers = () => push({ screen: 'dossiers' });
+  const goDossier = (dossierId: string) => push({ screen: 'dossier', dossierId });
   const goBack = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
 
   return (
@@ -39,6 +41,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goDocument,
         goDiagnostic,
         goWebSearch,
+        goDossiers,
+        goDossier,
         goBack,
       }}
     >

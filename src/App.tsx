@@ -12,6 +12,8 @@ import { SearchScreen } from './screens/SearchScreen';
 import { DocumentScreen } from './screens/DocumentScreen';
 import { DiagnosticScreen } from './screens/DiagnosticScreen';
 import { WebSearchScreen } from './screens/WebSearchScreen';
+import { DossiersScreen } from './screens/DossiersScreen';
+import { DossierScreen } from './screens/DossierScreen';
 import { requestPersistentStorage } from './lib/storagePersistence';
 
 function Screens() {
@@ -29,6 +31,10 @@ function Screens() {
       return <DiagnosticScreen />;
     case 'webSearch':
       return <WebSearchScreen context={nav.state.context} />;
+    case 'dossiers':
+      return <DossiersScreen />;
+    case 'dossier':
+      return <DossierScreen key={nav.state.dossierId} dossierId={nav.state.dossierId} />;
   }
 }
 

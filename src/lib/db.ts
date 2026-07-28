@@ -102,7 +102,7 @@ export async function deletePinnedDocument(documentId: string): Promise<void> {
   await db.delete('pinnedDocuments', documentId);
 }
 
-const RECENT_DOCUMENTS_LIMIT = 5;
+const RECENT_DOCUMENTS_LIMIT = 3;
 
 export async function recordRecentDocument(
   entry: Omit<RecentDocument, 'viewedAt'>,

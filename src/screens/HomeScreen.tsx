@@ -152,6 +152,52 @@ export function HomeScreen() {
           );
         })}
 
+        {(() => {
+          const badge = departmentBadge(departments.length);
+          return (
+            <button
+              type="button"
+              onClick={nav.goDossiers}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                width: '100%',
+                minHeight: 64,
+                flex: 'none',
+                background: colors.card,
+                border: 'none',
+                borderRadius: 14,
+                padding: '0 16px',
+                cursor: 'pointer',
+                textAlign: 'left',
+                boxSizing: 'border-box',
+              }}
+            >
+              <span
+                style={{
+                  flex: 'none',
+                  width: 40,
+                  height: 40,
+                  borderRadius: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontFamily: fonts.mono,
+                  fontWeight: 700,
+                  fontSize: 16,
+                  background: badge.bg,
+                  color: badge.color,
+                }}
+              >
+                D
+              </span>
+              <span style={{ flex: 1, fontSize: 16, fontWeight: 700, color: colors.text }}>Dossiers</span>
+              <span style={{ color: textA(0.35), fontSize: 18 }}>›</span>
+            </button>
+          );
+        })()}
+
         {recentDocs.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 'none' }}>
             <span
