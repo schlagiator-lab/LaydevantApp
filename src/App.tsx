@@ -14,6 +14,7 @@ import { DiagnosticScreen } from './screens/DiagnosticScreen';
 import { WebSearchScreen } from './screens/WebSearchScreen';
 import { DossiersScreen } from './screens/DossiersScreen';
 import { DossierScreen } from './screens/DossierScreen';
+import { VaultEnrollScreen } from './screens/VaultEnrollScreen';
 import { requestPersistentStorage } from './lib/storagePersistence';
 
 function Screens() {
@@ -35,6 +36,8 @@ function Screens() {
       return <DossiersScreen />;
     case 'dossier':
       return <DossierScreen key={nav.state.dossierId} dossierId={nav.state.dossierId} />;
+    case 'vaultEnroll':
+      return <VaultEnrollScreen />;
   }
 }
 

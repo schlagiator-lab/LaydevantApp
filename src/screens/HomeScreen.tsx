@@ -329,21 +329,25 @@ export function HomeScreen() {
         />
       </div>
 
-      <button
-        type="button"
-        onClick={nav.goDiagnostic}
-        style={{
-          flex: 'none',
-          background: 'transparent',
-          border: 'none',
-          color: textA(0.35),
-          fontSize: 11,
-          padding: '0 16px 10px',
-          cursor: 'pointer',
-        }}
-      >
-        Diagnostic stockage
-      </button>
+      <div style={{ flex: 'none', display: 'flex', gap: 12, padding: '0 16px 10px' }}>
+        <button
+          type="button"
+          onClick={nav.goDiagnostic}
+          style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
+        >
+          Diagnostic stockage
+        </button>
+        {/* Coffre — étape B, tranche 4 (Feature coffre données sensibles.md) :
+            hors du parcours principal tant que l'ouverture/édition du coffre
+            n'existe pas encore. */}
+        <button
+          type="button"
+          onClick={nav.goVaultEnroll}
+          style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
+        >
+          Coffre (enrôlement)
+        </button>
+      </div>
     </div>
   );
 }

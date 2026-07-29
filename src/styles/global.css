@@ -53,6 +53,24 @@ body {
   }
 }
 
+/* Coffre — enrôlement admin (Feature coffre données sensibles.md §7) :
+   impression de la clé de récupération seule, jamais le reste de l'écran. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .vault-recovery-print,
+  .vault-recovery-print * {
+    visibility: visible;
+  }
+  .vault-recovery-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}
+
 /* Recherche web (§3/§4) : la recherche interroge un modèle qui peut
    reformuler sa requête plusieurs fois, donc sa durée n'est pas prévisible —
    barre indéterminée plutôt qu'une progression en pourcentage. */

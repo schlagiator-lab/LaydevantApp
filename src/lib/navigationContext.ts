@@ -18,7 +18,8 @@ export type NavState =
   | { screen: 'diagnostic' }
   | { screen: 'webSearch'; context: WebSearchContext }
   | { screen: 'dossiers' }
-  | { screen: 'dossier'; dossierId: string };
+  | { screen: 'dossier'; dossierId: string }
+  | { screen: 'vaultEnroll' };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -51,6 +52,9 @@ export interface NavigationContextValue {
   /** Dossiers clients — liste (brief dossiers clients, étape A). */
   goDossiers: () => void;
   goDossier: (dossierId: string) => void;
+  /** Enrôlement au coffre de données sensibles (étape B, tranche 4) — hors du
+   * parcours principal tant que le reste du coffre n'existe pas. */
+  goVaultEnroll: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }
