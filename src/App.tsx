@@ -4,6 +4,7 @@ import { useAuth } from './lib/useAuth';
 import { NavigationProvider } from './lib/NavigationProvider';
 import { useNavigation } from './lib/useNavigation';
 import { ToastProvider } from './lib/ToastProvider';
+import { VaultSessionProvider } from './lib/vaultSession';
 import { syncReferentiel } from './lib/referentiel';
 import { LoginScreen } from './screens/LoginScreen';
 import { HomeScreen } from './screens/HomeScreen';
@@ -60,9 +61,11 @@ function AuthedApp() {
 
   return (
     <NavigationProvider>
-      <ToastProvider>
-        <Screens />
-      </ToastProvider>
+      <VaultSessionProvider>
+        <ToastProvider>
+          <Screens />
+        </ToastProvider>
+      </VaultSessionProvider>
     </NavigationProvider>
   );
 }

@@ -17,6 +17,8 @@ import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { VaultSheet } from '../components/VaultSheet';
+import { getVaultSecret } from '../lib/vaultSecrets';
 import { colors, fonts, textA } from '../styles/tokens';
 
 /**
@@ -39,6 +41,10 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [showAddDocument, setShowAddDocument] = useState(false);
   const [pendingRemoveEquipment, setPendingRemoveEquipment] = useState<DossierEquipment | null>(null);
   const [pendingRemoveDocument, setPendingRemoveDocument] = useState<DossierDocumentComplet | null>(null);
+  const [showVault, setShowVault] = useState(false);
+  // null = pas encore su (chargement ou hors ligne) ; true/false = présence
+  // réelle d'une ligne vault_secrets, sans jamais la déchiffrer ici.
+  const [hasVaultNote, setHasVaultNote] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,17 +52,21 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       if (!isOnline) return;
       setLoadError(null);
       try {
-        const [d, eqs, docs, pinned] = await Promise.all([
+        const [d, eqs, docs, pinned, vaultSecret] = await Promise.all([
           getDossier(dossierId),
           listDossierEquipments(dossierId),
           getDossierDocumentsComplets(dossierId),
           getAllPinnedDocuments(),
+          // Existence seule (RLS filtre déjà les non-autorisés) — jamais de
+          // déchiffrement ici, juste savoir s'il y a quelque chose à ouvrir.
+          getVaultSecret(dossierId).catch(() => null),
         ]);
         if (cancelled) return;
         setDossier(d);
         setEquipments(eqs);
         setDocuments(docs);
         setPinnedIds(new Set(pinned.map((p) => p.id)));
+        setHasVaultNote(vaultSecret !== null);
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       }
@@ -246,15 +256,24 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
 
           <section>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Données sensibles</div>
-            <div style={sensitivePlaceholderStyle}>
+            <button
+              type="button"
+              onClick={() => setShowVault(true)}
+              disabled={!isOnline}
+              style={{ ...sensitivePlaceholderStyle, opacity: isOnline ? 1 : 0.4, width: '100%', cursor: isOnline ? 'pointer' : 'default' }}
+            >
               <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" style={{ flex: 'none' }}>
                 <rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke={textA(0.4)} strokeWidth="1.6" />
                 <path d="M7 9V6.5a3 3 0 016 0V9" fill="none" stroke={textA(0.4)} strokeWidth="1.6" strokeLinecap="round" />
               </svg>
               <span style={{ fontSize: 13, color: textA(0.5), fontWeight: 600 }}>
-                Mastercodes, WiFi — à venir (chiffrement, étape B)
+                {hasVaultNote === null
+                  ? 'Mastercodes, WiFi — ouvrir le coffre'
+                  : hasVaultNote
+                    ? 'Coffre configuré — mastercodes, WiFi'
+                    : 'Coffre vide — mastercodes, WiFi'}
               </span>
-            </div>
+            </button>
           </section>
         </div>
       )}
@@ -296,6 +315,18 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           message={`« ${pendingRemoveDocument.title} » sera retiré de la documentation du dossier.`}
           onCancel={() => setPendingRemoveDocument(null)}
           onConfirm={() => void confirmRemoveDocument()}
+        />
+      )}
+
+      {showVault && dossier && (
+        <VaultSheet
+          dossierId={dossier.id}
+          onClose={() => {
+            setShowVault(false);
+            void getVaultSecret(dossier.id)
+              .then((secret) => setHasVaultNote(secret !== null))
+              .catch(() => {});
+          }}
         />
       )}
     </div>
@@ -402,4 +433,7 @@ const sensitivePlaceholderStyle: React.CSSProperties = {
   border: `2px dashed ${textA(0.2)}`,
   borderRadius: 14,
   padding: '14px 16px',
+  background: 'transparent',
+  textAlign: 'left',
+  boxSizing: 'border-box',
 };
