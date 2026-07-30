@@ -113,5 +113,15 @@ const c2 = await encryptContent(dek, NOTE);
 ok("IV frais à chaque chiffrement (ciphertext non déterministe)",
    c1.ciphertext !== c2.ciphertext && c1.content_iv !== c2.content_iv);
 
+// 11) Ré-emballage d'accès (panneau admin, onglet Accès) : déballer une DEK
+//     en extractable=true, la ré-emballer vers un AUTRE destinataire, et
+//     vérifier qu'il déchiffre bien — sans toucher au contenu ni à la DEK.
+console.log("\nRé-emballage d'accès vers un nouveau destinataire");
+const aliceDekExtractable = await unwrapDek(accessAlice2, alicePrivNew, true);
+const accessCarol = await wrapDekForUser(aliceDekExtractable, carol.public_key);
+const carolDek = await unwrapDek(accessCarol, carolPriv);
+ok("Carol, nouvellement autorisée, déchiffre le coffre roté via la DEK ré-emballée",
+   (await decryptContent(carolDek, rotated.ciphertext, rotated.content_iv)) === plain);
+
 console.log(`\n== ${pass} réussis, ${fail} échoués ==\n`);
 process.exit(fail === 0 ? 0 : 1);

@@ -230,14 +230,16 @@ export async function wrapDekForUser(dek, recipientPublicKeyB64) {
 /**
  * Déballe la DEK d'un dossier avec sa propre clé privée RSA.
  * @param {string} wrappedDekB64 @param {CryptoKey} privateKey
+ * @param {boolean} [extractable=false] true seulement pour ré-emballer la DEK
+ *   vers un autre destinataire (wrapKey exige une clé extractable)
  * @returns {Promise<CryptoKey>}
  */
-export async function unwrapDek(wrappedDekB64, privateKey) {
+export async function unwrapDek(wrappedDekB64, privateKey, extractable = false) {
   return SUBTLE.unwrapKey(
     "raw", b64ToBuf(wrappedDekB64), privateKey,
     { name: "RSA-OAEP" },
     { name: "AES-GCM", length: 256 },
-    false, ["encrypt", "decrypt"]
+    extractable, ["encrypt", "decrypt"]
   );
 }
 

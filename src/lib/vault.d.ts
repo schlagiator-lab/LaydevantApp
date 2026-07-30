@@ -46,8 +46,9 @@ export function resetPassword(privateKeyExtractable: CryptoKey, newPassword: str
 /** Emballe une DEK vers la clé publique d'un destinataire (= donner accès). */
 export function wrapDekForUser(dek: CryptoKey, recipientPublicKeyB64: string): Promise<string>;
 
-/** Déballe la DEK d'un dossier avec sa propre clé privée. */
-export function unwrapDek(wrappedDekB64: string, privateKey: CryptoKey): Promise<CryptoKey>;
+/** Déballe la DEK d'un dossier avec sa propre clé privée.
+ *  extractable=true uniquement pour ré-emballer la DEK vers un autre destinataire. */
+export function unwrapDek(wrappedDekB64: string, privateKey: CryptoKey, extractable?: boolean): Promise<CryptoKey>;
 
 /** Nouvelle DEK aléatoire (pour créer un coffre ou faire une rotation). */
 export function generateDek(): Promise<CryptoKey>;

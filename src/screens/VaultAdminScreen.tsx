@@ -287,7 +287,7 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
           continue;
         }
         try {
-          const dek = await unwrapDek(ownRow.wrapped_dek, privateKey);
+          const dek = await unwrapDek(ownRow.wrapped_dek, privateKey, true);
           const wrappedDek = await wrapDekForUser(dek, targetPublicKey);
           await upsertDossierAccessRow({
             dossier_id: dossier.dossier_id,
