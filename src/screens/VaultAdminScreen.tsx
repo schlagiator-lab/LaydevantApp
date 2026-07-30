@@ -203,10 +203,26 @@ function Badge({ label, active }: { label: string; active: boolean }) {
   );
 }
 
+interface FailedDossier {
+  dossier: VaultDossierSummary;
+  message: string;
+}
+
 type ActivationState =
   | { kind: 'idle' }
   | { kind: 'running'; account: VaultUserKeySummary }
-  | { kind: 'done'; account: VaultUserKeySummary; newlyShared: number; alreadyUpToDate: number; skipped: VaultDossierSummary[] }
+  | {
+      kind: 'done';
+      account: VaultUserKeySummary;
+      newlyShared: number;
+      alreadyUpToDate: number;
+      /** Vraiment aucune ligne vault_dossier_access pour toi sur ce coffre. */
+      skipped: VaultDossierSummary[];
+      /** Ta ligne existe (donc pas "pas d'accès admin"), mais le déballage/
+       * remballage/upsert a échoué pour une autre raison — jamais confondu
+       * avec `skipped`, qui mentait sinon sur la cause réelle. */
+      failed: FailedDossier[];
+    }
   | { kind: 'error'; account: VaultUserKeySummary; message: string };
 
 /**
@@ -257,7 +273,12 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
 
       let newlyShared = 0;
       let alreadyUpToDate = 0;
+      // "Vraiment pas d'accès" (aucune ligne trouvée) et "accès trouvé mais
+      // échec ensuite" sont deux causes différentes — ne jamais les fondre
+      // dans le même compteur/libellé, sous peine d'accuser à tort l'admin
+      // de ne pas avoir accès alors que sa ligne existe bel et bien.
       const skipped: VaultDossierSummary[] = [];
+      const failed: FailedDossier[] = [];
 
       for (const dossier of dossiers) {
         const ownRow = ownByDossier.get(dossier.dossier_id);
@@ -276,14 +297,16 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
           });
           if (targetDossierIds.has(dossier.dossier_id)) alreadyUpToDate++;
           else newlyShared++;
-        } catch {
-          // Ne plante pas tout le lot pour un coffre en particulier —
-          // compté comme "ignoré" au même titre qu'une absence d'accès admin.
-          skipped.push(dossier);
+        } catch (err) {
+          // Ne plante pas tout le lot pour un coffre en particulier — mais
+          // ta ligne EXISTE ici (sinon on serait sorti au `if (!ownRow)`
+          // ci-dessus) : ce n'est donc PAS un défaut d'accès admin, c'est un
+          // échec du déballage/remballage/upsert. Message réel conservé.
+          failed.push({ dossier, message: err instanceof Error ? err.message : String(err) });
         }
       }
 
-      setActivation({ kind: 'done', account, newlyShared, alreadyUpToDate, skipped });
+      setActivation({ kind: 'done', account, newlyShared, alreadyUpToDate, skipped, failed });
       onActivated();
     } catch (err) {
       setActivation({ kind: 'error', account, message: err instanceof Error ? err.message : String(err) });
@@ -333,7 +356,13 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
       )}
 
       {(activation.kind === 'done' || activation.kind === 'error') && (
-        <div style={activation.kind === 'error' ? reportBoxErrorStyle : reportBoxStyle}>
+        <div
+          style={
+            activation.kind === 'error' || activation.skipped.length > 0 || activation.failed.length > 0
+              ? reportBoxErrorStyle
+              : reportBoxStyle
+          }
+        >
           <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: activation.kind === 'done' ? 4 : 0 }}>
             {activation.account.full_name ?? activation.account.user_id}
           </div>
@@ -342,12 +371,24 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
               <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0 }}>
                 {activation.newlyShared} coffre{activation.newlyShared > 1 ? 's' : ''} nouvellement partagé
                 {activation.newlyShared > 1 ? 's' : ''}, {activation.alreadyUpToDate} déjà à jour, {activation.skipped.length}{' '}
-                ignoré{activation.skipped.length > 1 ? 's' : ''} (pas d'accès admin).
+                ignoré{activation.skipped.length > 1 ? 's' : ''} (pas d'accès admin)
+                {activation.failed.length > 0 &&
+                  `, ${activation.failed.length} échoué${activation.failed.length > 1 ? 's' : ''} malgré un accès`}
+                .
               </p>
               {activation.skipped.length > 0 && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12.5, color: textA(0.65), lineHeight: 1.6 }}>
                   {activation.skipped.map((d) => (
                     <li key={d.dossier_id}>{d.nom_client}</li>
+                  ))}
+                </ul>
+              )}
+              {activation.failed.length > 0 && (
+                <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12.5, color: colors.accent, lineHeight: 1.6 }}>
+                  {activation.failed.map(({ dossier, message }) => (
+                    <li key={dossier.dossier_id}>
+                      {dossier.nom_client} — {message}
+                    </li>
                   ))}
                 </ul>
               )}
