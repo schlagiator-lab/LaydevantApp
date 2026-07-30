@@ -9,6 +9,8 @@ export interface VaultSessionContextValue {
   error: string | null;
   /** Tente le déverrouillage avec le mot de passe de coffre ; renvoie le succès. */
   unlock: (password: string) => Promise<boolean>;
+  /** Tente le déverrouillage avec la clé de récupération ; renvoie le succès. */
+  unlockWithRecoveryKey: (recoveryKey: string) => Promise<boolean>;
   /** Verrouillage explicite ou automatique — purge la clé privée. */
   lock: () => void;
   /** Réarme le minuteur d'auto-verrouillage (15 min) sur interaction. */

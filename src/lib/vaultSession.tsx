@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { unlockWithPassword } from './vault.js';
+import { unlockWithPassword, unlockWithRecovery } from './vault.js';
 import { getOwnVaultKeyRecord } from './vaultSecrets';
 import { useAuth } from './useAuth';
 import { useNavigation } from './useNavigation';
@@ -75,6 +75,29 @@ export function VaultSessionProvider({ children }: { children: ReactNode }) {
     [session, armTimer],
   );
 
+  const unlockWithRecoveryKey = useCallback(
+    async (recoveryKey: string) => {
+      const userId = session?.user.id;
+      if (!userId) return false;
+      setUnlocking(true);
+      setError(null);
+      try {
+        const record = await getOwnVaultKeyRecord(userId);
+        if (!record) throw new Error('Aucune clé de coffre pour ce compte — enrôlement requis.');
+        const key = await unlockWithRecovery(recoveryKey, record);
+        setPrivateKey(key);
+        armTimer();
+        return true;
+      } catch {
+        setError('Clé de récupération incorrecte.');
+        return false;
+      } finally {
+        setUnlocking(false);
+      }
+    },
+    [session, armTimer],
+  );
+
   // Zone "dossiers" au sens large : la fiche ET la liste. Passer de la fiche
   // d'un dossier à un autre transite par la liste (Retour -> tape un autre
   // dossier) — si on ne gardait que 'dossier', ce passage par la liste
@@ -105,6 +128,7 @@ export function VaultSessionProvider({ children }: { children: ReactNode }) {
     unlocking,
     error,
     unlock,
+    unlockWithRecoveryKey,
     lock,
     touch,
   };

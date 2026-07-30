@@ -37,9 +37,20 @@ type ContentPhase =
 export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
   const { session, isOnline } = useAuth();
   const userId = session?.user.id ?? null;
-  const { privateKey, unlocked, unlocking, error: unlockError, unlock, lock, touch } = useVaultSession();
+  const {
+    privateKey,
+    unlocked,
+    unlocking,
+    error: unlockError,
+    unlock,
+    unlockWithRecoveryKey,
+    lock,
+    touch,
+  } = useVaultSession();
 
+  const [unlockMode, setUnlockMode] = useState<'password' | 'recovery'>('password');
   const [password, setPassword] = useState('');
+  const [recoveryKey, setRecoveryKey] = useState('');
   const [content, setContent] = useState<ContentPhase>({ kind: 'loading' });
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
@@ -104,9 +115,22 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
 
   async function handleUnlockSubmit(e: FormEvent) {
     e.preventDefault();
-    if (unlocking || !password) return;
-    await unlock(password);
+    if (unlocking) return;
+    if (unlockMode === 'password') {
+      if (!password) return;
+      await unlock(password);
+      setPassword('');
+    } else {
+      if (!recoveryKey) return;
+      await unlockWithRecoveryKey(recoveryKey);
+      setRecoveryKey('');
+    }
+  }
+
+  function toggleUnlockMode() {
+    setUnlockMode((m) => (m === 'password' ? 'recovery' : 'password'));
     setPassword('');
+    setRecoveryKey('');
   }
 
   async function handleSave() {
@@ -184,24 +208,49 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
         {isOnline && !unlocked && (
           <form onSubmit={(e) => void handleUnlockSubmit(e)} style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <p style={{ fontSize: 13, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
-              Mot de passe de coffre — distinct de ton mot de passe de connexion.
+              {unlockMode === 'password'
+                ? 'Mot de passe de coffre — distinct de ton mot de passe de connexion.'
+                : 'Clé de récupération remise à la création du coffre.'}
             </p>
-            <input
-              type="password"
-              autoComplete="off"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Mot de passe du coffre"
-              style={inputStyle}
-              autoFocus
-            />
+            {unlockMode === 'password' ? (
+              <input
+                type="password"
+                autoComplete="off"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Mot de passe du coffre"
+                style={inputStyle}
+                autoFocus
+              />
+            ) : (
+              <input
+                type="text"
+                autoComplete="off"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+                value={recoveryKey}
+                onChange={(e) => setRecoveryKey(e.target.value)}
+                placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+                style={inputStyle}
+                autoFocus
+              />
+            )}
             {unlockError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{unlockError}</span>}
             <button
               type="submit"
-              disabled={unlocking || !password}
-              style={{ ...primaryButtonStyle, opacity: unlocking || !password ? 0.5 : 1 }}
+              disabled={unlocking || (unlockMode === 'password' ? !password : !recoveryKey)}
+              style={{
+                ...primaryButtonStyle,
+                opacity: unlocking || (unlockMode === 'password' ? !password : !recoveryKey) ? 0.5 : 1,
+              }}
             >
               {unlocking ? 'Déverrouillage…' : 'Déverrouiller'}
+            </button>
+            <button type="button" onClick={toggleUnlockMode} style={switchModeLinkStyle}>
+              {unlockMode === 'password'
+                ? 'Mot de passe oublié ? Utiliser ma clé de récupération'
+                : 'Utiliser mon mot de passe'}
             </button>
           </form>
         )}
@@ -331,6 +380,19 @@ const textareaStyle: CSSProperties = {
   boxSizing: 'border-box',
   resize: 'vertical',
   lineHeight: 1.5,
+};
+
+const switchModeLinkStyle: CSSProperties = {
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  color: textA(0.55),
+  fontSize: 12.5,
+  fontWeight: 600,
+  textDecoration: 'underline',
+  textAlign: 'left',
+  alignSelf: 'flex-start',
+  cursor: 'pointer',
 };
 
 const primaryButtonStyle: CSSProperties = {
