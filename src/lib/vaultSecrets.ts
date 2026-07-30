@@ -101,3 +101,15 @@ export async function insertDossierAccessRows(rows: VaultDossierAccessRow[]): Pr
   const { error } = await supabase.from('vault_dossier_access').insert(rows);
   if (error) throw error;
 }
+
+/**
+ * Pose ou remplace une ligne d'accès (partage/réparation, onglet "Accès" du
+ * panneau admin, tranche 5). Upsert plutôt qu'insert : idempotent si le
+ * compte a déjà une ligne pour ce dossier — pas de conflit de clé primaire,
+ * pas de doublon. Le conflit se résout sur la clé primaire de la table
+ * (dossier_id, user_id), par défaut côté PostgREST.
+ */
+export async function upsertDossierAccessRow(row: VaultDossierAccessRow): Promise<void> {
+  const { error } = await supabase.from('vault_dossier_access').upsert(row);
+  if (error) throw error;
+}

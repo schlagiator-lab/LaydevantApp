@@ -1,6 +1,7 @@
-// Coffre de données sensibles — lectures Supabase pour le panneau admin
-// (tranche 5, onglet "Comptes"). Aucune écriture ni crypto ici : lecture
-// seule sur vault_user_keys, autorisée par sa policy RLS pour is_vault_admin().
+// Coffre de données sensibles — lectures/écritures Supabase pour le panneau
+// admin (tranche 5). Aucune crypto ici : voir src/lib/vault.js pour
+// l'emballage/déballage de DEK, ce module ne fait que lire/poser des lignes
+// déjà chiffrées, autorisé par les policies RLS pour is_vault_admin().
 import { supabase } from './supabase';
 
 export async function isVaultAdmin(): Promise<boolean> {
@@ -55,4 +56,63 @@ export async function getAllVaultUserKeys(): Promise<VaultUserKeySummary[]> {
   }
 
   return rows.map((r) => ({ ...r, full_name: namesByUserId.get(r.user_id) ?? null }));
+}
+
+/**
+ * Active l'accès au coffre pour un compte déjà enrôlé (onglet "Accès",
+ * tranche 5). Le trigger `vault_user_keys_guard` n'autorise cette écriture
+ * que si l'appelant est admin — pas de RPC spécial, pas de désactivation du
+ * trigger. Fait entrer le compte dans `vault_public_keys` pour les FUTURS
+ * coffres ; les coffres existants doivent être partagés séparément (voir
+ * `getAllVaultDossiers` / `getDossierAccessRowsForUser` ci-dessous).
+ */
+export async function setVaultAccessEnabled(userId: string): Promise<void> {
+  const { error } = await supabase.from('vault_user_keys').update({ access_enabled: true }).eq('user_id', userId);
+  if (error) throw error;
+}
+
+export interface VaultDossierSummary {
+  dossier_id: string;
+  /** Nom du dossier client — pour lister nommément les coffres ignorés
+   * faute d'accès admin (compte-rendu de l'onglet "Accès"). */
+  nom_client: string;
+}
+
+/**
+ * Tous les coffres existants (une ligne `vault_secrets` = un dossier avec un
+ * coffre créé). Lecture réservée à l'admin par la policy RLS de
+ * `vault_secrets` (is_vault_admin()) ; le join sur `dossiers` passe par la
+ * même requête plutôt qu'un aller-retour séparé, PostgREST embarque via la
+ * clé étrangère vault_secrets.dossier_id -> dossiers.id.
+ */
+export async function getAllVaultDossiers(): Promise<VaultDossierSummary[]> {
+  const { data, error } = await supabase.from('vault_secrets').select('dossier_id, dossiers(nom_client)');
+  if (error) throw error;
+  type Row = { dossier_id: string; dossiers: { nom_client: string } | { nom_client: string }[] | null };
+  return ((data ?? []) as unknown as Row[]).map((r) => {
+    const rel = Array.isArray(r.dossiers) ? r.dossiers[0] : r.dossiers;
+    return { dossier_id: r.dossier_id, nom_client: rel?.nom_client ?? r.dossier_id };
+  });
+}
+
+export interface DossierAccessKeyRow {
+  dossier_id: string;
+  wrapped_dek: string;
+  dek_version: number;
+}
+
+/**
+ * Toutes les lignes `vault_dossier_access` d'un utilisateur donné, tous
+ * dossiers confondus. Sert deux usages dans l'onglet "Accès" : appelée avec
+ * TON user_id, elle donne les DEK à déballer pour les repartager ; appelée
+ * avec le user_id de la cible, elle dit pour quels dossiers elle avait déjà
+ * une ligne (idempotence : "déjà à jour" vs "nouvellement partagé").
+ */
+export async function getDossierAccessRowsForUser(userId: string): Promise<DossierAccessKeyRow[]> {
+  const { data, error } = await supabase
+    .from('vault_dossier_access')
+    .select('dossier_id, wrapped_dek, dek_version')
+    .eq('user_id', userId);
+  if (error) throw error;
+  return (data ?? []) as DossierAccessKeyRow[];
 }

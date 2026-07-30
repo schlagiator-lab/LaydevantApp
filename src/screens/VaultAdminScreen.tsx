@@ -1,7 +1,18 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
-import { isVaultAdmin, getAllVaultUserKeys, type VaultUserKeySummary } from '../lib/vaultAdmin';
+import { useVaultSession } from '../lib/useVaultSession';
+import {
+  isVaultAdmin,
+  getAllVaultUserKeys,
+  setVaultAccessEnabled,
+  getAllVaultDossiers,
+  getDossierAccessRowsForUser,
+  type VaultUserKeySummary,
+  type VaultDossierSummary,
+} from '../lib/vaultAdmin';
+import { upsertDossierAccessRow } from '../lib/vaultSecrets';
+import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
 import { StatusPill } from '../components/StatusPill';
 import { colors, fonts, textA, successA } from '../styles/tokens';
 
@@ -48,24 +59,26 @@ export function VaultAdminScreen() {
     };
   }, [isOnline]);
 
+  // Partagée par les onglets "Comptes" et "Accès" — même liste, un seul
+  // fetch. `loadAccounts` est aussi repassée à l'onglet "Accès" pour
+  // rafraîchir les badges après une activation.
+  const loadAccounts = useCallback(async () => {
+    setAccounts({ kind: 'loading' });
+    try {
+      const rows = await getAllVaultUserKeys();
+      setAccounts({ kind: 'loaded', rows });
+    } catch (err) {
+      setAccounts({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
   useEffect(() => {
-    if (phase.kind !== 'ready' || tab !== 'comptes') return;
-    let cancelled = false;
+    if (phase.kind !== 'ready') return;
     void (async () => {
-      setAccounts({ kind: 'loading' });
-      try {
-        const rows = await getAllVaultUserKeys();
-        if (!cancelled) setAccounts({ kind: 'loaded', rows });
-      } catch (err) {
-        if (!cancelled) {
-          setAccounts({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-        }
-      }
+      await loadAccounts();
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [phase.kind, tab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase.kind]);
 
   return (
     <div
@@ -120,7 +133,7 @@ export function VaultAdminScreen() {
             </div>
 
             {tab === 'comptes' && <AccountsTab accounts={accounts} />}
-            {tab === 'acces' && <ComingSoon />}
+            {tab === 'acces' && <AccessTab accounts={accounts} onActivated={loadAccounts} />}
             {tab === 'rotation' && <ComingSoon />}
           </div>
         )}
@@ -190,6 +203,210 @@ function Badge({ label, active }: { label: string; active: boolean }) {
   );
 }
 
+type ActivationState =
+  | { kind: 'idle' }
+  | { kind: 'running'; account: VaultUserKeySummary }
+  | { kind: 'done'; account: VaultUserKeySummary; newlyShared: number; alreadyUpToDate: number; skipped: VaultDossierSummary[] }
+  | { kind: 'error'; account: VaultUserKeySummary; message: string };
+
+/**
+ * Onglet "Accès" (tranche 5) : active un compte enrôlé — lui donne accès à
+ * tous les coffres existants. Exige la clé privée déballée (session de
+ * coffre partagée via VaultSessionProvider, comme VaultSheet) : sans elle,
+ * impossible de déballer les DEK existantes pour les remballer vers le
+ * nouveau compte.
+ */
+function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActivated: () => void }) {
+  const { session } = useAuth();
+  const ownUserId = session?.user.id ?? null;
+  const { privateKey, unlocked, unlocking, error: unlockError, unlock } = useVaultSession();
+
+  const [password, setPassword] = useState('');
+  const [pendingActivation, setPendingActivation] = useState<VaultUserKeySummary | null>(null);
+  const [activation, setActivation] = useState<ActivationState>({ kind: 'idle' });
+
+  async function handleUnlockSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (unlocking || !password) return;
+    await unlock(password);
+    setPassword('');
+  }
+
+  function openConfirm(account: VaultUserKeySummary) {
+    setActivation({ kind: 'idle' });
+    setPendingActivation(account);
+  }
+
+  async function handleConfirmActivate() {
+    const account = pendingActivation;
+    if (!account || !privateKey || !ownUserId) return;
+    setPendingActivation(null);
+    setActivation({ kind: 'running', account });
+    try {
+      await setVaultAccessEnabled(account.user_id);
+      const targetPublicKey = account.public_key;
+      if (!targetPublicKey) throw new Error('Clé publique introuvable pour ce compte.');
+
+      const [dossiers, ownRows, targetRows] = await Promise.all([
+        getAllVaultDossiers(),
+        getDossierAccessRowsForUser(ownUserId),
+        getDossierAccessRowsForUser(account.user_id),
+      ]);
+      const ownByDossier = new Map(ownRows.map((r) => [r.dossier_id, r]));
+      const targetDossierIds = new Set(targetRows.map((r) => r.dossier_id));
+
+      let newlyShared = 0;
+      let alreadyUpToDate = 0;
+      const skipped: VaultDossierSummary[] = [];
+
+      for (const dossier of dossiers) {
+        const ownRow = ownByDossier.get(dossier.dossier_id);
+        if (!ownRow) {
+          skipped.push(dossier);
+          continue;
+        }
+        try {
+          const dek = await unwrapDek(ownRow.wrapped_dek, privateKey);
+          const wrappedDek = await wrapDekForUser(dek, targetPublicKey);
+          await upsertDossierAccessRow({
+            dossier_id: dossier.dossier_id,
+            user_id: account.user_id,
+            wrapped_dek: wrappedDek,
+            dek_version: ownRow.dek_version,
+          });
+          if (targetDossierIds.has(dossier.dossier_id)) alreadyUpToDate++;
+          else newlyShared++;
+        } catch {
+          // Ne plante pas tout le lot pour un coffre en particulier —
+          // compté comme "ignoré" au même titre qu'une absence d'accès admin.
+          skipped.push(dossier);
+        }
+      }
+
+      setActivation({ kind: 'done', account, newlyShared, alreadyUpToDate, skipped });
+      onActivated();
+    } catch (err) {
+      setActivation({ kind: 'error', account, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  if (!unlocked) {
+    return (
+      <form onSubmit={(e) => void handleUnlockSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <p style={{ fontSize: 13, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
+          Déverrouille ton coffre pour activer l'accès d'un compte — il faut ta clé privée pour repartager les
+          coffres existants.
+        </p>
+        <input
+          type="password"
+          autoComplete="off"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Mot de passe du coffre"
+          style={tabInputStyle}
+          autoFocus
+        />
+        {unlockError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{unlockError}</span>}
+        <button
+          type="submit"
+          disabled={unlocking || !password}
+          style={{ ...tabPrimaryButtonStyle, opacity: unlocking || !password ? 0.5 : 1 }}
+        >
+          {unlocking ? 'Déverrouillage…' : 'Déverrouiller'}
+        </button>
+      </form>
+    );
+  }
+
+  const rows = accounts.kind === 'loaded' ? accounts.rows.filter((r) => r.public_key !== null) : [];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {accounts.kind === 'loading' && (
+        <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>
+      )}
+      {accounts.kind === 'error' && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {accounts.message}</p>
+      )}
+      {accounts.kind === 'loaded' && rows.length === 0 && (
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucun compte enrôlé.</p>
+      )}
+
+      {(activation.kind === 'done' || activation.kind === 'error') && (
+        <div style={activation.kind === 'error' ? reportBoxErrorStyle : reportBoxStyle}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: activation.kind === 'done' ? 4 : 0 }}>
+            {activation.account.full_name ?? activation.account.user_id}
+          </div>
+          {activation.kind === 'done' ? (
+            <>
+              <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0 }}>
+                {activation.newlyShared} coffre{activation.newlyShared > 1 ? 's' : ''} nouvellement partagé
+                {activation.newlyShared > 1 ? 's' : ''}, {activation.alreadyUpToDate} déjà à jour, {activation.skipped.length}{' '}
+                ignoré{activation.skipped.length > 1 ? 's' : ''} (pas d'accès admin).
+              </p>
+              {activation.skipped.length > 0 && (
+                <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12.5, color: textA(0.65), lineHeight: 1.6 }}>
+                  {activation.skipped.map((d) => (
+                    <li key={d.dossier_id}>{d.nom_client}</li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0, color: colors.accent }}>Erreur : {activation.message}</p>
+          )}
+          <button type="button" onClick={() => setActivation({ kind: 'idle' })} style={dismissLinkStyle}>
+            Fermer
+          </button>
+        </div>
+      )}
+
+      {rows.map((r) => {
+        const isRunning = activation.kind === 'running' && activation.account.user_id === r.user_id;
+        return (
+          <div key={r.user_id} style={accountRowStyle}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, wordBreak: 'break-all' }}>
+              {r.full_name ?? r.user_id}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <Badge label="Accès coffre" active={r.access_enabled} />
+              <button
+                type="button"
+                onClick={() => openConfirm(r)}
+                disabled={isRunning}
+                style={{ ...activateButtonStyle, opacity: isRunning ? 0.6 : 1 }}
+              >
+                {isRunning ? 'Activation…' : r.access_enabled ? "Réparer l'accès" : 'Activer'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      {pendingActivation && (
+        <div onClick={() => setPendingActivation(null)} style={confirmOverlayStyle}>
+          <div onClick={(e) => e.stopPropagation()} style={confirmBoxStyle}>
+            <p style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px' }}>
+              {pendingActivation.full_name ?? pendingActivation.user_id}
+            </p>
+            <p style={{ fontSize: 13.5, lineHeight: 1.5, margin: '0 0 16px', color: colors.accent, fontWeight: 600 }}>
+              Ce compte aura accès à TOUS les secrets de TOUS les coffres.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => setPendingActivation(null)} style={{ ...tabSecondaryButtonStyle, flex: 1 }}>
+                Annuler
+              </button>
+              <button type="button" onClick={() => void handleConfirmActivate()} style={{ ...tabPrimaryButtonStyle, flex: 1 }}>
+                Confirmer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BlockingMessage({ text, isError = false }: { text: string; isError?: boolean }) {
   return (
     <div style={offlineBannerStyle}>
@@ -253,4 +470,103 @@ const accountRowStyle: CSSProperties = {
   background: colors.card,
   borderRadius: 14,
   padding: '12px 14px',
+};
+
+const tabInputStyle: CSSProperties = {
+  width: '100%',
+  height: 48,
+  background: textA(0.08),
+  border: 'none',
+  borderRadius: 12,
+  padding: '0 14px',
+  color: colors.text,
+  fontSize: 15,
+  fontFamily: fonts.sans,
+  outline: 'none',
+  boxSizing: 'border-box',
+};
+
+const tabPrimaryButtonStyle: CSSProperties = {
+  height: 48,
+  borderRadius: 12,
+  border: 'none',
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 15,
+  fontWeight: 700,
+  cursor: 'pointer',
+};
+
+const tabSecondaryButtonStyle: CSSProperties = {
+  height: 48,
+  borderRadius: 12,
+  border: `1px solid ${textA(0.25)}`,
+  background: 'transparent',
+  color: colors.text,
+  fontSize: 15,
+  fontWeight: 700,
+  cursor: 'pointer',
+};
+
+const activateButtonStyle: CSSProperties = {
+  flex: 'none',
+  height: 34,
+  borderRadius: 10,
+  border: 'none',
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 12.5,
+  fontWeight: 700,
+  padding: '0 12px',
+  cursor: 'pointer',
+};
+
+const confirmOverlayStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0, 0, 0, 0.55)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 24,
+  boxSizing: 'border-box',
+  zIndex: 1200,
+};
+
+const confirmBoxStyle: CSSProperties = {
+  width: '100%',
+  maxWidth: 360,
+  background: colors.bg,
+  border: `1px solid ${textA(0.15)}`,
+  borderRadius: 14,
+  padding: 18,
+  boxSizing: 'border-box',
+  fontFamily: fonts.sans,
+  color: colors.text,
+};
+
+const reportBoxStyle: CSSProperties = {
+  background: successA(0.12),
+  border: `1px solid ${successA(0.3)}`,
+  borderRadius: 12,
+  padding: '12px 14px',
+};
+
+const reportBoxErrorStyle: CSSProperties = {
+  background: 'rgba(222, 122, 34, 0.12)',
+  border: '1px solid rgba(222, 122, 34, 0.35)',
+  borderRadius: 12,
+  padding: '12px 14px',
+};
+
+const dismissLinkStyle: CSSProperties = {
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  marginTop: 8,
+  color: textA(0.55),
+  fontSize: 12.5,
+  fontWeight: 600,
+  textDecoration: 'underline',
+  cursor: 'pointer',
 };
