@@ -1,11 +1,14 @@
 # Feature — Coffre de données sensibles (étape B)
 
-Spécification dédiée. À relire avant toute implémentation de cette pièce.
-Même statut que `Feature recherche web notices.md` : rien ne se construit dans
-cette direction sans passer par ce document d'abord.
+Spécification dédiée. À relire avant toute évolution de cette pièce — même
+statut que `Feature recherche web notices.md` : rien ne s'y construit sans
+passer par ce document d'abord.
 
-État : **conçu, pas encore implémenté.** La fiche dossier réserve déjà un
-emplacement visuel désactivé (§10 du CLAUDE.md).
+État : **implémenté et testé** (tranches 1 à 6). Le corps du document ci-
+dessous est la conception d'origine, suivie dans ses grandes lignes ; voir
+**§11** pour le récapitulatif de ce qui existe réellement et les quelques
+points où l'implémentation a précisé ou légèrement dévié de la conception
+initiale (notamment le modèle de récupération réellement retenu, §11).
 
 ---
 
@@ -250,19 +253,25 @@ PK (dossier_id, user_id)
 
 ## 9. Découpage d'implémentation (base d'abord, écrans ensuite)
 
-1. **Tranche 1 — `vault_user_keys` + RLS + vue publique.** Testable en
-   isolation : créer une ligne factice, vérifier qu'on lit la sienne, qu'un
-   autre utilisateur ne modifie pas son `access_enabled`, que les clés publiques
-   sont lisibles via la vue. Aucun écran. ← **étape courante**
-2. **Tranche 2 — `vault_secrets` + `vault_dossier_access` + RLS.** Test base :
-   simuler un octroi/révocation à la main.
-3. **Tranche 3 — module crypto isolé** (`src/lib/vault.ts`) : génération de
-   paire, dérivation PBKDF2, emballage/déballage, chiffrement/déchiffrement.
-   Testé seul (aller-retour chiffrer→déchiffrer, récupération, changement de mot
-   de passe) avant tout branchement UI.
-4. **Tranche 4 — écrans** : première connexion (création de la paire + clé de
-   récupération affichée une fois), ouverture/verrouillage du coffre, édition du
-   contenu, panneau admin (activer/révoquer/roter).
+Toutes les tranches ci-dessous sont **faites**. Détail réel en §11.
+
+1. **Tranche 1 — `vault_user_keys` + RLS + vue publique.**
+   `supabase/migrations/20260728190000_vault_user_keys.sql`.
+2. **Tranche 2 — `vault_secrets` + `vault_dossier_access` + RLS.**
+   `supabase/migrations/20260728190500_vault_secrets_access.sql`.
+3. **Tranche 3 — module crypto isolé** (`src/lib/vault.js` + `vault.d.ts`,
+   pas `.ts` : WebCrypto pur, testé indépendamment de tout par
+   `src/lib/test-vault.mjs`, 20/20).
+4. **Tranche 4 — écrans** : enrôlement (`VaultEnrollScreen.tsx`,
+   `vaultEnroll.ts`), ouverture/verrouillage/édition du coffre
+   (`VaultSheet.tsx`, `vaultSession.tsx`/`useVaultSession.ts`).
+5. **Tranche 5 — panneau admin** (`VaultAdminScreen.tsx`, `vaultAdmin.ts`) :
+   liste des comptes, activation/réparation d'accès, révocation.
+   `supabase/migrations/20260729_184323_vault_recovery_admin.sql` (rôle
+   admin-récupérateur).
+6. **Tranche 6 — rotation de clé atomique** (`VaultRotationSheet.tsx`,
+   `vaultRotation.ts`), point d'entrée dans l'onglet "Rotation" du panneau
+   admin, écriture via `supabase/migrations/20260730_090000_vault_rotate_secret.sql`.
 
 ---
 
@@ -272,3 +281,106 @@ PK (dossier_id, user_id)
 - Accès hors ligne au coffre (voir §1).
 - Argon2 (PBKDF2 suffit ; à envisager si durcissement voulu).
 - Historique/versions du contenu sensible.
+
+---
+
+## 11. Récapitulatif — ce qui existe réellement (implémenté et testé)
+
+Statut au 2026-07-30, après les tranches 1 à 6 (§9). Le reste de ce document
+est la conception d'origine, globalement suivie ; cette section fait foi sur
+l'état réel et sur les quelques points précisés ou légèrement écartés en
+implémentation. À relire avant toute évolution de cette pièce.
+
+### Enrôlement — deux flux distincts (`vaultEnroll.ts`, `VaultEnrollScreen.tsx`)
+
+- **Flux strict (admin, `is_vault_admin`)** : génère ET affiche la clé de
+  récupération une seule fois, avec bouton d'impression dédié — c'est la
+  seule copie papier qui existe dans tout le système.
+- **Flux léger (monteur)** : `createUserKeys` exige quand même une clé de
+  récupération en entrée (contrainte de son API), donc une est générée,
+  utilisée, puis jetée — jamais affichée, jamais stockée. Un monteur qui
+  perd son mot de passe **ne récupère pas** son ancienne clé (voir plus bas).
+  Bloqué tant qu'aucun admin-récupérateur n'existe déjà (`vault_recovery_admins`).
+
+### Ouverture du coffre — deux chemins (`VaultSheet.tsx`, `vaultSession.tsx`/`useVaultSession.ts`)
+
+Mot de passe de coffre **ou** clé de récupération : les deux déballent la
+même clé privée RSA. Session de déverrouillage partagée entre dossiers
+(verrouillage sur bouton explicite, 15 min d'inactivité, ou sortie de la zone
+"dossier"), jamais persistée hors mémoire.
+
+### Contenu — notes distinctes, pas une note unique
+
+Le contenu déchiffré est un blob JSON `VaultNote[]` (`{id, titre, texte}`) :
+plusieurs notes par coffre (mastercodes, WiFi, codes alarme, chacune sa
+fiche), pas un texte brut unique. Un coffre créé avant l'introduction de ce
+format (texte brut) est réinterprété comme une note unique déjà existante,
+jamais perdu.
+
+### Panneau admin (`VaultAdminScreen.tsx`, `vaultAdmin.ts`) — trois onglets
+
+- **Comptes** : liste en lecture seule (enrôlé / accès coffre / récupérateur).
+- **Accès** : *Activer/Réparer* (ré-emballe la DEK de tous les coffres
+  existants vers le compte cible — nécessite que l'admin ait lui-même accès à
+  chaque coffre, sinon "ignoré (pas d'accès admin)", explicitement distingué
+  d'un échec survenu après un accès trouvé) ; *Révoquer* (retire les lignes
+  `vault_dossier_access` + `access_enabled = false` ; refuse sur soi-même et
+  sur un récupérateur ; confirmation nominative obligatoire).
+- **Rotation** : liste les dossiers ayant un coffre, ouvre
+  `VaultRotationSheet` pour l'un d'eux — voir plus bas.
+
+### Modèle de récupération réellement retenu — pas de clé papier par monteur
+
+Point qui précise §5/§6 après implémentation : la clé de récupération papier
+n'existe QUE pour les deux comptes admin-récupérateurs (`is_recovery_admin`,
+`supabase/migrations/20260729_184323_vault_recovery_admin.sql`), qui ont
+accès à tous les coffres. Un monteur qui perd son mot de passe de coffre :
+
+1. se **ré-enrôle** (nouvelle paire RSA, nouveau mot de passe) — ce qui
+   suppose que sa ligne `vault_user_keys` existante soit d'abord supprimée
+   (dette, voir plus bas) ;
+2. un admin-récupérateur lui **réactive l'accès** (bouton "Réparer l'accès",
+   onglet Accès) — même geste que l'activation initiale : il déballe chaque
+   DEK via sa propre clé et la ré-emballe vers la nouvelle clé publique du
+   monteur.
+
+Le contenu chiffré et les DEK ne bougent pas, seule la clé de l'utilisateur
+change. Modèle "récupération assistée par un admin", préféré à une clé
+papier individuelle par monteur (qui multiplierait les secrets papier à
+protéger, pour un événement à faible fréquence).
+
+### Rotation de clé — écriture atomique (`VaultRotationSheet.tsx`, `vaultRotation.ts`, RPC `rotate_vault_secret`)
+
+Seul geste qui réécrit le ciphertext. Re-saisie obligatoire du mot de passe
+(même si une session est déjà déverrouillée ailleurs), confirmation
+explicite, préparation complète en mémoire (déballage, déchiffrement,
+nouvelle DEK, re-chiffrement, ré-emballage vers les destinataires actuels),
+garde-fou refusant toute rotation qui laisserait le coffre sans récupérateur.
+L'écriture (remplacement des lignes `vault_dossier_access` + mise à jour de
+`vault_secrets`) passe par la fonction Postgres `rotate_vault_secret`
+(`SECURITY DEFINER`, `supabase/migrations/20260730_090000_vault_rotate_secret.sql`) :
+les deux écritures sont dans **une seule transaction** — jamais de fenêtre où
+le coffre reste incohérent si l'app meurt entre les deux. Vérification
+post-écriture par relecture depuis la base (pas les valeurs locales en
+mémoire).
+
+### Détail crypto notable : `unwrapDek` en mode extractable
+
+`unwrapDek(wrappedDekB64, privateKey, extractable = false)` — le paramètre
+`extractable` n'était pas dans la conception initiale (§2) : ajouté pour
+permettre de déballer une DEK **puis la ré-emballer** vers un autre
+destinataire (activation/réparation d'accès, rotation), ce que WebCrypto
+interdit sur une clé non-extractable. `false` reste le défaut partout où la
+DEK ne sert qu'à déchiffrer (ouverture normale du coffre). Couvert par
+`src/lib/test-vault.mjs` (section "Ré-emballage d'accès vers un nouveau
+destinataire" — 20/20 tests passants).
+
+### Dette connue
+
+- Pas d'interface pour supprimer la ligne `vault_user_keys` d'un monteur en
+  vue d'un ré-enrôlement après mot de passe perdu — repose sur une
+  suppression manuelle en base par un admin pour l'instant (la policy RLS
+  l'autorise déjà, seule l'UI manque).
+- Retrait du rôle `is_recovery_admin` : aucun geste dans l'app (assumé —
+  l'onglet Accès affiche un message explicite plutôt que de permettre
+  l'action au clic sur Révoquer pour un récupérateur).

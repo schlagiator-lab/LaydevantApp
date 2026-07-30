@@ -391,8 +391,9 @@ humaine (vérification en `CaptureSheet` avant envoi).
 ## 9. Dossiers clients (étape A)
 
 Écrans en ligne uniquement : `DossiersScreen` (liste/recherche/création),
-`DossierScreen` (fiche — équipements, documentation, placeholder données
-sensibles). Code dans `src/lib/dossiers.ts`, `src/screens/Dossier*.tsx`,
+`DossierScreen` (fiche — équipements, documentation, ouverture du coffre de
+données sensibles — §10, `Feature coffre données sensibles.md`). Code dans
+`src/lib/dossiers.ts`, `src/screens/Dossier*.tsx`,
 `src/components/{DossierFormSheet,AddEquipmentSheet,AddDossierDocumentSheet}.tsx`.
 
 - **Liste** — `search_dossiers`, recherche par nom client ou adresse, avec
@@ -415,20 +416,46 @@ sensibles). Code dans `src/lib/dossiers.ts`, `src/screens/Dossier*.tsx`,
 
 ## 10. Ce qui reste à faire
 
-**Étape B — coffre de données sensibles, PAS implémentée.** La fiche dossier
-réserve un emplacement visuel désactivé (« Mastercodes, WiFi — à venir
-(chiffrement, étape B) »), sans aucune logique derrière. Quand elle sera
-construite :
+**Étape B — coffre de données sensibles : TERMINÉE.** Spécifiée et
+implémentée en totalité (tranches 1 à 6) ; détail complet et récapitulatif
+dans `Feature coffre données sensibles.md` (§11 pour l'état réel, y compris
+les quelques écarts par rapport à la conception initiale). Chiffrement
+côté client (WebCrypto), zero-knowledge vis-à-vis de Supabase, panneau admin
+(comptes / accès / rotation).
 
-- chiffrement **côté client** (WebCrypto), jamais de secret en clair envoyé au
-  backend ;
-- **un fichier par dossier** (pas une colonne en clair dans `dossiers`) ;
-- prévoir une **clé de récupération** dès la création du coffre — un mot de
-  passe maître perdu rend les données définitivement irrécupérables ;
-- le reste de l'architecture (schéma exact, gestion de la clé, RLS associée)
-  reste à spécifier — ne rien construire dans cette direction sans une
-  spécification dédiée, au même titre que `Feature recherche web notices.md`
-  pour la recherche web.
+Fichiers clés :
+
+- `src/lib/vault.js` + `vault.d.ts` — cœur crypto (WebCrypto pur), testé de
+  façon isolée par `src/lib/test-vault.mjs` (20/20, `node test-vault.mjs`).
+- `src/lib/vaultEnroll.ts`, `src/screens/VaultEnrollScreen.tsx` — enrôlement
+  (flux strict admin avec clé papier / flux léger monteur sans clé papier).
+- `src/lib/vaultSecrets.ts`, `src/lib/vaultSession.tsx`,
+  `src/lib/useVaultSession.ts`, `src/components/VaultSheet.tsx` — ouverture,
+  verrouillage, édition du contenu (notes multiples) depuis la fiche dossier.
+- `src/lib/vaultAdmin.ts`, `src/screens/VaultAdminScreen.tsx` — panneau admin
+  (comptes, activer/réparer l'accès, révoquer).
+- `src/lib/vaultRotation.ts`, `src/components/VaultRotationSheet.tsx` —
+  rotation de clé, déclenchée depuis l'onglet "Rotation" du panneau admin.
+- `supabase/migrations/20260728190000_vault_user_keys.sql`,
+  `20260728190500_vault_secrets_access.sql`,
+  `20260729_184323_vault_recovery_admin.sql`,
+  `20260730_090000_vault_rotate_secret.sql` — les 4 migrations vault (schéma,
+  RLS, rôle admin-récupérateur, rotation atomique via RPC `SECURITY DEFINER`).
+
+Dette restante : pas d'interface pour supprimer la ligne `vault_user_keys`
+d'un monteur avant un ré-enrôlement après mot de passe perdu (repose sur une
+suppression manuelle en base — la RLS l'autorise déjà) ; pas de geste pour
+retirer le rôle `is_recovery_admin` (assumé, message explicite dans l'onglet
+Accès).
+
+**Prochain chantier — carnet non-sensible (pas commencé, pas spécifié).**
+Notes et photos de chantier **partagées en clair** (pas de chiffrement, pas
+de zero-knowledge) : compte-rendu de visite, photos d'installation, repères
+utiles à toute l'équipe — à distinguer nettement du coffre (secrets
+chiffrés, accès nominatif). Table Supabase séparée des `dossiers` et du
+coffre, avec Storage pour les photos. Ne rien construire dans cette
+direction sans une spécification dédiée au préalable, même convention que
+`Feature recherche web notices.md` et `Feature coffre données sensibles.md`.
 
 ---
 
@@ -547,8 +574,7 @@ dans un onglet : la garantie de persistance en dépend.
 
 Ne pas implémenter, même partiellement, sans spécification dédiée au préalable :
 
-- le coffre de données sensibles chiffré (étape B, §10) ;
-- photos ;
+- le carnet non-sensible partagé (notes/photos en clair, §10) ;
 - résumé automatique, traduction, ou toute réponse générée par IA au-delà du
   tri de résultats de la recherche web de notices (§8) ;
 - recherche web en masse ou programmée — une recherche = une action volontaire
