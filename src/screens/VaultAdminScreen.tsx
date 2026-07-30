@@ -8,6 +8,7 @@ import {
   setVaultAccessEnabled,
   getAllVaultDossiers,
   getDossierAccessRowsForUser,
+  revokeVaultAccess,
   type VaultUserKeySummary,
   type VaultDossierSummary,
 } from '../lib/vaultAdmin';
@@ -133,7 +134,7 @@ export function VaultAdminScreen() {
             </div>
 
             {tab === 'comptes' && <AccountsTab accounts={accounts} />}
-            {tab === 'acces' && <AccessTab accounts={accounts} onActivated={loadAccounts} />}
+            {tab === 'acces' && <AccessTab accounts={accounts} onAccountsChanged={loadAccounts} />}
             {tab === 'rotation' && <ComingSoon />}
           </div>
         )}
@@ -225,14 +226,26 @@ type ActivationState =
     }
   | { kind: 'error'; account: VaultUserKeySummary; message: string };
 
+type RevokeState =
+  | { kind: 'idle' }
+  | { kind: 'refused'; account: VaultUserKeySummary; message: string }
+  | { kind: 'running'; account: VaultUserKeySummary }
+  | { kind: 'done'; account: VaultUserKeySummary; removedCount: number }
+  /** (a) a réussi, (b) a échoué : ne jamais fondre avec `done` ni `error`, le
+   * compte est dans un état à moitié fait qu'il faut signaler tel quel. */
+  | { kind: 'partial'; account: VaultUserKeySummary; removedCount: number; message: string }
+  | { kind: 'error'; account: VaultUserKeySummary; message: string };
+
 /**
  * Onglet "Accès" (tranche 5) : active un compte enrôlé — lui donne accès à
  * tous les coffres existants. Exige la clé privée déballée (session de
  * coffre partagée via VaultSessionProvider, comme VaultSheet) : sans elle,
  * impossible de déballer les DEK existantes pour les remballer vers le
- * nouveau compte.
+ * nouveau compte. Le geste inverse (Révoquer) ne fait, lui, aucune crypto —
+ * il n'a donc pas besoin de la clé privée, mais reste derrière le même écran
+ * de déverrouillage puisqu'il partage la liste de comptes de l'onglet.
  */
-function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActivated: () => void }) {
+function AccessTab({ accounts, onAccountsChanged }: { accounts: AccountsPhase; onAccountsChanged: () => void }) {
   const { session } = useAuth();
   const ownUserId = session?.user.id ?? null;
   const { privateKey, unlocked, unlocking, error: unlockError, unlock } = useVaultSession();
@@ -240,6 +253,8 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
   const [password, setPassword] = useState('');
   const [pendingActivation, setPendingActivation] = useState<VaultUserKeySummary | null>(null);
   const [activation, setActivation] = useState<ActivationState>({ kind: 'idle' });
+  const [pendingRevoke, setPendingRevoke] = useState<VaultUserKeySummary | null>(null);
+  const [revoke, setRevoke] = useState<RevokeState>({ kind: 'idle' });
 
   async function handleUnlockSubmit(e: FormEvent) {
     e.preventDefault();
@@ -307,9 +322,49 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
       }
 
       setActivation({ kind: 'done', account, newlyShared, alreadyUpToDate, skipped, failed });
-      onActivated();
+      onAccountsChanged();
     } catch (err) {
       setActivation({ kind: 'error', account, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  function handleRevokeClick(account: VaultUserKeySummary) {
+    setRevoke({ kind: 'idle' });
+    // Son propre compte peut être À LA FOIS soi-même ET récupérateur — tester
+    // "soi-même" en premier pour donner le motif le plus pertinent pour
+    // l'utilisateur (on ne peut de toute façon rien y faire dans les deux cas,
+    // mais le message doit rester correct).
+    if (account.user_id === ownUserId) {
+      setRevoke({ kind: 'refused', account, message: 'Impossible de révoquer son propre accès.' });
+      return;
+    }
+    if (account.is_recovery_admin) {
+      setRevoke({
+        kind: 'refused',
+        account,
+        message:
+          "Impossible de révoquer un récupérateur. Le retrait du rôle récupérateur se fait en base pour l'instant.",
+      });
+      return;
+    }
+    setPendingRevoke(account);
+  }
+
+  async function handleConfirmRevoke() {
+    const account = pendingRevoke;
+    if (!account) return;
+    setPendingRevoke(null);
+    setRevoke({ kind: 'running', account });
+    try {
+      const { removedCount, disableError } = await revokeVaultAccess(account.user_id);
+      if (disableError) {
+        setRevoke({ kind: 'partial', account, removedCount, message: disableError });
+        return;
+      }
+      setRevoke({ kind: 'done', account, removedCount });
+      onAccountsChanged();
+    } catch (err) {
+      setRevoke({ kind: 'error', account, message: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -402,8 +457,35 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
         </div>
       )}
 
+      {revoke.kind !== 'idle' && revoke.kind !== 'running' && (
+        <div style={revoke.kind === 'done' ? reportBoxStyle : reportBoxErrorStyle}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>
+            {revoke.account.full_name ?? revoke.account.user_id}
+          </div>
+          {revoke.kind === 'done' && (
+            <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0 }}>
+              Accès révoqué pour {revoke.account.full_name ?? revoke.account.user_id} : {revoke.removedCount} coffre
+              {revoke.removedCount > 1 ? 's' : ''} retiré{revoke.removedCount > 1 ? 's' : ''}.
+            </p>
+          )}
+          {revoke.kind === 'partial' && (
+            <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0, color: colors.accent }}>
+              {revoke.removedCount} coffre{revoke.removedCount > 1 ? 's' : ''} retiré{revoke.removedCount > 1 ? 's' : ''},
+              mais la désactivation du compte a échoué : {revoke.message}. État partiel — relancez la révocation.
+            </p>
+          )}
+          {(revoke.kind === 'refused' || revoke.kind === 'error') && (
+            <p style={{ fontSize: 13, lineHeight: 1.5, margin: 0, color: colors.accent }}>{revoke.message}</p>
+          )}
+          <button type="button" onClick={() => setRevoke({ kind: 'idle' })} style={dismissLinkStyle}>
+            Fermer
+          </button>
+        </div>
+      )}
+
       {rows.map((r) => {
         const isRunning = activation.kind === 'running' && activation.account.user_id === r.user_id;
+        const isRevoking = revoke.kind === 'running' && revoke.account.user_id === r.user_id;
         return (
           <div key={r.user_id} style={accountRowStyle}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, wordBreak: 'break-all' }}>
@@ -411,14 +493,26 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
               <Badge label="Accès coffre" active={r.access_enabled} />
-              <button
-                type="button"
-                onClick={() => openConfirm(r)}
-                disabled={isRunning}
-                style={{ ...activateButtonStyle, opacity: isRunning ? 0.6 : 1 }}
-              >
-                {isRunning ? 'Activation…' : r.access_enabled ? "Réparer l'accès" : 'Activer'}
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => openConfirm(r)}
+                  disabled={isRunning}
+                  style={{ ...activateButtonStyle, opacity: isRunning ? 0.6 : 1 }}
+                >
+                  {isRunning ? 'Activation…' : r.access_enabled ? "Réparer l'accès" : 'Activer'}
+                </button>
+                {r.access_enabled && (
+                  <button
+                    type="button"
+                    onClick={() => handleRevokeClick(r)}
+                    disabled={isRevoking}
+                    style={{ ...revokeButtonStyle, opacity: isRevoking ? 0.6 : 1 }}
+                  >
+                    {isRevoking ? 'Révocation…' : 'Révoquer'}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         );
@@ -438,6 +532,28 @@ function AccessTab({ accounts, onActivated }: { accounts: AccountsPhase; onActiv
                 Annuler
               </button>
               <button type="button" onClick={() => void handleConfirmActivate()} style={{ ...tabPrimaryButtonStyle, flex: 1 }}>
+                Confirmer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingRevoke && (
+        <div onClick={() => setPendingRevoke(null)} style={confirmOverlayStyle}>
+          <div onClick={(e) => e.stopPropagation()} style={confirmBoxStyle}>
+            <p style={{ fontSize: 14, fontWeight: 700, margin: '0 0 8px' }}>
+              {pendingRevoke.full_name ?? pendingRevoke.user_id}
+            </p>
+            <p style={{ fontSize: 13.5, lineHeight: 1.5, margin: '0 0 16px', color: colors.accent, fontWeight: 600 }}>
+              Ce compte perdra l'accès à tous les coffres. Attention : cela coupe l'accès futur, mais n'efface pas ce
+              que la personne a déjà pu consulter. Pour une coupure dure, utilisez la rotation.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => setPendingRevoke(null)} style={{ ...tabSecondaryButtonStyle, flex: 1 }}>
+                Annuler
+              </button>
+              <button type="button" onClick={() => void handleConfirmRevoke()} style={{ ...tabPrimaryButtonStyle, flex: 1 }}>
                 Confirmer
               </button>
             </div>
@@ -556,6 +672,19 @@ const activateButtonStyle: CSSProperties = {
   border: 'none',
   background: colors.accent,
   color: '#132146',
+  fontSize: 12.5,
+  fontWeight: 700,
+  padding: '0 12px',
+  cursor: 'pointer',
+};
+
+const revokeButtonStyle: CSSProperties = {
+  flex: 'none',
+  height: 34,
+  borderRadius: 10,
+  border: `1px solid ${colors.accent}`,
+  background: 'transparent',
+  color: colors.accent,
   fontSize: 12.5,
   fontWeight: 700,
   padding: '0 12px',

@@ -71,6 +71,30 @@ export async function setVaultAccessEnabled(userId: string): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * Révoque l'accès au coffre d'un compte (onglet "Accès", tranche 5). Aucune
+ * crypto ici : (a) retire toutes ses lignes `vault_dossier_access` (accès aux
+ * coffres existants), (b) désactive `access_enabled` (bloque les futurs
+ * partages). Le trigger `vault_user_keys_guard` autorise (b) car l'appelant
+ * est admin connecté — même garde-fou que `setVaultAccessEnabled`.
+ *
+ * (b) n'est volontairement PAS fondu dans le même throw que (a) : si (a)
+ * réussit puis (b) échoue, l'appelant doit pouvoir distinguer cet état
+ * partiel (coffres déjà retirés, compte pas encore désactivé) d'un échec
+ * complet, pour ne jamais le signaler en silence.
+ */
+export async function revokeVaultAccess(userId: string): Promise<{ removedCount: number; disableError: string | null }> {
+  const { error: delError, count } = await supabase
+    .from('vault_dossier_access')
+    .delete({ count: 'exact' })
+    .eq('user_id', userId);
+  if (delError) throw delError;
+
+  const { error: updError } = await supabase.from('vault_user_keys').update({ access_enabled: false }).eq('user_id', userId);
+
+  return { removedCount: count ?? 0, disableError: updError ? updError.message : null };
+}
+
 export interface VaultDossierSummary {
   dossier_id: string;
   /** Nom du dossier client — pour lister nommément les coffres ignorés
