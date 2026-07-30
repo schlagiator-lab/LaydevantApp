@@ -15,6 +15,7 @@ import {
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
 import { StatusPill } from '../components/StatusPill';
+import { VaultRotationSheet } from '../components/VaultRotationSheet';
 import { colors, fonts, textA, successA } from '../styles/tokens';
 
 type Phase = { kind: 'loading' } | { kind: 'checkError'; message: string } | { kind: 'forbidden' } | { kind: 'ready' };
@@ -27,11 +28,13 @@ type AccountsPhase =
   | { kind: 'loaded'; rows: VaultUserKeySummary[] };
 
 /**
- * Panneau admin du coffre de données sensibles (tranche 5). Réservé aux
+ * Panneau admin du coffre de données sensibles (tranches 5-6). Réservé aux
  * admins : garde-fou fait par l'écran lui-même (is_vault_admin, RPC), pas
  * par le lien d'entrée ni par la navigation — même convention que
- * VaultEnrollScreen. Cette première étape est lecture seule : seul l'onglet
- * "Comptes" est implémenté, "Accès" et "Rotation" sont des placeholders.
+ * VaultEnrollScreen. Trois onglets : "Comptes" (lecture), "Accès"
+ * (activation/révocation), "Rotation" (rotation de clé par dossier — point
+ * d'entrée unique de VaultRotationSheet, déplacé ici depuis la fiche
+ * dossier).
  */
 export function VaultAdminScreen() {
   const { isOnline } = useAuth();
@@ -135,7 +138,7 @@ export function VaultAdminScreen() {
 
             {tab === 'comptes' && <AccountsTab accounts={accounts} />}
             {tab === 'acces' && <AccessTab accounts={accounts} onAccountsChanged={loadAccounts} />}
-            {tab === 'rotation' && <ComingSoon />}
+            {tab === 'rotation' && <RotationTab />}
           </div>
         )}
       </div>
@@ -149,10 +152,6 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
       {label}
     </button>
   );
-}
-
-function ComingSoon() {
-  return <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 24 }}>À venir.</p>;
 }
 
 function AccountsTab({ accounts }: { accounts: AccountsPhase }) {
@@ -564,6 +563,81 @@ function AccessTab({ accounts, onAccountsChanged }: { accounts: AccountsPhase; o
   );
 }
 
+type DossiersPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: VaultDossierSummary[] };
+
+/**
+ * Onglet "Rotation" (tranche 6) : liste tous les dossiers ayant un coffre
+ * (même lecture que `getAllVaultDossiers` déjà utilisée par l'onglet
+ * "Accès" — vault_secrets joint à dossiers.nom_client) et ouvre
+ * VaultRotationSheet pour le dossier choisi. Point d'entrée unique de la
+ * rotation : le bouton correspondant a été retiré de la fiche dossier.
+ * Le rafraîchissement de la liste après fermeture de la feuille est
+ * inconditionnel (pas seulement après succès) : une rotation ne change
+ * jamais QUELS dossiers ont un coffre ni leur nom, donc rafraîchir à chaque
+ * fermeture est strictement équivalent en résultat visible à ne rafraîchir
+ * qu'après succès, sans avoir à faire remonter un signal de succès distinct
+ * depuis la feuille.
+ */
+function RotationTab() {
+  const [dossiers, setDossiers] = useState<DossiersPhase>({ kind: 'loading' });
+  const [rotationTarget, setRotationTarget] = useState<VaultDossierSummary | null>(null);
+
+  const loadDossiers = useCallback(async () => {
+    setDossiers({ kind: 'loading' });
+    try {
+      const rows = await getAllVaultDossiers();
+      setDossiers({ kind: 'loaded', rows });
+    } catch (err) {
+      setDossiers({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      await loadDossiers();
+    })();
+  }, [loadDossiers]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {dossiers.kind === 'loading' && (
+        <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>
+      )}
+      {dossiers.kind === 'error' && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {dossiers.message}</p>
+      )}
+      {dossiers.kind === 'loaded' && dossiers.rows.length === 0 && (
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucun coffre créé.</p>
+      )}
+      {dossiers.kind === 'loaded' &&
+        dossiers.rows.map((d) => (
+          <div key={d.dossier_id} style={accountRowStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, wordBreak: 'break-word' }}>{d.nom_client}</div>
+              <button type="button" onClick={() => setRotationTarget(d)} style={rotateButtonStyle}>
+                Faire tourner la clé
+              </button>
+            </div>
+          </div>
+        ))}
+
+      {rotationTarget && (
+        <VaultRotationSheet
+          dossierId={rotationTarget.dossier_id}
+          dossierName={rotationTarget.nom_client}
+          onClose={() => {
+            setRotationTarget(null);
+            void loadDossiers();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function BlockingMessage({ text, isError = false }: { text: string; isError?: boolean }) {
   return (
     <div style={offlineBannerStyle}>
@@ -679,6 +753,19 @@ const activateButtonStyle: CSSProperties = {
 };
 
 const revokeButtonStyle: CSSProperties = {
+  flex: 'none',
+  height: 34,
+  borderRadius: 10,
+  border: `1px solid ${colors.accent}`,
+  background: 'transparent',
+  color: colors.accent,
+  fontSize: 12.5,
+  fontWeight: 700,
+  padding: '0 12px',
+  cursor: 'pointer',
+};
+
+const rotateButtonStyle: CSSProperties = {
   flex: 'none',
   height: 34,
   borderRadius: 10,

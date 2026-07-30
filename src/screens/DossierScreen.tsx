@@ -18,9 +18,7 @@ import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
-import { VaultRotationSheet } from '../components/VaultRotationSheet';
 import { getVaultSecret } from '../lib/vaultSecrets';
-import { isVaultAdmin } from '../lib/vaultAdmin';
 import { colors, fonts, textA } from '../styles/tokens';
 
 /**
@@ -47,12 +45,6 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   // null = pas encore su (chargement ou hors ligne) ; true/false = présence
   // réelle d'une ligne vault_secrets, sans jamais la déchiffrer ici.
   const [hasVaultNote, setHasVaultNote] = useState<boolean | null>(null);
-  // Gate d'affichage du bouton de rotation uniquement : la RPC
-  // rotate_vault_secret revérifie is_vault_admin() elle-même côté serveur,
-  // ce n'est donc jamais le SEUL garde-fou. Défaut false (fail-safe) si le
-  // check échoue — jamais afficher un geste destructeur sur une incertitude.
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [showRotation, setShowRotation] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +52,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       if (!isOnline) return;
       setLoadError(null);
       try {
-        const [d, eqs, docs, pinned, vaultSecret, admin] = await Promise.all([
+        const [d, eqs, docs, pinned, vaultSecret] = await Promise.all([
           getDossier(dossierId),
           listDossierEquipments(dossierId),
           getDossierDocumentsComplets(dossierId),
@@ -68,7 +60,6 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           // Existence seule (RLS filtre déjà les non-autorisés) — jamais de
           // déchiffrement ici, juste savoir s'il y a quelque chose à ouvrir.
           getVaultSecret(dossierId).catch(() => null),
-          isVaultAdmin().catch(() => false),
         ]);
         if (cancelled) return;
         setDossier(d);
@@ -76,7 +67,6 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         setDocuments(docs);
         setPinnedIds(new Set(pinned.map((p) => p.id)));
         setHasVaultNote(vaultSecret !== null);
-        setIsAdmin(admin);
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       }
@@ -284,16 +274,6 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                     : 'Coffre vide — mastercodes, WiFi'}
               </span>
             </button>
-            {isAdmin && hasVaultNote === true && (
-              <button
-                type="button"
-                onClick={() => setShowRotation(true)}
-                disabled={!isOnline}
-                style={{ ...rotateVaultButtonStyle, opacity: isOnline ? 1 : 0.4 }}
-              >
-                Faire tourner la clé de ce coffre
-              </button>
-            )}
           </section>
         </div>
       )}
@@ -348,10 +328,6 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               .catch(() => {});
           }}
         />
-      )}
-
-      {showRotation && dossier && (
-        <VaultRotationSheet dossierId={dossier.id} dossierName={dossier.nom_client} onClose={() => setShowRotation(false)} />
       )}
     </div>
   );
@@ -459,19 +435,5 @@ const sensitivePlaceholderStyle: React.CSSProperties = {
   padding: '14px 16px',
   background: 'transparent',
   textAlign: 'left',
-  boxSizing: 'border-box',
-};
-
-const rotateVaultButtonStyle: React.CSSProperties = {
-  marginTop: 8,
-  width: '100%',
-  height: 40,
-  borderRadius: 12,
-  border: `1px solid ${colors.accent}`,
-  background: 'transparent',
-  color: colors.accent,
-  fontSize: 12.5,
-  fontWeight: 700,
-  cursor: 'pointer',
   boxSizing: 'border-box',
 };
