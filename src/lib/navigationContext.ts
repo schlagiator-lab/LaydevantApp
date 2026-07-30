@@ -19,7 +19,8 @@ export type NavState =
   | { screen: 'webSearch'; context: WebSearchContext }
   | { screen: 'dossiers' }
   | { screen: 'dossier'; dossierId: string }
-  | { screen: 'vaultEnroll' };
+  | { screen: 'vaultEnroll' }
+  | { screen: 'vaultAdmin' };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -55,6 +56,9 @@ export interface NavigationContextValue {
   /** Enrôlement au coffre de données sensibles (étape B, tranche 4) — hors du
    * parcours principal tant que le reste du coffre n'existe pas. */
   goVaultEnroll: () => void;
+  /** Panneau admin du coffre (tranche 5) — réservé aux admins, garde-fou fait
+   * par l'écran lui-même (is_vault_admin), pas par la navigation. */
+  goVaultAdmin: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }

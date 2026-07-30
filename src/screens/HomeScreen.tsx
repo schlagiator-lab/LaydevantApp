@@ -347,6 +347,16 @@ export function HomeScreen() {
         >
           Coffre (enrôlement)
         </button>
+        {/* Panneau admin du coffre (tranche 5) — lien visible par tout le
+            monde comme les deux précédents, le garde-fou (is_vault_admin)
+            se fait dans l'écran lui-même. */}
+        <button
+          type="button"
+          onClick={nav.goVaultAdmin}
+          style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
+        >
+          Coffre (admin)
+        </button>
       </div>
     </div>
   );

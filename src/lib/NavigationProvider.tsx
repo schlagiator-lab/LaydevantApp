@@ -27,6 +27,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goDossiers = () => push({ screen: 'dossiers' });
   const goDossier = (dossierId: string) => push({ screen: 'dossier', dossierId });
   const goVaultEnroll = () => push({ screen: 'vaultEnroll' });
+  const goVaultAdmin = () => push({ screen: 'vaultAdmin' });
   const goBack = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
 
   return (
@@ -45,6 +46,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goDossiers,
         goDossier,
         goVaultEnroll,
+        goVaultAdmin,
         goBack,
       }}
     >
