@@ -1,10 +1,12 @@
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
+import { useNavigation } from '../lib/useNavigation';
 import { useVaultSession } from '../lib/useVaultSession';
 import {
   getVaultSecret,
   getOwnDossierAccess,
   getVaultPublicKeys,
+  getOwnVaultKeyRecord,
   insertVaultSecret,
   updateVaultSecret,
   insertDossierAccessRows,
@@ -73,6 +75,7 @@ function parseNotes(plaintext: string): VaultNote[] {
  */
 export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
   const { session, isOnline } = useAuth();
+  const nav = useNavigation();
   const userId = session?.user.id ?? null;
   const {
     privateKey,
@@ -96,6 +99,34 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Un monteur qui n'a jamais fait son propre enrôlement coffre (pas de
+  // ligne vault_user_keys) n'a par définition aucun mot de passe de coffre à
+  // taper — lui montrer le formulaire de déverrouillage le mènerait droit à
+  // un faux "mot de passe incorrect". Vérifié une fois à l'ouverture de la
+  // feuille, indépendamment du flux de déverrouillage lui-même.
+  const [enrollmentPhase, setEnrollmentPhase] = useState<'checking' | 'enrolled' | 'not-enrolled' | 'error'>(
+    'checking',
+  );
+
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const record = await getOwnVaultKeyRecord(userId);
+        if (!cancelled) setEnrollmentPhase(record ? 'enrolled' : 'not-enrolled');
+      } catch {
+        // Panne réseau ponctuelle sur cette seule vérification : ne bloque
+        // pas l'accès, le formulaire de déverrouillage habituel reste la
+        // meilleure option de repli (même comportement qu'avant ce garde-fou).
+        if (!cancelled) setEnrollmentPhase('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   useEffect(() => {
     if (!unlocked || !userId) return;
@@ -304,7 +335,30 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
           </div>
         )}
 
-        {isOnline && !unlocked && (
+        {isOnline && !unlocked && enrollmentPhase === 'checking' && (
+          <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 24 }}>Vérification…</p>
+        )}
+
+        {isOnline && !unlocked && enrollmentPhase === 'not-enrolled' && (
+          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <p style={{ fontSize: 13.5, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
+              Tu n'as pas encore configuré ton coffre — il faut d'abord choisir un mot de passe de coffre avant de
+              pouvoir l'ouvrir.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                nav.goVaultEnroll();
+              }}
+              style={primaryButtonStyle}
+            >
+              Configurer le coffre
+            </button>
+          </div>
+        )}
+
+        {isOnline && !unlocked && (enrollmentPhase === 'enrolled' || enrollmentPhase === 'error') && (
           <form onSubmit={(e) => void handleUnlockSubmit(e)} style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <p style={{ fontSize: 13, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
               {unlockMode === 'password'

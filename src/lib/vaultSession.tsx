@@ -60,7 +60,14 @@ export function VaultSessionProvider({ children }: { children: ReactNode }) {
       setError(null);
       try {
         const record = await getOwnVaultKeyRecord(userId);
-        if (!record) throw new Error('Aucune clé de coffre pour ce compte — enrôlement requis.');
+        // Cas distinct d'un mot de passe faux : pas de clé du tout pour ce
+        // compte (jamais enrôlé). Sorti du try/catch générique ci-dessous
+        // pour ne pas être masqué par "Mot de passe incorrect", qui induirait
+        // en erreur quelqu'un qui n'a en réalité jamais rien configuré.
+        if (!record) {
+          setError('Aucune clé de coffre pour ce compte — enrôlement requis.');
+          return false;
+        }
         const key = await unlockWithPassword(password, record);
         setPrivateKey(key);
         armTimer();
@@ -83,7 +90,10 @@ export function VaultSessionProvider({ children }: { children: ReactNode }) {
       setError(null);
       try {
         const record = await getOwnVaultKeyRecord(userId);
-        if (!record) throw new Error('Aucune clé de coffre pour ce compte — enrôlement requis.');
+        if (!record) {
+          setError('Aucune clé de coffre pour ce compte — enrôlement requis.');
+          return false;
+        }
         const key = await unlockWithRecovery(recoveryKey, record);
         setPrivateKey(key);
         armTimer();
