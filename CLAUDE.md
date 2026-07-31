@@ -279,9 +279,12 @@ jamais pendant une coupure. Résultat :
 
 ## 7. Onboarding — enrôlement par liste blanche (allowlist)
 
-**Chantier en cours, pas encore implémenté** (seule la migration de la table
-est versionnée à ce stade — Edge Function `enroll` et écran d'enrôlement
-restent à construire).
+**Implémenté.** Migration, Edge Function `enroll`, écran d'auto-enrôlement
+(`EnrollScreen`, bascule sans routeur depuis `LoginScreen` via `AuthGate`,
+`src/App.tsx`) et onglet "Onboarding" du panneau admin du coffre
+(`VaultAdminScreen`, gestion des invitations). Restent à faire côté
+exploitation : déployer `enroll` avec `--no-verify-jwt`, puis couper les
+inscriptions publiques Supabase (voir séquencement plus bas).
 
 Création de compte contrôlée : pas d'inscription publique. Un admin "invite"
 un email, la personne s'auto-enrôle à l'URL de l'app (email connu + mot de
@@ -327,6 +330,30 @@ même contre qui protège le zero-knowledge du coffre).
 **Séquencement du déploiement** : couper les inscriptions publiques Supabase
 seulement APRÈS que `enroll` est déployée et testée — jamais avant, sinon
 fenêtre où plus aucun compte ne peut être créé.
+
+### Suppression de compte — Edge Function `delete-account`
+
+Pendant symétrique de `enroll`, dans l'onglet "Comptes" du panneau admin du
+coffre : bouton "Supprimer le compte", **monteur uniquement, jamais admin**,
+**et seulement si l'accès coffre de la cible est déjà révoqué** (onglet
+"Accès" au préalable) et qu'elle n'est pas récupérateur. Contrairement à
+`enroll`, `verify_jwt` reste **activé** — l'appelant est déjà authentifié. La
+fonction revérifie tout côté serveur (appelant admin, cible non-admin, accès
+coffre non actif, pas récupérateur) via `service_role` avant d'appeler
+`auth.admin.deleteUser` : les mêmes garde-fous que l'UI, jamais la seule
+protection réelle.
+
+`src/lib/vaultAdmin.ts` expose `listAllProfiles()` (tous les profils, pas
+seulement les enrôlés au coffre — un monteur qui n'a jamais touché au coffre
+doit rester supprimable) et `deleteAccount(userId)`.
+
+Piège connu, assumé pour l'instant : si le compte cible a de l'historique
+dans des tables gérées hors de ce dépôt sans `ON DELETE CASCADE` vers
+`auth.users` (`dossiers.created_by`, `dossier_notes.auteur`, etc.),
+`auth.admin.deleteUser` échoue avec une contrainte de clé étrangère — l'erreur
+réelle remonte telle quelle (échec honnête, §9) plutôt qu'un message
+trompeur ; pas de tentative de réattribution/suppression automatique de ce
+contenu, qui reste une décision produit à trancher séparément.
 
 ---
 

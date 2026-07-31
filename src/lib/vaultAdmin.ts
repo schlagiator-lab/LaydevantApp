@@ -2,7 +2,8 @@
 // admin (tranche 5). Aucune crypto ici : voir src/lib/vault.js pour
 // l'emballage/déballage de DEK, ce module ne fait que lire/poser des lignes
 // déjà chiffrées, autorisé par les policies RLS pour is_vault_admin().
-import { supabase } from './supabase';
+import { supabase, supabaseUrl } from './supabase';
+import type { Profile } from '../types/database';
 
 export async function isVaultAdmin(): Promise<boolean> {
   const { data, error } = await supabase.rpc('is_vault_admin');
@@ -139,4 +140,52 @@ export async function getDossierAccessRowsForUser(userId: string): Promise<Dossi
     .eq('user_id', userId);
   if (error) throw error;
   return (data ?? []) as DossierAccessKeyRow[];
+}
+
+/**
+ * Tous les profils applicatifs, pas seulement ceux enrôlés au coffre
+ * (contrairement à `getAllVaultUserKeys`) — nécessaire pour retrouver un
+ * monteur qui n'a jamais touché au coffre et reste malgré tout un candidat
+ * légitime à la suppression de compte (onglet "Comptes").
+ */
+export async function listAllProfiles(): Promise<Profile[]> {
+  const { data, error } = await supabase.from('profiles').select('id, full_name, role');
+  if (error) throw error;
+  return (data ?? []) as Profile[];
+}
+
+/**
+ * Supprime le compte applicatif d'un monteur via l'Edge Function
+ * `delete-account` (service_role — la clé anon ne peut jamais supprimer un
+ * compte Auth). verify_jwt reste actif sur cette fonction (contrairement à
+ * `enroll`) : l'appelant doit déjà être connecté. Tous les garde-fous
+ * (appelant admin, cible non-admin, accès coffre déjà révoqué) sont
+ * revérifiés côté serveur — ceux de l'UI ne sont qu'un affichage cohérent,
+ * jamais la seule protection réelle.
+ */
+export async function deleteAccount(userId: string): Promise<void> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) throw new Error('Session expirée — reconnecte-toi.');
+
+  const res = await fetch(`${supabaseUrl}/functions/v1/delete-account`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ userId }),
+  });
+  if (!res.ok) {
+    let message = `Suppression échouée (HTTP ${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) message = body.error;
+    } catch {
+      /* garde le message par défaut */
+    }
+    throw new Error(message);
+  }
 }

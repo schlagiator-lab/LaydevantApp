@@ -9,13 +9,15 @@ import {
   getAllVaultDossiers,
   getDossierAccessRowsForUser,
   revokeVaultAccess,
+  listAllProfiles,
+  deleteAccount,
   type VaultUserKeySummary,
   type VaultDossierSummary,
 } from '../lib/vaultAdmin';
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
 import { listInvitations, addInvitation, removeInvitation } from '../lib/onboarding';
-import type { OnboardingInvitation, ProfileRole } from '../types/database';
+import type { OnboardingInvitation, ProfileRole, Profile } from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { VaultRotationSheet } from '../components/VaultRotationSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
@@ -29,6 +31,11 @@ type AccountsPhase =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
   | { kind: 'loaded'; rows: VaultUserKeySummary[] };
+
+type ProfilesPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: Profile[] };
 
 /**
  * Panneau admin du coffre de données sensibles (tranches 5-6). Réservé aux
@@ -46,6 +53,7 @@ export function VaultAdminScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [tab, setTab] = useState<Tab>('comptes');
   const [accounts, setAccounts] = useState<AccountsPhase>({ kind: 'loading' });
+  const [profiles, setProfiles] = useState<ProfilesPhase>({ kind: 'loading' });
 
   useEffect(() => {
     if (!isOnline) return;
@@ -79,10 +87,23 @@ export function VaultAdminScreen() {
     }
   }, []);
 
+  // Tous les profils (pas seulement les enrôlés au coffre) — nécessaire pour
+  // l'onglet "Comptes", qui doit pouvoir proposer la suppression d'un
+  // monteur qui n'a jamais touché au coffre.
+  const loadProfiles = useCallback(async () => {
+    setProfiles({ kind: 'loading' });
+    try {
+      const rows = await listAllProfiles();
+      setProfiles({ kind: 'loaded', rows });
+    } catch (err) {
+      setProfiles({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
   useEffect(() => {
     if (phase.kind !== 'ready') return;
     void (async () => {
-      await loadAccounts();
+      await Promise.all([loadAccounts(), loadProfiles()]);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase.kind]);
@@ -140,7 +161,14 @@ export function VaultAdminScreen() {
               <TabButton label="Onboarding" active={tab === 'onboarding'} onClick={() => setTab('onboarding')} />
             </div>
 
-            {tab === 'comptes' && <AccountsTab accounts={accounts} />}
+            {tab === 'comptes' && (
+              <AccountsTab
+                accounts={accounts}
+                profiles={profiles}
+                onAccountsChanged={loadAccounts}
+                onProfilesChanged={loadProfiles}
+              />
+            )}
             {tab === 'acces' && <AccessTab accounts={accounts} onAccountsChanged={loadAccounts} />}
             {tab === 'rotation' && <RotationTab />}
             {tab === 'onboarding' && <OnboardingTab />}
@@ -159,30 +187,129 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
   );
 }
 
-function AccountsTab({ accounts }: { accounts: AccountsPhase }) {
-  if (accounts.kind === 'loading') {
+/**
+ * Onglet "Comptes" : liste TOUS les profils applicatifs (pas seulement ceux
+ * enrôlés au coffre — `listAllProfiles`, croisée avec `accounts`, la liste
+ * `vault_user_keys` déjà chargée par le panneau pour l'onglet "Accès). Un
+ * monteur qui n'a jamais touché au coffre apparaît donc ici aussi, avec un
+ * badge neutre "Coffre : non enrôlé" — c'est justement ce qui permet de le
+ * supprimer sans détour par l'onglet "Accès".
+ *
+ * Suppression (bouton "Supprimer le compte") : jamais pour un admin, et
+ * jamais tant que l'accès coffre de la cible est actif ou qu'elle est
+ * récupérateur — l'Edge Function `delete-account` revérifie ces mêmes
+ * conditions côté serveur, ce gate côté UI n'est qu'un raccourci cohérent.
+ */
+function AccountsTab({
+  accounts,
+  profiles,
+  onAccountsChanged,
+  onProfilesChanged,
+}: {
+  accounts: AccountsPhase;
+  profiles: ProfilesPhase;
+  onAccountsChanged: () => void;
+  onProfilesChanged: () => void;
+}) {
+  const [pendingDelete, setPendingDelete] = useState<Profile | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleConfirmDelete() {
+    const target = pendingDelete;
+    if (!target) return;
+    setPendingDelete(null);
+    setDeletingId(target.id);
+    setDeleteError(null);
+    try {
+      await deleteAccount(target.id);
+      onProfilesChanged();
+      onAccountsChanged();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  if (profiles.kind === 'loading' || accounts.kind === 'loading') {
     return <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 24 }}>Chargement…</p>;
+  }
+  if (profiles.kind === 'error') {
+    return <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {profiles.message}</p>;
   }
   if (accounts.kind === 'error') {
     return <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {accounts.message}</p>;
   }
-  if (accounts.rows.length === 0) {
-    return <p style={{ fontSize: 13, color: textA(0.55) }}>Aucun compte enrôlé.</p>;
+  if (profiles.rows.length === 0) {
+    return <p style={{ fontSize: 13, color: textA(0.55) }}>Aucun compte.</p>;
   }
+
+  const vaultByUserId = new Map(accounts.rows.map((r) => [r.user_id, r]));
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {accounts.rows.map((r) => (
-        <div key={r.user_id} style={accountRowStyle}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, wordBreak: 'break-all' }}>
-            {r.full_name ?? r.user_id}
+      {deleteError && <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {deleteError}</p>}
+
+      {profiles.rows.map((p) => {
+        const vault = vaultByUserId.get(p.id) ?? null;
+        const vaultAccessOn = vault?.access_enabled === true;
+        const isRecoveryAdmin = vault?.is_recovery_admin === true;
+        const canDelete = p.role === 'monteur' && !vaultAccessOn && !isRecoveryAdmin;
+        const isDeleting = deletingId === p.id;
+        return (
+          <div key={p.id} style={accountRowStyle}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, wordBreak: 'break-all' }}>
+              {p.full_name ?? p.id}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <Badge label={p.role === 'admin' ? 'Admin' : 'Monteur'} active={p.role === 'admin'} />
+              {vault ? (
+                <>
+                  <Badge label="Enrôlé" active={vault.public_key !== null} />
+                  <Badge label="Accès coffre" active={vault.access_enabled} />
+                  <Badge label="Récupérateur" active={vault.is_recovery_admin} />
+                </>
+              ) : (
+                <Badge label="Coffre : non enrôlé" active={false} />
+              )}
+            </div>
+
+            {p.role === 'monteur' && (
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {vaultAccessOn && (
+                  <span style={{ fontSize: 12, color: textA(0.55), lineHeight: 1.4 }}>
+                    Révoque l'accès au coffre (onglet Accès) avant de pouvoir supprimer ce compte.
+                  </span>
+                )}
+                {isRecoveryAdmin && (
+                  <span style={{ fontSize: 12, color: textA(0.55), lineHeight: 1.4 }}>
+                    Compte récupérateur — suppression impossible depuis cet écran.
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(p)}
+                  disabled={!canDelete || isDeleting}
+                  style={{ ...revokeButtonStyle, alignSelf: 'flex-start', opacity: !canDelete || isDeleting ? 0.5 : 1 }}
+                >
+                  {isDeleting ? 'Suppression…' : 'Supprimer le compte'}
+                </button>
+              </div>
+            )}
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <Badge label="Enrôlé" active={r.public_key !== null} />
-            <Badge label="Accès coffre" active={r.access_enabled} />
-            <Badge label="Récupérateur" active={r.is_recovery_admin} />
-          </div>
-        </div>
-      ))}
+        );
+      })}
+
+      {pendingDelete && (
+        <ConfirmSheet
+          title="Supprimer ce compte ?"
+          message={`« ${pendingDelete.full_name ?? pendingDelete.id} » perdra définitivement l'accès à l'application. Cette action est irréversible.`}
+          confirmLabel="Supprimer"
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => void handleConfirmDelete()}
+        />
+      )}
     </div>
   );
 }
