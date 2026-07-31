@@ -44,7 +44,7 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
   const [noteSheet, setNoteSheet] = useState<'new' | DossierNoteView | null>(null);
   const [pendingDeleteNote, setPendingDeleteNote] = useState<DossierNoteView | null>(null);
   const [pendingDeletePhoto, setPendingDeletePhoto] = useState<DossierPhotoView | null>(null);
-  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
 
   // Les object URLs des vignettes sont chargées ici (octets protégés par JWT,
@@ -101,18 +101,31 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
     }
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (!file || !session?.user.id) return;
-    setUploading(true);
-    try {
-      await uploadDossierPhoto(dossierId, file, session.user.id);
-      onPhotosChanged();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Échec de l’envoi de la photo.');
-    } finally {
-      setUploading(false);
+    const auteur = session?.user.id;
+    if (files.length === 0 || !auteur) return;
+
+    // Envoi séquentiel (pas Promise.all) : une connexion chantier ne supporte
+    // pas des uploads en parallèle. Un échec n'interrompt pas les suivants.
+    let successCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < files.length; i++) {
+      setUploadProgress({ current: i + 1, total: files.length });
+      try {
+        await uploadDossierPhoto(dossierId, files[i], auteur);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setUploadProgress(null);
+    onPhotosChanged();
+    if (failCount > 0) {
+      showToast(
+        `${successCount} photo${successCount > 1 ? 's' : ''} ajoutée${successCount > 1 ? 's' : ''}, ${failCount} échec${failCount > 1 ? 's' : ''}`
+      );
     }
   };
 
@@ -167,13 +180,14 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '20px 0 10px' }}>
         <span style={{ fontSize: 15, fontWeight: 700 }}>Photos</span>
-        <label style={{ ...addButtonStyle, opacity: !isOnline || uploading ? 0.4 : 1, display: 'inline-flex', alignItems: 'center' }}>
-          {uploading ? 'Envoi…' : '+ Ajouter'}
+        <label style={{ ...addButtonStyle, opacity: !isOnline || uploadProgress ? 0.4 : 1, display: 'inline-flex', alignItems: 'center' }}>
+          {uploadProgress ? `Envoi ${uploadProgress.current}/${uploadProgress.total}…` : '+ Ajouter'}
           <input
             type="file"
             accept="image/*"
-            onChange={(e) => void handleFileChange(e)}
-            disabled={!isOnline || uploading}
+            multiple
+            onChange={(e) => void handleFilesChange(e)}
+            disabled={!isOnline || uploadProgress !== null}
             style={{ display: 'none' }}
           />
         </label>
