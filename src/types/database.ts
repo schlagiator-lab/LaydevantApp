@@ -141,3 +141,33 @@ export interface DossierDocumentComplet {
   product_label: string | null;
   origine: DossierDocumentOrigine;
 }
+// Carnet public par dossier (notes + photos), tables possédées par cette app.
+// Lues via les vues qui joignent profiles pour exposer le nom de l'auteur.
+
+export interface DossierNoteView {
+  id: string;
+  dossier_id: string;
+  titre: string | null;
+  texte: string;
+  auteur: string | null;
+  auteur_nom: string | null;
+  updated_by: string | null;
+  updated_by_nom: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DossierPhotoView {
+  id: string;
+  dossier_id: string;
+  note_id: string | null;
+  storage_provider: string;
+  storage_key: string;
+  mime: string | null;
+  taille: number | null;
+  largeur: number | null;
+  hauteur: number | null;
+  auteur: string | null;
+  auteur_nom: string | null;
+  created_at: string;
+}

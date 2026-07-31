@@ -9,13 +9,17 @@ import {
   getDossierDocumentsComplets,
   removeDossierEquipment,
   removeDossierDocument,
+  listDossierNotes,
+  listDossierPhotos,
   type DossierEquipment,
 } from '../lib/dossiers';
-import type { Dossier, DossierDocumentComplet } from '../types/database';
+import type { Dossier, DossierDocumentComplet, DossierNoteView, DossierPhotoView } from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
+import { CarnetSection } from '../components/CarnetSection';
+import { SectionHeader } from '../components/SectionHeader';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
 import { getVaultSecret } from '../lib/vaultSecrets';
@@ -35,6 +39,8 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [equipments, setEquipments] = useState<DossierEquipment[] | null>(null);
   const [documents, setDocuments] = useState<DossierDocumentComplet[] | null>(null);
+  const [notes, setNotes] = useState<DossierNoteView[] | null>(null);
+  const [photos, setPhotos] = useState<DossierPhotoView[] | null>(null);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showAddEquipment, setShowAddEquipment] = useState(false);
@@ -52,10 +58,12 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       if (!isOnline) return;
       setLoadError(null);
       try {
-        const [d, eqs, docs, pinned, vaultSecret] = await Promise.all([
+        const [d, eqs, docs, notesRows, photosRows, pinned, vaultSecret] = await Promise.all([
           getDossier(dossierId),
           listDossierEquipments(dossierId),
           getDossierDocumentsComplets(dossierId),
+          listDossierNotes(dossierId),
+          listDossierPhotos(dossierId),
           getAllPinnedDocuments(),
           // Existence seule (RLS filtre déjà les non-autorisés) — jamais de
           // déchiffrement ici, juste savoir s'il y a quelque chose à ouvrir.
@@ -65,6 +73,8 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         setDossier(d);
         setEquipments(eqs);
         setDocuments(docs);
+        setNotes(notesRows);
+        setPhotos(photosRows);
         setPinnedIds(new Set(pinned.map((p) => p.id)));
         setHasVaultNote(vaultSecret !== null);
       } catch (err) {
@@ -254,6 +264,15 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             )}
           </section>
 
+          <CarnetSection
+            dossierId={dossierId}
+            isOnline={isOnline}
+            notes={notes}
+            photos={photos}
+            onNotesChanged={() => void listDossierNotes(dossierId).then(setNotes)}
+            onPhotosChanged={() => void listDossierPhotos(dossierId).then(setPhotos)}
+          />
+
           <section>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Données sensibles</div>
             <button
@@ -333,22 +352,6 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   );
 }
 
-function SectionHeader({ title, onAdd, addDisabled }: { title: string; onAdd: () => void; addDisabled: boolean }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-      <span style={{ fontSize: 15, fontWeight: 700 }}>{title}</span>
-      <button
-        type="button"
-        onClick={onAdd}
-        disabled={addDisabled}
-        style={{ ...addButtonStyle, opacity: addDisabled ? 0.4 : 1 }}
-      >
-        + Ajouter
-      </button>
-    </div>
-  );
-}
-
 const backButtonStyle: React.CSSProperties = {
   flex: 'none',
   width: 32,
@@ -411,19 +414,6 @@ const linkButtonStyle: React.CSSProperties = {
   textDecoration: 'underline',
   cursor: 'pointer',
   padding: 0,
-};
-
-const addButtonStyle: React.CSSProperties = {
-  flex: 'none',
-  height: 32,
-  borderRadius: 10,
-  border: 'none',
-  background: colors.accent,
-  color: '#132146',
-  fontSize: 12.5,
-  fontWeight: 700,
-  padding: '0 12px',
-  cursor: 'pointer',
 };
 
 const sensitivePlaceholderStyle: React.CSSProperties = {
