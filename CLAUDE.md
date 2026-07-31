@@ -58,8 +58,9 @@ tel quel en composants.
 
 Le backend Supabase est en place et fonctionnel. **Ne pas modifier le schéma
 depuis cette app** — les tables métier (départements → documents) et dossiers
-sont gérées en dehors de ce dépôt (workflow n8n, admin Supabase direct) ; seule
-`web_search_log` a ses migrations versionnées ici, dans `supabase/migrations/`.
+sont gérées en dehors de ce dépôt (workflow n8n, admin Supabase direct) ; seules
+`web_search_log` et `onboarding_invitations` ont leurs migrations versionnées
+ici, dans `supabase/migrations/`.
 
 ### Bibliothèque de documents
 
@@ -75,7 +76,7 @@ pinned_documents user_id, document_id, pinned_at
 ```
 
 `documents.content` contient le texte intégral extrait du PDF. C'est ce champ
-qui alimente les deux moteurs de recherche (§7).
+qui alimente les deux moteurs de recherche (§8).
 
 `doc_type` ∈ `notice_installation`, `manuel_programmation`, `fiche_technique`,
 `schema`, `fiche_perso`, `autre`.
@@ -101,7 +102,18 @@ web_search_log   id, user_id, brand, model, created_at
 ```
 
 Journalise chaque appel à l'Edge Function `web-search-notices` : garde-fou de
-coût (plafond quotidien par utilisateur) et traçabilité. Voir §8.
+coût (plafond quotidien par utilisateur) et traçabilité. Voir §9.
+
+### Onboarding (allowlist)
+
+```
+onboarding_invitations  email (PK), role, note, created_by, created_at,
+                        consumed_at, consumed_by
+```
+
+Liste blanche d'emails autorisés à créer un compte applicatif. RLS
+admin-only ; consultée uniquement par l'Edge Function `enroll` en
+service_role. Voir §7.
 
 ### RPC
 
@@ -122,8 +134,8 @@ product_label, extrait, rank`.
 
 - `product_label` est **souvent null** (documents sans produit rattaché).
 - `extrait` est du **HTML** contenant des balises `<b>` autour des termes
-  trouvés. Voir §11 pour le traitement obligatoire.
-- La fonction exige une requête. Elle ne sert pas au mode parcours (§7).
+  trouvés. Voir §12 pour le traitement obligatoire.
+- La fonction exige une requête. Elle ne sert pas au mode parcours (§8).
 
 **`search_dossiers(q)`** — liste/filtre les dossiers clients par nom ou
 adresse ; `q` vide renvoie tous les dossiers.
@@ -154,11 +166,14 @@ sous-jacent).
   `admin` lisent tout.
 - Dossiers : lecture/écriture pour tout utilisateur authentifié (pas de
   restriction par créateur à ce stade).
+- `onboarding_invitations` : admin-only (lecture et écriture). L'anon n'a
+  aucune policy — le front n'y accède jamais, seule l'Edge Function `enroll`
+  la consulte en service_role (§7).
 
 L'application n'a donc jamais besoin d'écrire ailleurs que dans
 `pinned_documents`, `web_search_log`, `dossiers`, `dossier_produits` et
 `dossier_documents` — jamais dans `documents`/`products` directement (ça reste
-le rôle du pipeline d'ingestion n8n, y compris pour la capture web, §8).
+le rôle du pipeline d'ingestion n8n, y compris pour la capture web, §9).
 
 ### Stockage
 
@@ -262,7 +277,60 @@ jamais pendant une coupure. Résultat :
 
 ---
 
-## 7. Bibliothèque de documents — recherche et parcours
+## 7. Onboarding — enrôlement par liste blanche (allowlist)
+
+**Chantier en cours, pas encore implémenté** (seule la migration de la table
+est versionnée à ce stade — Edge Function `enroll` et écran d'enrôlement
+restent à construire).
+
+Création de compte contrôlée : pas d'inscription publique. Un admin "invite"
+un email, la personne s'auto-enrôle à l'URL de l'app (email connu + mot de
+passe qu'elle choisit + nom). Choisi pour une équipe peu à l'aise avec l'email
+(Outlook réinitialisé tous les 90 jours) : zéro round-trip email, zéro SMTP,
+mot de passe choisi par l'utilisateur.
+
+**Le verrou est CÔTÉ SERVEUR, jamais l'URL ni le client.** L'URL de l'app
+n'est pas secrète et la clé anon est publique : l'obscurité ne protège rien.
+Deux mesures indissociables :
+- **Inscriptions publiques Supabase désactivées** (sinon `signUp()` anon
+  contourne toute la liste — elle deviendrait décorative).
+- **Edge Function `enroll` (service_role)** : vérifie que l'email est bien
+  pending et non consommé AVANT de créer le compte. Même pattern que
+  `web-search-notices` (§9) : une fonction serveur tient le secret et fait le
+  contrôle.
+
+Flux : admin ajoute email + rôle (monteur/admin) → personne saisit email +
+mot de passe + nom → `enroll` valide le pending, `auth.admin.createUser(...,
+email_confirm: true)` (pas d'email de confirmation, connexion immédiate), crée
+le profil (nom + rôle de l'invitation), marque l'invitation consommée → login.
+
+**Table `onboarding_invitations`** (`supabase/migrations/20260731090000_onboarding_invitations.sql`) :
+`email` PK (normalisé lower+trim par trigger), `role`, `note`, `created_by`,
+`created_at`, `consumed_at` (null = pending), `consumed_by`. RLS **admin-only**
+(une policy `for all`) : l'anon n'a AUCUNE policy, la page d'enrôlement ne lit
+donc jamais la liste des emails invités (sinon fuite). Seule l'Edge Function
+la consulte, en service_role.
+
+**Ne pas confondre avec l'enrôlement du coffre.** Ici on crée le COMPTE
+APPLICATIF (login Supabase + profil : accès documents, dossiers, carnet).
+L'enrôlement du COFFRE (paire RSA + mot de passe de coffre, §11) reste une
+étape séparée, dans l'app, après login — c'est là que vit la règle
+"récupérateurs d'abord", inchangée. Un monteur onboardé utilise toute l'app ;
+son coffre reste verrouillé tant qu'il n'a pas fait son enrôlement coffre ET
+qu'un admin ne lui a pas donné accès.
+
+**Deux mots de passe distincts** : le mot de passe créé à l'onboarding est le
+LOGIN Supabase. Il ne doit être ni confondu ni réutilisé avec le mot de passe
+de COFFRE (défense en profondeur : le login part chez Supabase Auth, l'acteur
+même contre qui protège le zero-knowledge du coffre).
+
+**Séquencement du déploiement** : couper les inscriptions publiques Supabase
+seulement APRÈS que `enroll` est déployée et testée — jamais avant, sinon
+fenêtre où plus aucun compte ne peut être créé.
+
+---
+
+## 8. Bibliothèque de documents — recherche et parcours
 
 ### Deux moteurs de recherche
 
@@ -273,7 +341,7 @@ demande sur le `content` des documents épinglés uniquement (pas d'index
 persistant : le nombre de documents épinglés reste petit, reconstruire à
 chaque recherche est plus simple qu'un maintien incrémental). Il produit des
 extraits surlignés en repassant par la **même fonction** `sanitizeHeadline`
-que le moteur en ligne (§11) : les deux moteurs sont donc garantis visuellement
+que le moteur en ligne (§12) : les deux moteurs sont donc garantis visuellement
 identiques par construction, pas par coïncidence.
 
 L'écran de recherche bascule automatiquement en mode « épinglés uniquement »
@@ -320,7 +388,7 @@ pas synchronisés. Ils restent consultables hors ligne si le document est
 
 ---
 
-## 8. Recherche web de notices et capture
+## 9. Recherche web de notices et capture
 
 Extension en ligne uniquement, pour les produits absents de la bibliothèque.
 Spécification complète : `Feature recherche web notices.md`. Deux chemins
@@ -388,11 +456,11 @@ humaine (vérification en `CaptureSheet` avant envoi).
 
 ---
 
-## 9. Dossiers clients (étape A)
+## 10. Dossiers clients (étape A)
 
 Écrans en ligne uniquement : `DossiersScreen` (liste/recherche/création),
 `DossierScreen` (fiche — équipements, documentation, ouverture du coffre de
-données sensibles — §10, `Feature coffre données sensibles.md`). Code dans
+données sensibles — §11, `Feature coffre données sensibles.md`). Code dans
 `src/lib/dossiers.ts`, `src/screens/Dossier*.tsx`,
 `src/components/{DossierFormSheet,AddEquipmentSheet,AddDossierDocumentSheet}.tsx`.
 
@@ -414,11 +482,11 @@ données sensibles — §10, `Feature coffre données sensibles.md`). Code dans
 
 ---
 
-## 10. Ce qui reste à faire
+## 11. Ce qui reste à faire
 
 **Étape B — coffre de données sensibles : TERMINÉE.** Spécifiée et
 implémentée en totalité (tranches 1 à 6) ; détail complet et récapitulatif
-dans `Feature coffre données sensibles.md` (§11 pour l'état réel, y compris
+dans `Feature coffre données sensibles.md` (§12 pour l'état réel, y compris
 les quelques écarts par rapport à la conception initiale). Chiffrement
 côté client (WebCrypto), zero-knowledge vis-à-vis de Supabase, panneau admin
 (comptes / accès / rotation).
@@ -448,6 +516,11 @@ suppression manuelle en base — la RLS l'autorise déjà) ; pas de geste pour
 retirer le rôle `is_recovery_admin` (assumé, message explicite dans l'onglet
 Accès).
 
+**Chantier en cours — onboarding par liste blanche (§7).** Spécifié, migration
+`onboarding_invitations` versionnée. Restent à construire : l'Edge Function
+`enroll` et l'écran d'auto-enrôlement côté PWA, puis la coupure des
+inscriptions publiques Supabase (dans cet ordre, §7).
+
 **Prochain chantier — carnet non-sensible (pas commencé, pas spécifié).**
 Notes et photos de chantier **partagées en clair** (pas de chiffrement, pas
 de zero-knowledge) : compte-rendu de visite, photos d'installation, repères
@@ -459,12 +532,12 @@ direction sans une spécification dédiée au préalable, même convention que
 
 ---
 
-## 11. Traitement obligatoire de l'extrait surligné
+## 12. Traitement obligatoire de l'extrait surligné
 
 `ts_headline` (moteur en ligne) renvoie du HTML **non échappé**. Le champ
 `content` provient de PDF téléversés : il peut contenir n'importe quoi, y
 compris des balises. Injecter `extrait` directement dans le DOM serait une
-faille XSS. Le moteur hors ligne (§7) construit son propre extrait en texte
+faille XSS. Le moteur hors ligne (§8) construit son propre extrait en texte
 brut mais passe par le **même** traitement avant injection.
 
 Traitement imposé (`sanitizeHeadline`, `src/lib/excerpt.ts`) :
@@ -480,7 +553,7 @@ espacement disloque le mot.
 
 ---
 
-## 12. Sécurité
+## 13. Sécurité
 
 - **Seule la clé `anon` figure dans l'application front.** Jamais la clé
   `service_role` : elle contourne la RLS. Elle reste exclusivement dans n8n.
@@ -495,7 +568,7 @@ espacement disloque le mot.
   — écriture non authentifiée vers la bibliothèque (pollution, conso
   n8n/Supabase, pas d'exfiltration) — est **accepté à ce stade** car l'outil
   est interne. Pour un durcissement réel, router la capture par une Edge
-  Function `verify_jwt` (comme la recherche web, §8) qui rappellerait n8n avec
+  Function `verify_jwt` (comme la recherche web, §9) qui rappellerait n8n avec
   un secret côté serveur — à faire dans un cycle dédié si besoin. Reste malgré
   tout jamais commité (`.env*` dans `.gitignore`, seul `.env.example` sans
   valeurs est versionné).
@@ -504,13 +577,13 @@ espacement disloque le mot.
 - Les URL signées expirent (1 h). Ne pas les stocker : les régénérer à la
   demande. Une fois le PDF téléchargé dans le Cache API, il est servi
   localement et l'expiration n'a plus d'effet.
-- **Règle de contenu** (§8) : documentation fabricant librement diffusée
+- **Règle de contenu** (§9) : documentation fabricant librement diffusée
   uniquement — jamais de contenu sous licence de tiers (normes NIN/NIBT,
   contenus payants) capturé vers la bibliothèque.
 
 ---
 
-## 13. Déploiement
+## 14. Déploiement
 
 Cloudflare Workers avec static assets (et non Cloudflare Pages, déprécié pour
 les nouveaux projets). Build statique (`npm run build` : type-check puis build
@@ -539,7 +612,7 @@ configurer dans les paramètres du projet Cloudflare, `.env.local` n'étant pas
 versionné :
 
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
-- `VITE_N8N_INGEST_URL`, `VITE_N8N_INGEST_SECRET` (webhook de capture, §8)
+- `VITE_N8N_INGEST_URL`, `VITE_N8N_INGEST_SECRET` (webhook de capture, §9)
 
 Les secrets d'Edge Function (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`,
 `ANTHROPIC_WEB_SEARCH_TOOL_TYPE`, `WEB_SEARCH_MAX_USES`,
@@ -551,7 +624,7 @@ worker donc pas de PWA.
 
 ---
 
-## 14. À tester tôt, avant d'aller loin
+## 15. À tester tôt, avant d'aller loin
 
 Parc d'appareils : Android uniquement (aucun iOS). Chrome implémente
 `navigator.storage.persist()` et l'accorde en principe automatiquement aux
@@ -570,13 +643,13 @@ dans un onglet : la garantie de persistance en dépend.
 
 ---
 
-## 15. Hors périmètre actuel
+## 16. Hors périmètre actuel
 
 Ne pas implémenter, même partiellement, sans spécification dédiée au préalable :
 
-- le carnet non-sensible partagé (notes/photos en clair, §10) ;
+- le carnet non-sensible partagé (notes/photos en clair, §11) ;
 - résumé automatique, traduction, ou toute réponse générée par IA au-delà du
-  tri de résultats de la recherche web de notices (§8) ;
+  tri de résultats de la recherche web de notices (§9) ;
 - recherche web en masse ou programmée — une recherche = une action volontaire
   de l'utilisateur devant un équipement ;
 - interface générique d'ajout/édition de documents dans le front (l'ingestion

@@ -14,13 +14,16 @@ import {
 } from '../lib/vaultAdmin';
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
+import { listInvitations, addInvitation, removeInvitation } from '../lib/onboarding';
+import type { OnboardingInvitation, ProfileRole } from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { VaultRotationSheet } from '../components/VaultRotationSheet';
-import { colors, fonts, textA, successA } from '../styles/tokens';
+import { ConfirmSheet } from '../components/ConfirmSheet';
+import { colors, fonts, textA, successA, accentA } from '../styles/tokens';
 
 type Phase = { kind: 'loading' } | { kind: 'checkError'; message: string } | { kind: 'forbidden' } | { kind: 'ready' };
 
-type Tab = 'comptes' | 'acces' | 'rotation';
+type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding';
 
 type AccountsPhase =
   | { kind: 'loading' }
@@ -134,11 +137,13 @@ export function VaultAdminScreen() {
               <TabButton label="Comptes" active={tab === 'comptes'} onClick={() => setTab('comptes')} />
               <TabButton label="Accès" active={tab === 'acces'} onClick={() => setTab('acces')} />
               <TabButton label="Rotation" active={tab === 'rotation'} onClick={() => setTab('rotation')} />
+              <TabButton label="Onboarding" active={tab === 'onboarding'} onClick={() => setTab('onboarding')} />
             </div>
 
             {tab === 'comptes' && <AccountsTab accounts={accounts} />}
             {tab === 'acces' && <AccessTab accounts={accounts} onAccountsChanged={loadAccounts} />}
             {tab === 'rotation' && <RotationTab />}
+            {tab === 'onboarding' && <OnboardingTab />}
           </div>
         )}
       </div>
@@ -635,6 +640,198 @@ function RotationTab() {
         />
       )}
     </div>
+  );
+}
+
+type InvitationsPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: OnboardingInvitation[] };
+
+function formatDate(iso: string): string {
+  return new Intl.DateTimeFormat('fr-CH', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso));
+}
+
+/**
+ * Onglet "Onboarding" (CLAUDE.md §7) : gère la liste blanche d'emails
+ * autorisés à s'auto-enrôler. Pas de vérification `role === 'admin'` propre
+ * à cet onglet : `is_vault_admin()` (qui gate déjà tout VaultAdminScreen via
+ * `phase.kind === 'ready'`) teste exactement la même condition côté base
+ * (`profiles.role = 'admin'`, cf. migration vault_user_keys) que la RLS de
+ * `onboarding_invitations` — le gate d'écran est donc déjà en place, pas
+ * besoin d'un second aller-retour réseau pour la même réponse.
+ */
+function OnboardingTab() {
+  const [invitations, setInvitations] = useState<InvitationsPhase>({ kind: 'loading' });
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<ProfileRole>('monteur');
+  const [note, setNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<OnboardingInvitation | null>(null);
+  const [removingEmail, setRemovingEmail] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  const loadInvitations = useCallback(async () => {
+    setInvitations({ kind: 'loading' });
+    try {
+      const rows = await listInvitations();
+      setInvitations({ kind: 'loaded', rows });
+    } catch (err) {
+      setInvitations({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      await loadInvitations();
+    })();
+  }, [loadInvitations]);
+
+  const trimmedEmail = email.trim();
+  const emailValid = trimmedEmail.includes('@');
+
+  async function handleAddSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!emailValid || submitting) return;
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      await addInvitation({ email: trimmedEmail, role, note: note.trim() || null });
+      setEmail('');
+      setRole('monteur');
+      setNote('');
+      await loadInvitations();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleConfirmRemove() {
+    const invite = pendingRemove;
+    if (!invite) return;
+    setPendingRemove(null);
+    setRemovingEmail(invite.email);
+    setRemoveError(null);
+    try {
+      await removeInvitation(invite.email);
+      await loadInvitations();
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemovingEmail(null);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <form onSubmit={(e) => void handleAddSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <input
+          type="email"
+          placeholder="Email"
+          autoComplete="off"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={tabInputStyle}
+        />
+        <select value={role} onChange={(e) => setRole(e.target.value as ProfileRole)} style={tabInputStyle}>
+          <option value="monteur">Monteur</option>
+          <option value="admin">Admin</option>
+        </select>
+        <input
+          type="text"
+          placeholder="Note (optionnel)"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          style={tabInputStyle}
+        />
+        {formError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{formError}</span>}
+        <button
+          type="submit"
+          disabled={!emailValid || submitting}
+          style={{ ...tabPrimaryButtonStyle, opacity: !emailValid || submitting ? 0.5 : 1 }}
+        >
+          {submitting ? 'Invitation…' : 'Inviter'}
+        </button>
+      </form>
+
+      {removeError && <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {removeError}</p>}
+
+      {invitations.kind === 'loading' && (
+        <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>
+      )}
+      {invitations.kind === 'error' && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {invitations.message}</p>
+      )}
+      {invitations.kind === 'loaded' && invitations.rows.length === 0 && (
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucune invitation.</p>
+      )}
+
+      {invitations.kind === 'loaded' &&
+        invitations.rows.map((inv) => (
+          <div key={inv.email} style={accountRowStyle}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, wordBreak: 'break-all' }}>{inv.email}</div>
+                {inv.note && (
+                  <div style={{ fontSize: 12.5, color: textA(0.6), marginTop: 2 }}>{inv.note}</div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingRemove(inv)}
+                disabled={removingEmail === inv.email}
+                style={{ ...revokeButtonStyle, opacity: removingEmail === inv.email ? 0.6 : 1 }}
+              >
+                {removingEmail === inv.email ? '…' : 'Retirer'}
+              </button>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              <Badge label={inv.role === 'admin' ? 'Admin' : 'Monteur'} active={inv.role === 'admin'} />
+              {inv.consumed_at ? (
+                <StatusChip label={`Enrôlé le ${formatDate(inv.consumed_at)}`} kind="success" />
+              ) : (
+                <StatusChip label="En attente" kind="pending" />
+              )}
+            </div>
+          </div>
+        ))}
+
+      {pendingRemove && (
+        <ConfirmSheet
+          title="Retirer cette invitation ?"
+          message={`« ${pendingRemove.email} » ne pourra plus s'enrôler avec ce lien tant qu'elle n'est pas réinvitée.`}
+          confirmLabel="Retirer"
+          onCancel={() => setPendingRemove(null)}
+          onConfirm={() => void handleConfirmRemove()}
+        />
+      )}
+    </div>
+  );
+}
+
+function StatusChip({ label, kind }: { label: string; kind: 'success' | 'pending' }) {
+  const color = kind === 'success' ? colors.success : colors.accent;
+  const background = kind === 'success' ? successA(0.18) : accentA(0.18);
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 9px',
+        borderRadius: 100,
+        background,
+        color,
+        fontSize: 11.5,
+        fontWeight: 700,
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      {label}
+    </span>
   );
 }
 

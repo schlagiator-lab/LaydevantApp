@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { AuthProvider } from './lib/auth';
 import { useAuth } from './lib/useAuth';
 import { NavigationProvider } from './lib/NavigationProvider';
@@ -7,6 +7,7 @@ import { ToastProvider } from './lib/ToastProvider';
 import { VaultSessionProvider } from './lib/vaultSession';
 import { syncReferentiel } from './lib/referentiel';
 import { LoginScreen } from './screens/LoginScreen';
+import { EnrollScreen } from './screens/EnrollScreen';
 import { HomeScreen } from './screens/HomeScreen';
 import { DepartmentScreen } from './screens/DepartmentScreen';
 import { SearchScreen } from './screens/SearchScreen';
@@ -73,10 +74,30 @@ function AuthedApp() {
   );
 }
 
+// Pas de routeur : la bascule login/enrôlement est un simple état local.
+// AuthGate reste monté en permanence (seule la branche needsLogin change),
+// donc `mode` ne se réinitialise pas tout seul entre deux passages par
+// l'écran de login — sans le reset ci-dessous (fait pendant le rendu, pas
+// dans un effet : pattern React standard pour ajuster un état au changement
+// d'une prop/valeur externe), un aller-retour enrôlement → connexion auto →
+// déconnexion plus tard rouvrirait l'app directement sur EnrollScreen.
 function AuthGate() {
   const { isReady, needsLogin } = useAuth();
+  const [mode, setMode] = useState<'login' | 'enroll'>('login');
+  const [prevNeedsLogin, setPrevNeedsLogin] = useState(needsLogin);
+
+  if (needsLogin !== prevNeedsLogin) {
+    setPrevNeedsLogin(needsLogin);
+    if (!needsLogin) setMode('login');
+  }
+
   if (!isReady) return null;
-  return needsLogin ? <LoginScreen /> : <AuthedApp />;
+  if (!needsLogin) return <AuthedApp />;
+  return mode === 'login' ? (
+    <LoginScreen onEnroll={() => setMode('enroll')} />
+  ) : (
+    <EnrollScreen onLogin={() => setMode('login')} />
+  );
 }
 
 function App() {

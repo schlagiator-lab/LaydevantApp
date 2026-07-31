@@ -1,26 +1,51 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
+import { enroll } from '../lib/onboarding';
 import { colors, fonts, textA } from '../styles/tokens';
 
-export interface LoginScreenProps {
-  onEnroll: () => void;
+export interface EnrollScreenProps {
+  onLogin: () => void;
 }
 
-export function LoginScreen({ onEnroll }: LoginScreenProps) {
+/**
+ * Auto-enrôlement (CLAUDE.md §7) : la personne doit être sur la liste blanche
+ * (onboarding_invitations, email non consommé) pour que enroll() réussisse —
+ * l'Edge Function fait tout le contrôle, cet écran ne fait qu'appeler.
+ * Connexion automatique après succès, comme LoginScreen.
+ */
+export function EnrollScreen({ onLogin }: EnrollScreenProps) {
   const { signInWithPassword, isOnline } = useAuth();
   const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!isOnline || submitting) return;
-    setSubmitting(true);
     setError(null);
-    const { error: signInError } = await signInWithPassword(email, password);
-    setSubmitting(false);
-    if (signInError) setError(signInError);
+
+    if (password.length < 12) {
+      setError('Mot de passe : 12 caractères minimum.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Les mots de passe ne correspondent pas.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await enroll({ email, password, fullName });
+      const { error: signInError } = await signInWithPassword(email, password);
+      if (signInError) setError(signInError);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const inputStyle: React.CSSProperties = {
@@ -59,7 +84,7 @@ export function LoginScreen({ onEnroll }: LoginScreenProps) {
       />
 
       <form
-        onSubmit={handleSubmit}
+        onSubmit={(e) => void handleSubmit(e)}
         style={{ width: '100%', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 12 }}
       >
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -75,13 +100,39 @@ export function LoginScreen({ onEnroll }: LoginScreenProps) {
         </label>
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: textA(0.6) }}>Nom complet</span>
+          <input
+            type="text"
+            autoComplete="name"
+            required
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            style={inputStyle}
+          />
+        </label>
+
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ fontSize: 12.5, fontWeight: 600, color: textA(0.6) }}>Mot de passe</span>
           <input
             type="password"
-            autoComplete="current-password"
+            autoComplete="new-password"
             required
+            minLength={12}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            style={inputStyle}
+          />
+        </label>
+
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: textA(0.6) }}>Confirmer le mot de passe</span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            required
+            minLength={12}
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
             style={inputStyle}
           />
         </label>
@@ -106,7 +157,7 @@ export function LoginScreen({ onEnroll }: LoginScreenProps) {
               style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', background: colors.accent }}
             />
             <span style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.4 }}>
-              Hors ligne — la connexion nécessite une connexion réseau.
+              Hors ligne — l'enrôlement nécessite une connexion réseau.
             </span>
           </div>
         )}
@@ -126,11 +177,11 @@ export function LoginScreen({ onEnroll }: LoginScreenProps) {
             marginTop: 4,
           }}
         >
-          {submitting ? 'Connexion…' : 'Se connecter'}
+          {submitting ? 'Enrôlement…' : "S'enrôler"}
         </button>
 
-        <button type="button" onClick={onEnroll} style={linkButtonStyle}>
-          Première connexion ?
+        <button type="button" onClick={onLogin} style={linkButtonStyle}>
+          J'ai déjà un compte
         </button>
       </form>
     </div>

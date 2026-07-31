@@ -171,3 +171,13 @@ export interface DossierPhotoView {
   auteur_nom: string | null;
   created_at: string;
 }
+
+export interface OnboardingInvitation {
+  email: string;
+  role: ProfileRole;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+  consumed_at: string | null;
+  consumed_by: string | null;
+}
