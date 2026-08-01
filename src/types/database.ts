@@ -120,6 +120,7 @@ export interface SearchDossiersResult {
   id: string;
   nom_client: string;
   adresse: string | null;
+  notes: string | null;
   nb_produits: number;
   nb_documents: number;
 }

@@ -164,10 +164,15 @@ export function DossiersScreen() {
                   width: '100%',
                 }}
               >
-                <span style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>{dossier.nom_client}</span>
-                {dossier.adresse && (
-                  <span style={{ fontSize: 13.5, color: textA(0.65), fontWeight: 500 }}>{dossier.adresse}</span>
-                )}
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>{dossier.nom_client}</div>
+                    {dossier.adresse && (
+                      <div style={{ fontSize: 13.5, color: textA(0.65), fontWeight: 500, marginTop: 2 }}>{dossier.adresse}</div>
+                    )}
+                  </div>
+                  {dossier.notes && <div style={noteBadgeStyle}>{dossier.notes}</div>}
+                </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: textA(0.55) }}>
                     {countsLabel(dossier.nb_produits, dossier.nb_documents)}
@@ -211,6 +216,21 @@ const eyebrowStyle: React.CSSProperties = {
   letterSpacing: '0.06em',
   textTransform: 'uppercase',
   color: textA(0.55),
+};
+
+const noteBadgeStyle: React.CSSProperties = {
+  flex: 'none',
+  maxWidth: 120,
+  fontSize: 12,
+  fontWeight: 600,
+  color: colors.accent,
+  background: 'rgba(222, 122, 34, 0.15)',
+  border: '1px solid rgba(222, 122, 34, 0.35)',
+  borderRadius: 100,
+  padding: '5px 10px',
+  lineHeight: 1.3,
+  textAlign: 'right',
+  overflowWrap: 'break-word',
 };
 
 const offlineBannerStyle: React.CSSProperties = {
