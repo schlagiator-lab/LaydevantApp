@@ -18,6 +18,7 @@ import { StatusPill } from '../components/StatusPill';
 import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
+import { DossierFormSheet } from '../components/DossierFormSheet';
 import { CarnetSection } from '../components/CarnetSection';
 import { SectionHeader } from '../components/SectionHeader';
 import { ConfirmSheet } from '../components/ConfirmSheet';
@@ -48,6 +49,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [pendingRemoveEquipment, setPendingRemoveEquipment] = useState<DossierEquipment | null>(null);
   const [pendingRemoveDocument, setPendingRemoveDocument] = useState<DossierDocumentComplet | null>(null);
   const [showVault, setShowVault] = useState(false);
+  const [showEditDossier, setShowEditDossier] = useState(false);
   // null = pas encore su (chargement ou hors ligne) ; true/false = présence
   // réelle d'une ligne vault_secrets, sans jamais la déchiffrer ici.
   const [hasVaultNote, setHasVaultNote] = useState<boolean | null>(null);
@@ -150,7 +152,29 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             </button>
             <span style={eyebrowStyle}>Dossier client</span>
           </div>
-          <StatusPill online={isOnline} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {dossier && (
+              <button
+                type="button"
+                onClick={() => setShowEditDossier(true)}
+                disabled={!isOnline}
+                aria-label="Modifier le dossier"
+                style={{ ...editButtonStyle, opacity: isOnline ? 1 : 0.4 }}
+              >
+                <svg width="15" height="15" viewBox="0 0 20 20" aria-hidden="true">
+                  <path
+                    d="M14.5 3.5l2 2-9 9-2.6.6.6-2.6 9-9z"
+                    fill="none"
+                    stroke={colors.text}
+                    strokeWidth="1.6"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            )}
+            <StatusPill online={isOnline} />
+          </div>
         </div>
 
         {dossier && (
@@ -297,6 +321,17 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         </div>
       )}
 
+      {showEditDossier && dossier && (
+        <DossierFormSheet
+          dossier={dossier}
+          onClose={() => setShowEditDossier(false)}
+          onCreated={(saved) => {
+            setDossier(saved);
+            setShowEditDossier(false);
+          }}
+        />
+      )}
+
       {showAddEquipment && dossier && (
         <AddEquipmentSheet
           dossierId={dossier.id}
@@ -366,6 +401,19 @@ const eyebrowStyle: React.CSSProperties = {
   letterSpacing: '0.06em',
   textTransform: 'uppercase',
   color: textA(0.55),
+};
+
+const editButtonStyle: React.CSSProperties = {
+  flex: 'none',
+  width: 32,
+  height: 32,
+  borderRadius: '50%',
+  background: textA(0.1),
+  border: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  cursor: 'pointer',
 };
 
 const noteBadgeStyle: React.CSSProperties = {

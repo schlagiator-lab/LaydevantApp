@@ -44,6 +44,20 @@ export async function createDossier(input: {
   return data as Dossier;
 }
 
+export async function updateDossier(
+  id: string,
+  input: { nomClient: string; adresse: string | null; notes: string | null },
+): Promise<Dossier> {
+  const { data, error } = await supabase
+    .from('dossiers')
+    .update({ nom_client: input.nomClient, adresse: input.adresse, notes: input.notes })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as Dossier;
+}
+
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */
 export async function getDossierDocumentsComplets(dossierId: string): Promise<DossierDocumentComplet[]> {
   const { data, error } = await supabase.rpc('dossier_documents_complets', { p_dossier_id: dossierId });

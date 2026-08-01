@@ -1,21 +1,24 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/useAuth';
-import { createDossier } from '../lib/dossiers';
+import { createDossier, updateDossier } from '../lib/dossiers';
 import type { Dossier } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface DossierFormSheetProps {
+  /** Présent = édition d'un dossier existant ; absent = création. */
+  dossier?: Dossier;
   onClose: () => void;
   onCreated: (dossier: Dossier) => void;
 }
 
-/** Formulaire de création — nom du client requis, adresse et notes optionnelles. */
-export function DossierFormSheet({ onClose, onCreated }: DossierFormSheetProps) {
+/** Formulaire de création/édition — nom du client requis, adresse et notes optionnelles. */
+export function DossierFormSheet({ dossier, onClose, onCreated }: DossierFormSheetProps) {
   const { session } = useAuth();
+  const isEdit = !!dossier;
 
-  const [nomClient, setNomClient] = useState('');
-  const [adresse, setAdresse] = useState('');
-  const [notes, setNotes] = useState('');
+  const [nomClient, setNomClient] = useState(dossier?.nom_client ?? '');
+  const [adresse, setAdresse] = useState(dossier?.adresse ?? '');
+  const [notes, setNotes] = useState(dossier?.notes ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,15 +29,21 @@ export function DossierFormSheet({ onClose, onCreated }: DossierFormSheetProps) 
     setSubmitting(true);
     setError(null);
     try {
-      const dossier = await createDossier({
-        nomClient: nomClient.trim(),
-        adresse: adresse.trim() || null,
-        notes: notes.trim() || null,
-        createdBy: session.user.id,
-      });
-      onCreated(dossier);
+      const saved = isEdit
+        ? await updateDossier(dossier!.id, {
+            nomClient: nomClient.trim(),
+            adresse: adresse.trim() || null,
+            notes: notes.trim() || null,
+          })
+        : await createDossier({
+            nomClient: nomClient.trim(),
+            adresse: adresse.trim() || null,
+            notes: notes.trim() || null,
+            createdBy: session.user.id,
+          });
+      onCreated(saved);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Échec de la création.');
+      setError(err instanceof Error ? err.message : `Échec de ${isEdit ? 'la modification' : 'la création'}.`);
     } finally {
       setSubmitting(false);
     }
@@ -70,7 +79,9 @@ export function DossierFormSheet({ onClose, onCreated }: DossierFormSheetProps) 
       >
         <div style={{ width: 36, height: 4, borderRadius: 2, background: textA(0.25), margin: '0 auto 16px' }} />
 
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 18 }}>Nouveau dossier</div>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 18 }}>
+          {isEdit ? 'Modifier le dossier' : 'Nouveau dossier'}
+        </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <Field label="Nom du client">
@@ -112,7 +123,7 @@ export function DossierFormSheet({ onClose, onCreated }: DossierFormSheetProps) 
             disabled={!canSubmit}
             style={{ ...primaryButtonStyle, opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? 'pointer' : 'default' }}
           >
-            {submitting ? 'Création…' : 'Créer le dossier'}
+            {submitting ? (isEdit ? 'Enregistrement…' : 'Création…') : isEdit ? 'Enregistrer' : 'Créer le dossier'}
           </button>
         </div>
       </div>
