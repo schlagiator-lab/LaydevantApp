@@ -46,6 +46,7 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
   const [pendingDeletePhoto, setPendingDeletePhoto] = useState<DossierPhotoView | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
+  const [viewedPhoto, setViewedPhoto] = useState<DossierPhotoView | null>(null);
 
   // Les object URLs des vignettes sont chargées ici (octets protégés par JWT,
   // jamais `storage_key` directement dans un src) et révoquées dès que la
@@ -201,11 +202,18 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
           {photos.map((photo) => (
             <div key={photo.id} style={{ position: 'relative', aspectRatio: '1', borderRadius: 10, overflow: 'hidden', background: textA(0.08) }}>
               {photoUrls[photo.id] && (
-                <img
-                  src={photoUrls[photo.id]}
-                  alt=""
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                />
+                <button
+                  type="button"
+                  onClick={() => setViewedPhoto(photo)}
+                  aria-label="Voir la photo"
+                  style={photoThumbButtonStyle}
+                >
+                  <img
+                    src={photoUrls[photo.id]}
+                    alt=""
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  />
+                </button>
               )}
               <button
                 type="button"
@@ -253,6 +261,25 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
           onConfirm={() => void confirmDeletePhoto()}
         />
       )}
+
+      {viewedPhoto && photoUrls[viewedPhoto.id] && (
+        <div onClick={() => setViewedPhoto(null)} style={photoViewerOverlayStyle}>
+          <button
+            type="button"
+            onClick={() => setViewedPhoto(null)}
+            aria-label="Fermer"
+            style={photoViewerCloseButtonStyle}
+          >
+            ×
+          </button>
+          <img
+            src={photoUrls[viewedPhoto.id]}
+            alt=""
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -285,6 +312,44 @@ const linkButtonStyle: React.CSSProperties = {
   textDecoration: 'underline',
   cursor: 'pointer',
   padding: 0,
+};
+
+const photoThumbButtonStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  height: '100%',
+  padding: 0,
+  border: 'none',
+  background: 'none',
+  cursor: 'pointer',
+};
+
+const photoViewerOverlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0, 0, 0, 0.9)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 24,
+  boxSizing: 'border-box',
+  zIndex: 1400,
+};
+
+const photoViewerCloseButtonStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 16,
+  right: 16,
+  width: 36,
+  height: 36,
+  borderRadius: '50%',
+  border: 'none',
+  background: 'rgba(255, 255, 255, 0.15)',
+  color: '#fff',
+  fontSize: 20,
+  lineHeight: '36px',
+  padding: 0,
+  cursor: 'pointer',
 };
 
 const deletePhotoButtonStyle: React.CSSProperties = {

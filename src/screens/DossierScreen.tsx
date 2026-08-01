@@ -154,15 +154,15 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         </div>
 
         {dossier && (
-          <>
-            <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.25 }}>{dossier.nom_client}</div>
-            {dossier.adresse && (
-              <div style={{ fontSize: 14, color: textA(0.65), fontWeight: 500, marginTop: 4 }}>{dossier.adresse}</div>
-            )}
-            {dossier.notes && (
-              <div style={{ fontSize: 13.5, color: textA(0.6), lineHeight: 1.5, marginTop: 8 }}>{dossier.notes}</div>
-            )}
-          </>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.25 }}>{dossier.nom_client}</div>
+              {dossier.adresse && (
+                <div style={{ fontSize: 14, color: textA(0.65), fontWeight: 500, marginTop: 4 }}>{dossier.adresse}</div>
+              )}
+            </div>
+            {dossier.notes && <div style={noteBadgeStyle}>{dossier.notes}</div>}
+          </div>
         )}
       </div>
 
@@ -340,12 +340,8 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       {showVault && dossier && (
         <VaultSheet
           dossierId={dossier.id}
-          onClose={() => {
-            setShowVault(false);
-            void getVaultSecret(dossier.id)
-              .then((secret) => setHasVaultNote(secret !== null))
-              .catch(() => {});
-          }}
+          onNotesCountChange={(count) => setHasVaultNote(count > 0)}
+          onClose={() => setShowVault(false)}
         />
       )}
     </div>
@@ -370,6 +366,21 @@ const eyebrowStyle: React.CSSProperties = {
   letterSpacing: '0.06em',
   textTransform: 'uppercase',
   color: textA(0.55),
+};
+
+const noteBadgeStyle: React.CSSProperties = {
+  flex: 'none',
+  maxWidth: 140,
+  fontSize: 12,
+  fontWeight: 600,
+  color: colors.accent,
+  background: 'rgba(222, 122, 34, 0.15)',
+  border: '1px solid rgba(222, 122, 34, 0.35)',
+  borderRadius: 100,
+  padding: '5px 10px',
+  lineHeight: 1.3,
+  textAlign: 'right',
+  overflowWrap: 'break-word',
 };
 
 const offlineBannerStyle: React.CSSProperties = {

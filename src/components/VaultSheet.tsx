@@ -19,6 +19,9 @@ import { colors, fonts, textA } from '../styles/tokens';
 export interface VaultSheetProps {
   dossierId: string;
   onClose: () => void;
+  /** Compte réel de notes déchiffrées — jamais connu avant déverrouillage, donc
+   * jamais appelé avant que `notes` reflète un contenu effectivement lu. */
+  onNotesCountChange?: (count: number) => void;
 }
 
 interface VaultNote {
@@ -73,7 +76,7 @@ function parseNotes(plaintext: string): VaultNote[] {
  * un seul blob chiffré par dossier (`vault_secrets`), les notes ne sont
  * qu'une structure JSON à l'intérieur de ce blob.
  */
-export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
+export function VaultSheet({ dossierId, onClose, onNotesCountChange }: VaultSheetProps) {
   const { session, isOnline } = useAuth();
   const nav = useNavigation();
   const userId = session?.user.id ?? null;
@@ -145,6 +148,7 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
         if (cancelled) return;
         if (!secret) {
           setNotes([]);
+          onNotesCountChange?.(0);
           setContent({ kind: 'empty' });
           return;
         }
@@ -163,7 +167,9 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
         const dek = await unwrapDek(access.wrapped_dek, privateKey);
         const plaintext = await decryptContent(dek, secret.ciphertext, secret.content_iv);
         if (cancelled) return;
-        setNotes(parseNotes(plaintext));
+        const parsed = parseNotes(plaintext);
+        setNotes(parsed);
+        onNotesCountChange?.(parsed.length);
         setContent({ kind: 'ready', dek });
       } catch (err) {
         if (!cancelled) {
@@ -247,6 +253,7 @@ export function VaultSheet({ dossierId, onClose }: VaultSheetProps) {
         setContent({ kind: 'ready', dek });
       }
       setNotes(nextNotes);
+      onNotesCountChange?.(nextNotes.length);
       return true;
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
