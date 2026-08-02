@@ -113,6 +113,22 @@ notice : essaie une orthographe alternative de la référence, retire ou change
 le terme de contexte métier, ou cible directement le site du fabricant si tu
 l'as identifié. N'abandonne pas après un seul essai raté.
 
+Si la référence exacte ne donne toujours pas de documentation, élargis à la
+GAMME avant de conclure à l'absence : retire le suffixe de déclinaison de la
+référence pour retrouver la famille de produits (par exemple "ABA/S 1.2.1" ->
+"ABA/S", "TN225-A" -> "TN225", "6108/07-500" -> "6108/07"), et cherche le
+manuel ou la fiche qui couvre cette série. De nombreux fabricants — en KNX tout
+particulièrement — publient un seul document pour toute une famille de
+références plutôt qu'un document par déclinaison : le manuel de la référence
+exacte peut donc ne pas exister isolément alors que celui de la gamme, lui,
+existe et s'applique. Un tel document est pertinent et doit être retenu : dans
+son \`title\`, indique explicitement qu'il couvre la gamme et non la seule
+référence demandée (par exemple "Manuel série ABA/S — couvre la réf. ABA/S
+1.2.1"). Pour le niveau de confiance, applique la règle de la section "Niveau
+de confiance" : "moyenne" si le document de gamme mentionne ou englobe
+clairement la référence demandée, "faible" s'il s'agit d'un document générique
+à toute la famille sans confirmation que la référence précise y figure.
+
 ## Critères de sélection, dans cet ordre de priorité
 
 1. Source fabricant officielle en priorité absolue. Une source non fabricante
