@@ -46,7 +46,13 @@ uniquement.
   binaires volumineux)
 - **Supabase Edge Functions (Deno)** pour la recherche web de notices — seule
   pièce du système qui appelle l'API Anthropic
-- **Cloudflare Workers** (static assets) pour l'hébergement
+- **Cloudflare Workers** (static assets) pour l'hébergement, avec une route
+  API (`/api/photos`, `worker/index.js`) qui sert de proxy authentifié vers
+  un bucket **Cloudflare R2** (`PHOTOS_BUCKET`) pour les photos du carnet
+  client (§10) — indépendant du bucket Supabase `documents` (§3). Le Worker
+  valide le bearer token en le rejouant sur `GET /auth/v1/user` de l'API
+  Supabase Auth avant tout accès ; pas de signed URL, pas de RLS ici, la
+  vérification est entièrement côté Worker
 
 Pas de framework CSS lourd, tout en styles inline avec les tokens de
 `src/styles/tokens.ts`. Le design est fourni en HTML/CSS dans `design/`, porté
@@ -59,8 +65,10 @@ tel quel en composants.
 Le backend Supabase est en place et fonctionnel. **Ne pas modifier le schéma
 depuis cette app** — les tables métier (départements → documents) et dossiers
 sont gérées en dehors de ce dépôt (workflow n8n, admin Supabase direct) ; seules
-`web_search_log` et `onboarding_invitations` ont leurs migrations versionnées
-ici, dans `supabase/migrations/`.
+`web_search_log`, `onboarding_invitations` et l'ajout `dossier_photos.titre`
+ont leurs migrations versionnées ici, dans `supabase/migrations/`. Les tables
+`dossier_notes`/`dossier_photos` (carnet, §10) ont elles aussi été créées hors
+dépôt — seule leur évolution ultérieure (`titre`) est versionnée.
 
 ### Bibliothèque de documents
 
@@ -94,6 +102,30 @@ dossier toutes les notices `documents` rattachées à son `product_id`. Un
 document peut aussi être rattaché directement (`dossier_documents`), sans
 passer par un équipement — les deux voies sont dédupliquées et distinguées par
 le champ `origine` (`'equipement' | 'direct'`) de la RPC ci-dessous.
+
+### Carnet public du dossier (notes + photos)
+
+```
+dossier_notes    id, dossier_id, titre, texte, auteur, updated_by,
+                 created_at, updated_at
+dossier_photos   id, dossier_id, note_id, storage_provider, storage_key,
+                 mime, taille, largeur, hauteur, auteur, created_at, titre
+```
+
+Partagé en clair entre toute l'équipe, sans rapport avec le coffre (§11) —
+voir §10 pour le détail fonctionnel. `dossier_photos.storage_provider` vaut
+toujours `'r2'` : les octets vivent dans le bucket Cloudflare R2 `PHOTOS_BUCKET`
+(§2), pas dans le Storage Supabase — `storage_key` est la clé R2
+(`dossiers/{dossier_id}/{uuid}.{ext}`), jamais une clé du bucket `documents`.
+`titre` est un simple champ texte éditable/supprimable sur la photo
+existante (aucune copie créée pour ce cas, contrairement à l'annotation par
+dessin, §10).
+
+Lues via des vues qui joignent `profiles` pour exposer le nom de l'auteur :
+`dossier_notes_view` (+ `updated_by_nom`), `dossier_photos_view` (+
+`auteur_nom`). Même piège qu'ailleurs sur les vues : `CREATE OR REPLACE VIEW`
+n'autorise pas de réordonner/insérer une colonne existante, seulement d'en
+ajouter une en fin de liste — voir la migration `titre` en exemple.
 
 ### Recherche web de notices
 
@@ -164,24 +196,33 @@ sous-jacent).
   chaque utilisateur.
 - `web_search_log` : chaque utilisateur écrit/lit ses propres lignes ; les
   `admin` lisent tout.
-- Dossiers : lecture/écriture pour tout utilisateur authentifié (pas de
-  restriction par créateur à ce stade).
+- Dossiers (y compris `dossier_notes`/`dossier_photos`, carnet §10) :
+  lecture/écriture pour tout utilisateur authentifié (pas de restriction par
+  créateur à ce stade) — `updateDossierNote`/`updateDossierPhotoTitre`
+  écrivent directement sur la table, jamais via la vue.
 - `onboarding_invitations` : admin-only (lecture et écriture). L'anon n'a
   aucune policy — le front n'y accède jamais, seule l'Edge Function `enroll`
   la consulte en service_role (§7).
 
 L'application n'a donc jamais besoin d'écrire ailleurs que dans
-`pinned_documents`, `web_search_log`, `dossiers`, `dossier_produits` et
-`dossier_documents` — jamais dans `documents`/`products` directement (ça reste
-le rôle du pipeline d'ingestion n8n, y compris pour la capture web, §9).
+`pinned_documents`, `web_search_log`, `dossiers`, `dossier_produits`,
+`dossier_documents`, `dossier_notes` et `dossier_photos` — jamais dans
+`documents`/`products` directement (ça reste le rôle du pipeline d'ingestion
+n8n, y compris pour la capture web, §9).
 
 ### Stockage
 
-Bucket `documents`, **privé**. Accès uniquement par URL signée :
+Bucket Supabase `documents`, **privé** — bibliothèque de notices uniquement.
+Accès uniquement par URL signée :
 
 ```ts
 supabase.storage.from('documents').createSignedUrl(file_path, 3600);
 ```
+
+Les photos du carnet client (§10) ne passent **pas** par ce bucket : elles
+vivent dans un bucket **Cloudflare R2** séparé, derrière le Worker `/api/photos`
+(§2) — RLS Postgres non applicable à ces octets, la vérification d'accès est
+entièrement côté Worker (bearer token rejoué sur Supabase Auth).
 
 ---
 
@@ -507,6 +548,39 @@ données sensibles — §11, `Feature coffre données sensibles.md`). Code dans
   affiché si la connexion tombe, mais tout rechargement ou toute écriture
   exige le réseau (bandeau explicite dans les deux écrans).
 
+### Carnet public du dossier (notes + photos)
+
+`CarnetSection.tsx`, rendu dans `DossierScreen`. Partagé en clair entre toute
+l'équipe (pas de chiffrement, pas de zero-knowledge) — à distinguer nettement
+du coffre de données sensibles (§11) : compte-rendu de visite, photos
+d'installation, repères utiles au reste de l'équipe. Table Supabase séparée
+des `dossiers` (§3). En ligne uniquement, comme le reste de l'étape A.
+
+- **Notes** — texte libre avec titre optionnel, `NoteFormSheet` pour créer et
+  modifier, confirmation avant suppression.
+- **Photos** — upload multiple (`<input type=file accept=image/*>`),
+  redimensionnées/recompressées côté client avant envoi (`compressImage`,
+  canvas, 1600px max, JPEG qualité 0.75) puis envoyées séquentiellement (pas
+  `Promise.all` : une connexion chantier ne supporte pas des uploads en
+  parallèle) vers le Worker `/api/photos` → R2 (§3). Les octets ne
+  transitent jamais par IndexedDB ni Cache API : chaque vignette est
+  récupérée à la demande (`getPhotoObjectUrl`, JWT requis) en object URL,
+  révoquée dès que la liste change — pas de hors ligne pour cette étape
+  (§5 ne couvre que la bibliothèque).
+- **Titre de photo** — `updateDossierPhotoTitre`, simple édition du champ
+  `titre` sur la ligne existante (pas de copie). Éditable/supprimable depuis
+  le visualiseur plein écran ; vider le champ et valider supprime le titre.
+  Affiché en légende sur la vignette si renseigné.
+- **Annotation (dessin libre)** — `PhotoAnnotator.tsx`, ouvert depuis le
+  visualiseur plein écran d'une photo. Dessin à main levée par-dessus
+  l'image (pointer events, 3 couleurs, annuler le trait/tout effacer),
+  aplati en JPEG à l'enregistrement et envoyé via le **même**
+  `uploadDossierPhoto` que l'upload direct : le résultat est toujours une
+  **nouvelle** photo, jamais un remplacement. Supprimer la photo source ne
+  supprime pas les annotations déjà créées à partir d'elle — aucune relation
+  n'est stockée entre l'original et ses annotations, ce sont des lignes
+  `dossier_photos` indépendantes.
+
 ---
 
 ## 11. Ce qui reste à faire
@@ -548,14 +622,19 @@ Accès).
 `enroll` et l'écran d'auto-enrôlement côté PWA, puis la coupure des
 inscriptions publiques Supabase (dans cet ordre, §7).
 
-**Prochain chantier — carnet non-sensible (pas commencé, pas spécifié).**
-Notes et photos de chantier **partagées en clair** (pas de chiffrement, pas
-de zero-knowledge) : compte-rendu de visite, photos d'installation, repères
-utiles à toute l'équipe — à distinguer nettement du coffre (secrets
-chiffrés, accès nominatif). Table Supabase séparée des `dossiers` et du
-coffre, avec Storage pour les photos. Ne rien construire dans cette
-direction sans une spécification dédiée au préalable, même convention que
-`Feature recherche web notices.md` et `Feature coffre données sensibles.md`.
+**Carnet non-sensible (notes + photos) : TERMINÉ pour le périmètre actuel.**
+Notes, photos, titre de photo et annotation par dessin libre — détail complet
+en §10. Construit directement (schéma créé hors dépôt puis documenté ici),
+sans passer par un fichier `Feature ... .md` dédié comme les autres chantiers
+notables — écart assumé à ce stade, pas de nouvelle fonctionnalité de fond
+depuis à re-spécifier séparément pour l'instant.
+
+Dette connue : pas de relation stockée entre une photo et ses annotations
+(§10) — si utile un jour (regrouper visuellement l'original et ses dérivés),
+ce sera une colonne `dossier_photos.annotation_de` à ajouter, pas un
+changement de comportement à la suppression (déjà volontairement
+indépendant). Pas de mode hors ligne, cohérent avec le reste de l'étape A
+(§5, §10).
 
 ---
 
@@ -600,7 +679,13 @@ espacement disloque le mot.
   tout jamais commité (`.env*` dans `.gitignore`, seul `.env.example` sans
   valeurs est versionné).
 - La clé `anon` est publique par conception ; c'est la RLS qui protège les
-  données.
+  données. `SUPABASE_ANON_KEY` dupliquée dans les `vars` du Worker (§14) est
+  cette même clé publique, pas un nouveau secret.
+- Le Worker `/api/photos` (§2/§10) valide qu'un JWT Supabase est présent et
+  valide, mais ne vérifie pas que l'appelant a un lien avec le `dossier_id`
+  de la clé R2 demandée — cohérent avec la RLS `dossiers` (lecture/écriture
+  pour tout utilisateur authentifié, §3), pas un relâchement supplémentaire,
+  mais à garder en tête si ce modèle de permission évolue un jour.
 - Les URL signées expirent (1 h). Ne pas les stocker : les régénérer à la
   demande. Une fois le PDF téléchargé dans le Cache API, il est servi
   localement et l'expiration n'a plus d'effet.
@@ -623,20 +708,36 @@ manuel via `npm run deploy` (`wrangler deploy`, nécessite `wrangler login`).
 {
   "name": "laydevant-app",
   "compatibility_date": "2026-07-24",
+  "main": "worker/index.js",
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
+    "binding": "ASSETS",
+  },
+  "r2_buckets": [
+    { "binding": "PHOTOS_BUCKET", "bucket_name": "laydevant-photos" },
+  ],
+  "vars": {
+    "SUPABASE_URL": "...",
+    "SUPABASE_ANON_KEY": "...",
   },
 }
 ```
 
 Le mode `single-page-application` gère le routage côté client : inutile
-d'ajouter un fichier `_redirects`.
+d'ajouter un fichier `_redirects`. `main` pointe vers un vrai Worker
+(`worker/index.js`, §2/§10) : il intercepte `/api/photos` (proxy R2 pour les
+photos du carnet) et ne délègue à `env.ASSETS.fetch` que pour tout le reste —
+la présence de `main` change le modèle de déploiement (Worker + assets, pas
+assets statiques purs), mais le comportement SPA ci-dessus est inchangé.
+`SUPABASE_URL`/`SUPABASE_ANON_KEY` dans `vars` sont dupliqués depuis les
+`VITE_*` ci-dessous : le Worker tourne côté serveur Cloudflare, il n'a pas
+accès aux variables injectées au build Vite.
 
-Variables d'environnement, toutes préfixées `VITE_` et **figées au moment du
-build** (Vite les inscrit en dur, elles ne sont pas lues à l'exécution) — à
-configurer dans les paramètres du projet Cloudflare, `.env.local` n'étant pas
-versionné :
+Variables d'environnement front, toutes préfixées `VITE_` et **figées au
+moment du build** (Vite les inscrit en dur, elles ne sont pas lues à
+l'exécution) — à configurer dans les paramètres du projet Cloudflare,
+`.env.local` n'étant pas versionné :
 
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
 - `VITE_N8N_INGEST_URL`, `VITE_N8N_INGEST_SECRET` (webhook de capture, §9)
@@ -674,7 +775,6 @@ dans un onglet : la garantie de persistance en dépend.
 
 Ne pas implémenter, même partiellement, sans spécification dédiée au préalable :
 
-- le carnet non-sensible partagé (notes/photos en clair, §11) ;
 - résumé automatique, traduction, ou toute réponse générée par IA au-delà du
   tri de résultats de la recherche web de notices (§9) ;
 - recherche web en masse ou programmée — une recherche = une action volontaire
