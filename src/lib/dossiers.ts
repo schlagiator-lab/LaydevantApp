@@ -280,6 +280,11 @@ export async function getPhotoObjectUrl(storageKey: string): Promise<string> {
   return URL.createObjectURL(await res.blob());
 }
 
+export async function updateDossierPhotoTitre(photoId: string, titre: string | null): Promise<void> {
+  const { error } = await supabase.from('dossier_photos').update({ titre }).eq('id', photoId);
+  if (error) throw error;
+}
+
 export async function deleteDossierPhoto(photo: {
   id: string;
   storage_key: string;

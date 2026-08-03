@@ -171,6 +171,7 @@ export interface DossierPhotoView {
   auteur: string | null;
   auteur_nom: string | null;
   created_at: string;
+  titre: string | null;
 }
 
 export interface OnboardingInvitation {

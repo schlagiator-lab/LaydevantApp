@@ -5,12 +5,14 @@ import {
   deleteDossierNote,
   deleteDossierPhoto,
   getPhotoObjectUrl,
+  updateDossierPhotoTitre,
   uploadDossierPhoto,
 } from '../lib/dossiers';
 import type { DossierNoteView, DossierPhotoView } from '../types/database';
 import { SectionHeader } from './SectionHeader';
 import { NoteFormSheet } from './NoteFormSheet';
 import { ConfirmSheet } from './ConfirmSheet';
+import { PhotoAnnotator } from './PhotoAnnotator';
 import { colors, textA } from '../styles/tokens';
 
 export interface CarnetSectionProps {
@@ -47,6 +49,10 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
   const [viewedPhoto, setViewedPhoto] = useState<DossierPhotoView | null>(null);
+  const [annotating, setAnnotating] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
 
   // Les object URLs des vignettes sont chargées ici (octets protégés par JWT,
   // jamais `storage_key` directement dans un src) et révoquées dès que la
@@ -99,6 +105,29 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
       showToast(err instanceof Error ? err.message : 'Échec de la suppression.');
     } finally {
       setPendingDeletePhoto(null);
+    }
+  };
+
+  const openPhotoViewer = (photo: DossierPhotoView) => {
+    setViewedPhoto(photo);
+    setEditingTitle(false);
+    setTitleDraft(photo.titre ?? '');
+  };
+
+  const handleSaveTitle = async () => {
+    if (!viewedPhoto) return;
+    const trimmed = titleDraft.trim();
+    const newTitre = trimmed === '' ? null : trimmed;
+    setSavingTitle(true);
+    try {
+      await updateDossierPhotoTitre(viewedPhoto.id, newTitre);
+      setViewedPhoto((prev) => (prev ? { ...prev, titre: newTitre } : prev));
+      onPhotosChanged();
+      setEditingTitle(false);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Échec de la mise à jour du titre.');
+    } finally {
+      setSavingTitle(false);
     }
   };
 
@@ -204,7 +233,7 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
               {photoUrls[photo.id] && (
                 <button
                   type="button"
-                  onClick={() => setViewedPhoto(photo)}
+                  onClick={() => openPhotoViewer(photo)}
                   aria-label="Voir la photo"
                   style={photoThumbButtonStyle}
                 >
@@ -213,6 +242,9 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
                     alt=""
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                   />
+                  {photo.titre && (
+                    <span style={photoCaptionStyle}>{photo.titre}</span>
+                  )}
                 </button>
               )}
               <button
@@ -272,13 +304,63 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
           >
             ×
           </button>
-          <img
-            src={photoUrls[viewedPhoto.id]}
-            alt=""
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 8 }}
-          />
+          <div onClick={(e) => e.stopPropagation()} style={photoViewerContentStyle}>
+            <div style={photoTitleBarStyle}>
+              {editingTitle ? (
+                <>
+                  <input
+                    autoFocus
+                    value={titleDraft}
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleSaveTitle();
+                      if (e.key === 'Escape') setEditingTitle(false);
+                    }}
+                    placeholder="Titre de la photo"
+                    disabled={savingTitle}
+                    style={titleInputStyle}
+                  />
+                  <button type="button" onClick={() => void handleSaveTitle()} disabled={savingTitle} style={titleSaveButtonStyle}>
+                    {savingTitle ? '…' : 'OK'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => isOnline && setEditingTitle(true)}
+                  disabled={!isOnline}
+                  style={{ ...titleDisplayButtonStyle, opacity: isOnline ? 1 : 0.6 }}
+                >
+                  {viewedPhoto.titre ? viewedPhoto.titre : '+ Ajouter un titre'}
+                </button>
+              )}
+            </div>
+            <img
+              src={photoUrls[viewedPhoto.id]}
+              alt=""
+              style={{ maxWidth: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 8 }}
+            />
+            {isOnline && session?.user.id && (
+              <button type="button" onClick={() => setAnnotating(true)} style={annotateButtonStyle}>
+                Annoter
+              </button>
+            )}
+          </div>
         </div>
+      )}
+
+      {annotating && viewedPhoto && photoUrls[viewedPhoto.id] && session?.user.id && (
+        <PhotoAnnotator
+          photoUrl={photoUrls[viewedPhoto.id]}
+          dossierId={dossierId}
+          auteur={session.user.id}
+          onClose={() => setAnnotating(false)}
+          onSaved={() => {
+            setAnnotating(false);
+            setViewedPhoto(null);
+            onPhotosChanged();
+          }}
+        />
       )}
     </section>
   );
@@ -315,6 +397,7 @@ const linkButtonStyle: React.CSSProperties = {
 };
 
 const photoThumbButtonStyle: React.CSSProperties = {
+  position: 'relative',
   display: 'block',
   width: '100%',
   height: '100%',
@@ -322,6 +405,22 @@ const photoThumbButtonStyle: React.CSSProperties = {
   border: 'none',
   background: 'none',
   cursor: 'pointer',
+};
+
+const photoCaptionStyle: React.CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  right: 0,
+  bottom: 0,
+  padding: '10px 6px 5px',
+  background: 'linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0))',
+  color: '#fff',
+  fontSize: 10.5,
+  fontWeight: 600,
+  textAlign: 'left',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 
 const photoViewerOverlayStyle: React.CSSProperties = {
@@ -349,6 +448,75 @@ const photoViewerCloseButtonStyle: React.CSSProperties = {
   fontSize: 20,
   lineHeight: '36px',
   padding: 0,
+  cursor: 'pointer',
+};
+
+const photoViewerContentStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  gap: 12,
+  maxWidth: '100%',
+  maxHeight: '100%',
+};
+
+const photoTitleBarStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  width: '100%',
+  maxWidth: 320,
+};
+
+const titleDisplayButtonStyle: React.CSSProperties = {
+  flex: 1,
+  border: 'none',
+  background: 'transparent',
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: 700,
+  textAlign: 'center',
+  cursor: 'pointer',
+  padding: '4px 8px',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const titleInputStyle: React.CSSProperties = {
+  flex: 1,
+  height: 34,
+  borderRadius: 8,
+  border: `1px solid rgba(255,255,255,0.3)`,
+  background: 'rgba(255,255,255,0.08)',
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: 600,
+  padding: '0 10px',
+  boxSizing: 'border-box',
+};
+
+const titleSaveButtonStyle: React.CSSProperties = {
+  flex: 'none',
+  height: 34,
+  border: 'none',
+  borderRadius: 8,
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 13,
+  fontWeight: 700,
+  padding: '0 12px',
+  cursor: 'pointer',
+};
+
+const annotateButtonStyle: React.CSSProperties = {
+  border: 'none',
+  borderRadius: 100,
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 13.5,
+  fontWeight: 700,
+  padding: '10px 22px',
   cursor: 'pointer',
 };
 
