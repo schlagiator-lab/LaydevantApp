@@ -100,7 +100,12 @@ export async function listDossierEquipments(dossierId: string): Promise<DossierE
 }
 
 export async function addDossierEquipment(dossierId: string, productId: string): Promise<void> {
-  const { error } = await supabase.from('dossier_produits').insert({ dossier_id: dossierId, product_id: productId });
+  const { error } = await supabase
+    .from('dossier_produits')
+    .upsert(
+      { dossier_id: dossierId, product_id: productId, deleted_at: null, deleted_by: null },
+      { onConflict: 'dossier_id,product_id' }
+    );
   if (error) throw error;
 }
 
