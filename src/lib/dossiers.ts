@@ -88,6 +88,7 @@ export async function listDossierEquipments(dossierId: string): Promise<DossierE
     .from('dossier_produits')
     .select('product_id, note, products(brand, model, name, specialties(name))')
     .eq('dossier_id', dossierId)
+    .is('deleted_at', null)
     .returns<DossierProduitRow[]>();
   if (error) throw error;
   return (data ?? []).map((row) => ({
@@ -104,9 +105,10 @@ export async function addDossierEquipment(dossierId: string, productId: string):
 }
 
 export async function removeDossierEquipment(dossierId: string, productId: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
   const { error } = await supabase
     .from('dossier_produits')
-    .delete()
+    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
     .eq('dossier_id', dossierId)
     .eq('product_id', productId);
   if (error) throw error;
@@ -168,6 +170,7 @@ export async function listDossierNotes(dossierId: string): Promise<DossierNoteVi
     .from('dossier_notes_view')
     .select('*')
     .eq('dossier_id', dossierId)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as DossierNoteView[];
@@ -200,7 +203,11 @@ export async function updateDossierNote(
 }
 
 export async function deleteDossierNote(noteId: string): Promise<void> {
-  const { error } = await supabase.from('dossier_notes').delete().eq('id', noteId);
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from('dossier_notes')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
+    .eq('id', noteId);
   if (error) throw error;
 }
 
@@ -240,6 +247,7 @@ export async function listDossierPhotos(dossierId: string): Promise<DossierPhoto
     .from('dossier_photos_view')
     .select('*')
     .eq('dossier_id', dossierId)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as DossierPhotoView[];
@@ -289,17 +297,10 @@ export async function deleteDossierPhoto(photo: {
   id: string;
   storage_key: string;
 }): Promise<void> {
-  // La ligne DB est la source de vérité pour l'UI : on l'enlève d'abord.
-  const { error } = await supabase.from('dossier_photos').delete().eq('id', photo.id);
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from('dossier_photos')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
+    .eq('id', photo.id);
   if (error) throw error;
-  // Nettoyage R2 best-effort : un objet orphelin est silencieux et sans gravité.
-  try {
-    const token = await getAccessToken();
-    await fetch(`/api/photos/${photo.storage_key}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  } catch {
-    /* orphelin toléré */
-  }
 }
