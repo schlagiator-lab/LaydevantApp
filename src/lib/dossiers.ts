@@ -155,7 +155,7 @@ export async function searchProducts(q: string): Promise<ProductSearchResult[]> 
     .from('products')
     .select('id, brand, model, name, specialties(name)')
     .order('name')
-    .limit(30);
+    .limit(100);
   const trimmed = q.trim();
   if (trimmed) {
     query = query.or(`brand.ilike.%${trimmed}%,model.ilike.%${trimmed}%,name.ilike.%${trimmed}%`);
