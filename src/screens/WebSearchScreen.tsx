@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { WebSearchContext } from '../lib/navigationContext';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
@@ -71,6 +71,38 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [loading]);
+
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+
+  useEffect(() => {
+    if (!loading) return;
+    if (!('wakeLock' in navigator)) return;
+
+    const requestWakeLock = async () => {
+      try {
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+      } catch {
+        wakeLockRef.current = null;
+      }
+    };
+    void requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && loading && !wakeLockRef.current) {
+        void requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      const sentinel = wakeLockRef.current;
+      if (sentinel) {
+        wakeLockRef.current = null;
+        void sentinel.release();
+      }
+    };
   }, [loading]);
 
   const trimmedBrand = brand.trim();
