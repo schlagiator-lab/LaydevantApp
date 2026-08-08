@@ -226,7 +226,14 @@ function parseResults(rawText: string): WebSearchResult[] {
     .replace(/^```(?:json)?/i, '')
     .replace(/```$/, '')
     .trim();
-  const parsed = JSON.parse(stripped);
+  // Le modèle fait parfois précéder (ou suivre) le JSON d'une phrase en
+  // langage naturel ("D'après mes recherches... : {...}") : on isole le
+  // bloc entre la première '{' et la dernière '}' avant de parser, plutôt
+  // que de parser la chaîne entière.
+  const first = stripped.indexOf('{');
+  const last = stripped.lastIndexOf('}');
+  const jsonCandidate = first !== -1 && last > first ? stripped.slice(first, last + 1) : stripped;
+  const parsed = JSON.parse(jsonCandidate);
   if (!Array.isArray(parsed?.results)) return [];
   return parsed.results;
 }
