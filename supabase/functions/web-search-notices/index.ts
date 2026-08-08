@@ -333,13 +333,26 @@ Deno.serve(async (req) => {
   }
 
   const data = await anthropicResponse.json();
-  const finalText = extractFinalText(data.content ?? []);
+  const contentBlocks: Array<{ type: string }> = data.content ?? [];
+  const finalText = extractFinalText(contentBlocks);
 
   try {
     const results = parseResults(finalText);
     return jsonResponse({ results });
   } catch (err) {
-    console.error('web-search-notices: failed to parse model output', err, finalText);
-    return jsonResponse({ results: [], error: 'parse_failed' });
+    console.error(
+      'PARSE_FAIL web-search-notices: longueur du texte =',
+      finalText.length,
+      '\nPARSE_FAIL texte brut reçu =',
+      finalText,
+      '\nPARSE_FAIL blocs de contenu =',
+      contentBlocks.length,
+      contentBlocks.map((block) => block.type),
+    );
+    console.error('web-search-notices: failed to parse model output', err);
+    // Même réponse que le chemin "liste vide" existant (index.ts, parseResults) :
+    // l'appli affiche "aucun résultat" au lieu de planter. Le log PARSE_FAIL
+    // ci-dessus garde la trace complète pour diagnostic.
+    return jsonResponse({ results: [] });
   }
 });
