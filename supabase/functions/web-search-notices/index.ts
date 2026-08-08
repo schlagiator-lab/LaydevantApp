@@ -305,7 +305,7 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: 2048,
+        max_tokens: 4096,
         // system en cache : identique à chaque appel (aucune valeur
         // interpolée), donc mis en cache une fois puis relu à ~10% du prix
         // par toutes les recherches suivantes, tous utilisateurs confondus,
