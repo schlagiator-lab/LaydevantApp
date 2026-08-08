@@ -24,6 +24,14 @@ const PATIENCE_MESSAGES = [
   "Presque : on vérifie que c'est bien le bon modèle.",
   'Toujours là ? Nous aussi. La recherche continue.',
   'Un instant, on met la main sur le bon PDF 📄',
+  'On teste la continuité entre votre requête et le bon manuel ⚡',
+  'Ça descend en gaine technique, ça remonte avec la doc 📡',
+  "On cherche la notice du bon moteur de porte, pas d'un autre 🚪",
+  'Encore quelques bornes à sonder et c\'est bon…',
+  'Ne coupez pas le courant : la recherche est presque bouclée !',
+  'On démêle les références comme un tableau mal repéré 🔧',
+  "Le web est grand, votre notice y est quelque part. On approche.",
+  'Merci de patienter, un rafraîchissement relancerait tout à zéro.',
 ];
 
 /**
@@ -51,7 +59,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     if (!loading) return;
     const interval = setInterval(() => {
       setPatienceIndex((i) => (i + 1) % PATIENCE_MESSAGES.length);
-    }, 5000);
+    }, 7000);
     return () => clearInterval(interval);
   }, [loading]);
 
