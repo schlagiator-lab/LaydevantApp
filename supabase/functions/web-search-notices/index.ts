@@ -220,6 +220,32 @@ function extractFinalText(content: Array<{ type: string; text?: string }>): stri
   return textBlocks.length > 0 ? textBlocks[textBlocks.length - 1].text : '';
 }
 
+/**
+ * Résultats web bruts (titre + URL), tous essais de recherche confondus,
+ * avant tout filtrage par le modèle — pour l'instrument EMPTY_SEARCH ci-dessous.
+ * Défensif : la forme exacte des blocs `web_search_tool_result` n'est pas
+ * garantie par un type strict, on ignore silencieusement ce qui ne correspond
+ * pas plutôt que de faire planter le diagnostic.
+ */
+function extractRawWebResults(content: unknown[]): Array<{ title: string | null; url: string | null }> {
+  const out: Array<{ title: string | null; url: string | null }> = [];
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    if ((block as { type?: string }).type !== 'web_search_tool_result') continue;
+    const inner = (block as { content?: unknown }).content;
+    if (!Array.isArray(inner)) continue;
+    for (const item of inner) {
+      if (typeof item !== 'object' || item === null) continue;
+      const { title, url } = item as { title?: unknown; url?: unknown };
+      out.push({
+        title: typeof title === 'string' ? title : null,
+        url: typeof url === 'string' ? url : null,
+      });
+    }
+  }
+  return out;
+}
+
 function parseResults(rawText: string): WebSearchResult[] {
   const stripped = rawText
     .trim()
@@ -345,6 +371,21 @@ Deno.serve(async (req) => {
 
   try {
     const results = parseResults(finalText);
+    if (results.length === 0) {
+      const rawWebResults = extractRawWebResults(data.content ?? []);
+      console.log(
+        'EMPTY_SEARCH web-search-notices: marque/modèle =',
+        brand,
+        '/',
+        model,
+        '\nEMPTY_SEARCH nombre de résultats web bruts =',
+        rawWebResults.length,
+        '\nEMPTY_SEARCH résultats web bruts (titre — url) =',
+        rawWebResults.map((r) => `${r.title ?? '(sans titre)'} — ${r.url ?? '(sans url)'}`),
+        '\nEMPTY_SEARCH finalText =',
+        finalText,
+      );
+    }
     return jsonResponse({ results });
   } catch (err) {
     console.error(
