@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { WebSearchContext } from '../lib/navigationContext';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
@@ -14,6 +14,17 @@ const CONFIDENCE_LABELS: Record<WebSearchResult['confidence'], string> = {
   moyenne: 'Confiance moyenne',
   faible: 'Confiance faible',
 };
+
+const PATIENCE_MESSAGES = [
+  'On fouille tout le web, promis on ne lâche rien 🔌',
+  "La notice se planque comme un electro sur un chantier… on la traque 🔦",
+  'Surtout ne rafraîchissez pas la page : tout serait à refaire !',
+  'On interroge les fabricants un par un, ça arrive…',
+  'Patience, on déroule le web comme un touret de câble 🧵',
+  "Presque : on vérifie que c'est bien le bon modèle.",
+  'Toujours là ? Nous aussi. La recherche continue.',
+  'Un instant, on met la main sur le bon PDF 📄',
+];
 
 /**
  * Mode "recherche web" (Feature recherche web notices.md, §4) : distinct de
@@ -32,6 +43,27 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const [results, setResults] = useState<WebSearchResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [captureTarget, setCaptureTarget] = useState<WebSearchResult | null>(null);
+  const [patienceIndex, setPatienceIndex] = useState(() =>
+    Math.floor(Math.random() * PATIENCE_MESSAGES.length)
+  );
+
+  useEffect(() => {
+    if (!loading) return;
+    const interval = setInterval(() => {
+      setPatienceIndex((i) => (i + 1) % PATIENCE_MESSAGES.length);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [loading]);
+
+  useEffect(() => {
+    if (!loading) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [loading]);
 
   const trimmedBrand = brand.trim();
   const trimmedModel = model.trim();
@@ -136,6 +168,9 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
             </div>
             <p style={{ fontSize: 14, color: textA(0.55), textAlign: 'center', marginTop: 14 }}>
               Recherche sur le web… quelques secondes.
+            </p>
+            <p style={{ fontSize: 13, color: textA(0.45), textAlign: 'center', marginTop: 6 }}>
+              {PATIENCE_MESSAGES[patienceIndex]}
             </p>
           </div>
         )}
