@@ -99,6 +99,7 @@ type GameState = {
   flash: number[];
   flashUntil: number;
   soft: boolean;
+  softConsumed: boolean;
   spawnLockUntil: number;
 };
 
@@ -141,6 +142,7 @@ export default function PdfTetris() {
     flash: [], // lignes en cours d'illumination
     flashUntil: 0,
     soft: false,
+    softConsumed: false,
     spawnLockUntil: 0,
   });
   const targetRef = useRef(target);
@@ -180,7 +182,8 @@ export default function PdfTetris() {
     st.next = randomPiece();
     st.acc = 0; // vide le trop-plein de chute (sinon la pièce plonge)
     st.soft = false; // coupe le soft drop hérité du geste précédent
-    st.spawnLockUntil = performance.now() + CFG.spawnDelayMs; // petit répit
+    st.softConsumed = true; // bloque le réarmement tant que le doigt n'est pas relâché
+    st.spawnLockUntil = performance.now() + (full.length ? 180 : 0) + CFG.spawnDelayMs; // petit répit, après le flash s'il y en a un
     if (collides(st.piece.shape, st.piece.x, st.piece.y)) { st.over = true; setOver(true); }
   }, [collides]);
 
@@ -395,7 +398,7 @@ export default function PdfTetris() {
     g.current = {
       grid: emptyGrid(), piece: randomPiece(), next: randomPiece(),
       dropMs: CFG.startDropMs, acc: 0, lines: 0, score: 0, over: false,
-      flash: [], flashUntil: 0, soft: false, spawnLockUntil: 0,
+      flash: [], flashUntil: 0, soft: false, softConsumed: false, spawnLockUntil: 0,
     };
     targetRef.current = t0;
     setTarget(t0); setScore(0); setLines(0); setLevel(1); setOver(false);
@@ -421,13 +424,14 @@ export default function PdfTetris() {
     }
     // soft drop : seulement si geste clairement vertical (pas pendant un calage
     // horizontal), et au-delà d'un seuil franc
-    if (!t.horiz && dyTotal > CFG.softDropArm && Math.abs(dxTotal) < dyTotal && !t.softOn) {
+    if (!t.horiz && dyTotal > CFG.softDropArm && Math.abs(dxTotal) < dyTotal && !t.softOn && !g.current.softConsumed) {
       g.current.soft = true; t.softOn = true; t.moved = true;
     }
   };
   const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const t = touch.current;
     g.current.soft = false;
+    g.current.softConsumed = false;
     const dyTotal = e.clientY - t.y;
     const dxTotal = e.clientX - t.x;
     // hard drop : geste franc, vertical, et JAMAIS après un déplacement horizontal
