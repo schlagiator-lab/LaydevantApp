@@ -489,7 +489,7 @@ export default function PdfTetris() {
             overflow: 'hidden',
             touchAction: 'none',
             userSelect: 'none',
-            height: 460,
+            height: 'min(460px, 56vh)',
             border: '1px solid rgba(164,198,57,0.22)',
             background: C.bg,
           }}

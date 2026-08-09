@@ -169,6 +169,14 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
               Connexion réseau requise pour la recherche web.
             </span>
           </div>
+        ) : loading ? (
+          <div style={searchSummaryStyle}>
+            <span style={{ color: textA(0.55) }}>On cherche : </span>
+            <span style={{ color: colors.text, fontWeight: 600 }}>
+              {trimmedBrand} · {trimmedModel}
+              {equipmentType.trim() && ` · ${equipmentType.trim()}`}
+            </span>
+          </div>
         ) : (
           <form onSubmit={(e) => void handleSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', gap: 10 }}>
@@ -298,6 +306,17 @@ const offlineBannerStyle: React.CSSProperties = {
   border: '1px solid rgba(222, 122, 34, 0.4)',
   borderRadius: 10,
   padding: '9px 12px',
+};
+
+const searchSummaryStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'baseline',
+  gap: 4,
+  background: textA(0.06),
+  borderRadius: 10,
+  padding: '10px 12px',
+  fontSize: 13.5,
 };
 
 const inputStyle: React.CSSProperties = {
