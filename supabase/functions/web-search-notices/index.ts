@@ -129,6 +129,30 @@ de confiance" : "moyenne" si le document de gamme mentionne ou englobe
 clairement la référence demandée, "faible" s'il s'agit d'un document générique
 à toute la famille sans confirmation que la référence précise y figure.
 
+## Consigne de lecture
+
+Juge le type et la pertinence de chaque document UNIQUEMENT à partir de signaux
+de surface : son titre, son URL (nom de fichier, chemin) et l'extrait/snippet
+renvoyé par la recherche web. Ces signaux suffisent dans la très grande
+majorité des cas pour distinguer une notice d'installation, un manuel de
+programmation ou une fiche technique d'un document commercial.
+
+Ne télécharge, n'ouvre ni ne parcours jamais l'intégralité d'un document pour
+le vérifier — en particulier, ne pagine jamais un PDF en entier. En cas de
+doute résiduel sur le type après examen du titre, de l'URL et de l'extrait,
+limite-toi au strict minimum indispensable (couverture, première page,
+sommaire) : jamais le corps complet du document.
+
+Rappel de la mission : tu dois ramener des URL de documents pertinents, pas
+les analyser ni en résumer le contenu.
+
+Applique malgré tout la distinction métier attendue, mais en te basant
+uniquement sur ces signaux de surface : privilégie les notices d'installation,
+manuels de programmation et fiches techniques ; écarte les documents
+purement commerciaux ou marketing (brochures de vente, catalogues produits)
+— cette exclusion aussi se juge sur le titre/URL/extrait, jamais par lecture
+intégrale.
+
 ## Critères de sélection, dans cet ordre de priorité
 
 1. Source fabricant officielle en priorité absolue. Une source non fabricante
