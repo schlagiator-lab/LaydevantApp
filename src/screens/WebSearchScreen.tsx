@@ -7,6 +7,7 @@ import { docTypeLabel } from '../lib/docType';
 import type { WebSearchResult } from '../types/webSearch';
 import { StatusPill } from '../components/StatusPill';
 import { CaptureSheet } from '../components/CaptureSheet';
+import PdfTetris from '../components/PdfTetris';
 import { colors, fonts, textA } from '../styles/tokens';
 
 const CONFIDENCE_LABELS: Record<WebSearchResult['confidence'], string> = {
@@ -212,6 +213,9 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
             <p style={{ fontSize: 13, color: textA(0.45), textAlign: 'center', marginTop: 6 }}>
               {PATIENCE_MESSAGES[patienceIndex]}
             </p>
+            <div style={{ marginTop: 20 }}>
+              <PdfTetris />
+            </div>
           </div>
         )}
 
