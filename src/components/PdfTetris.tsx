@@ -115,6 +115,13 @@ function emptyGrid(): GridCell[][] {
   return Array.from({ length: CFG.rows }, () => Array<GridCell>(CFG.cols).fill(null));
 }
 
+// vrai tant que la pièce vient d'apparaître (répit spawnLockUntil) — pendant
+// cette fenêtre, aucune descente rapide (soft/hard drop) n'est autorisée,
+// mais déplacement et rotation restent permis
+function inSpawnWindow(st: GameState): boolean {
+  return performance.now() < st.spawnLockUntil;
+}
+
 function randomPiece(): Piece {
   const k = KEYS[(Math.random() * KEYS.length) | 0];
   return { key: k, shape: SHAPES[k], color: PIECE_COLORS[k], ext: PIECE_EXT[k], x: (CFG.cols >> 1) - 1, y: 0 };
@@ -388,6 +395,7 @@ export default function PdfTetris() {
 
   const hardDrop = useCallback(() => {
     const st = g.current;
+    if (inSpawnWindow(st)) return;
     if (st.over || st.flash.length) return;
     while (!collides(st.piece.shape, st.piece.x, st.piece.y + 1)) st.piece.y += 1;
     lockAndClear();
@@ -424,7 +432,7 @@ export default function PdfTetris() {
     }
     // soft drop : seulement si geste clairement vertical (pas pendant un calage
     // horizontal), et au-delà d'un seuil franc
-    if (!t.horiz && dyTotal > CFG.softDropArm && Math.abs(dxTotal) < dyTotal && !t.softOn && !g.current.softConsumed) {
+    if (!t.horiz && dyTotal > CFG.softDropArm && Math.abs(dxTotal) < dyTotal && !t.softOn && !g.current.softConsumed && !inSpawnWindow(g.current)) {
       g.current.soft = true; t.softOn = true; t.moved = true;
     }
   };
