@@ -330,26 +330,27 @@ export function HomeScreen() {
       </div>
 
       <div style={{ flex: 'none', display: 'flex', gap: 12, padding: '0 16px 10px' }}>
+        {/* Mini-jeu autonome (PdfTetris standalone) — occupe l'emplacement
+            historique de "Diagnostic stockage", déplacé dans "Outils". */}
         <button
           type="button"
-          onClick={nav.goDiagnostic}
+          onClick={nav.goGame}
           style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
         >
-          Diagnostic stockage
+          Jeu
         </button>
-        {/* Coffre — étape B, tranche 4 (Feature coffre données sensibles.md) :
-            hors du parcours principal tant que l'ouverture/édition du coffre
-            n'existe pas encore. */}
+        {/* Sous-menu Outils : diagnostic stockage + enrôlement coffre,
+            fonctionnalités inchangées, juste regroupées (ToolsScreen). */}
         <button
           type="button"
-          onClick={nav.goVaultEnroll}
+          onClick={nav.goTools}
           style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
         >
-          Coffre (enrôlement)
+          Outils
         </button>
         {/* Panneau admin du coffre (tranche 5) — lien visible par tout le
-            monde comme les deux précédents, le garde-fou (is_vault_admin)
-            se fait dans l'écran lui-même. */}
+            monde, le garde-fou (is_vault_admin) se fait dans l'écran
+            lui-même. */}
         <button
           type="button"
           onClick={nav.goVaultAdmin}

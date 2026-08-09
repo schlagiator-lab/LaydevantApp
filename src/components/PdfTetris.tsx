@@ -1,4 +1,8 @@
 import { useRef, useEffect, useState, useCallback, type PointerEvent as ReactPointerEvent } from 'react';
+import { useNavigation } from '../lib/useNavigation';
+import { useAuth } from '../lib/useAuth';
+import { submitScore, getLeaderboard } from '../lib/gameScores';
+import type { GameLeaderboardEntry } from '../types/database';
 
 /**
  * PDF Tetris — « Range la bibliothèque »
@@ -85,6 +89,10 @@ const CFG = {
   bonusPoints: 5, // points bonus si la ligne complétée contient l'extension cible
 };
 
+// barème Tetris classique : récompense les multi-lignes en un seul coup,
+// multiplié par le niveau courant au moment de l'effacement
+const LINE_POINTS: Record<number, number> = { 1: 100, 2: 300, 3: 500, 4: 800 };
+
 type Piece = { key: PieceKey; shape: Shape; color: string; ext: string; x: number; y: number };
 type GridCell = { color: string; ext: string } | null;
 type GameState = {
@@ -127,7 +135,15 @@ function randomPiece(): Piece {
   return { key: k, shape: SHAPES[k], color: PIECE_COLORS[k], ext: PIECE_EXT[k], x: (CFG.cols >> 1) - 1, y: 0 };
 }
 
-export default function PdfTetris() {
+interface PdfTetrisProps {
+  /** Lancé depuis l'accueil comme jeu autonome (pas pendant une recherche
+   * web) : affiche un en-tête titre + retour au lieu de rien. */
+  standalone?: boolean;
+}
+
+export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
+  const nav = useNavigation();
+  const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [lines, setLines] = useState(0);
@@ -136,6 +152,13 @@ export default function PdfTetris() {
   const [score, setScore] = useState(0);
   const [target, setTarget] = useState(EXT_LIST[(Math.random() * EXT_LIST.length) | 0]);
   const [bonusFx, setBonusFx] = useState(0); // horodatage pour animer le "+bonus"
+
+  // Classement — bonus non bloquant : une panne réseau ne doit jamais
+  // empêcher de voir/rejouer l'écran de fin de partie (CLAUDE.md, hors ligne
+  // = situation nominale). `null` = pas encore résolu, `undefined` = échec.
+  const [bestScore, setBestScore] = useState<number | null | undefined>(null);
+  const [leaderboard, setLeaderboard] = useState<GameLeaderboardEntry[] | null | undefined>(null);
+  const submittedRef = useRef(false);
 
   const g = useRef<GameState>({
     grid: emptyGrid(),
@@ -211,8 +234,12 @@ export default function PdfTetris() {
     st.grid = keep;
     st.lines += cleared;
     setLines(st.lines);
-    // score : 1 point par ligne + bonus si la cible y était
-    st.score += cleared + bonusLines * CFG.bonusPoints;
+    // accélération par paliers — niveau courant, réutilisé tel quel pour le barème de score
+    const lvl = 1 + Math.floor(st.lines / CFG.speedupEvery);
+    setLevel(lvl);
+    st.dropMs = Math.max(CFG.minDropMs, CFG.startDropMs * Math.pow(CFG.speedupFactor, lvl - 1));
+    // score : barème multi-lignes (LINE_POINTS) × niveau courant + bonus cible
+    st.score += (LINE_POINTS[cleared] ?? 0) * lvl + bonusLines * CFG.bonusPoints;
     setScore(st.score);
     if (bonusLines > 0) {
       setBonusFx(performance.now()); // déclenche l'animation "+bonus"
@@ -222,10 +249,6 @@ export default function PdfTetris() {
       targetRef.current = nt;
       setTarget(nt);
     }
-    // accélération par paliers
-    const lvl = 1 + Math.floor(st.lines / CFG.speedupEvery);
-    setLevel(lvl);
-    st.dropMs = Math.max(CFG.minDropMs, CFG.startDropMs * Math.pow(CFG.speedupFactor, lvl - 1));
     st.flash = [];
   }, []);
 
@@ -410,7 +433,39 @@ export default function PdfTetris() {
     };
     targetRef.current = t0;
     setTarget(t0); setScore(0); setLines(0); setLevel(1); setOver(false);
+    submittedRef.current = false;
+    setBestScore(null);
+    setLeaderboard(null);
   }, []);
+
+  // fin de partie : enregistre le score une seule fois puis lit le classement —
+  // le tout best-effort, jamais bloquant si hors ligne (CLAUDE.md, hors ligne =
+  // situation nominale)
+  useEffect(() => {
+    if (!over || submittedRef.current) return;
+    submittedRef.current = true;
+
+    // si la toute dernière pièce complète aussi une ligne, laisse le flash
+    // (180ms, cf. lockAndClear) se résoudre avant de lire le score définitif
+    const delay = g.current.flash.length > 0 ? 220 : 0;
+    const timer = window.setTimeout(() => {
+      const finalScore = g.current.score;
+      const finalLines = g.current.lines;
+      void (async () => {
+        try {
+          setBestScore(await submitScore(finalScore, finalLines));
+        } catch {
+          setBestScore(undefined); // échec réseau/hors ligne — pas bloquant
+        }
+        try {
+          setLeaderboard(await getLeaderboard());
+        } catch {
+          setLeaderboard(undefined);
+        }
+      })();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [over]);
 
   // ---- gestes ----
   const touch = useRef({ x: 0, y: 0, lastColX: 0, moved: false, softOn: false, horiz: false });
@@ -467,7 +522,41 @@ export default function PdfTetris() {
   }, [move, rotatePiece, hardDrop]);
 
   return (
-    <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
+    <>
+      {standalone && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            maxWidth: 384,
+            margin: '0 auto',
+            padding: '0 4px 14px',
+            boxSizing: 'border-box',
+          }}
+        >
+          <button
+            type="button"
+            onClick={nav.goBack}
+            aria-label="Retour"
+            style={{
+              flex: 'none',
+              width: 32,
+              height: 32,
+              borderRadius: '50%',
+              background: 'rgba(255,255,255,0.1)',
+              border: 'none',
+              color: C.text,
+              fontSize: 17,
+              cursor: 'pointer',
+            }}
+          >
+            ‹
+          </button>
+          <span style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Range la bibliothèque</span>
+        </div>
+      )}
+      <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
       <div style={{ width: '100%', maxWidth: 384 }}>
         {/* ---- ENTÊTE JEU : OBJECTIF + SCORE ---- */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, padding: '0 4px' }}>
@@ -528,15 +617,67 @@ export default function PdfTetris() {
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                justifyContent: 'center',
-                gap: 12,
+                gap: 10,
                 background: 'rgba(15,36,68,0.86)',
+                overflowY: 'auto',
+                padding: '20px 16px',
+                boxSizing: 'border-box',
               }}
             >
               <p style={{ fontSize: 18, fontWeight: 600, color: C.text, margin: 0 }}>Bibliothèque pleine !</p>
               <p style={{ fontSize: 14, color: C.textDim, margin: 0 }}>
                 score {score} · {lines} documents rangés
               </p>
+              {bestScore != null && (
+                <p style={{ fontSize: 13, fontWeight: 700, color: C.green, margin: 0 }}>
+                  Record perso&nbsp;: {bestScore}
+                </p>
+              )}
+              {leaderboard === undefined && (
+                <p style={{ fontSize: 11.5, color: C.textDim, margin: 0, textAlign: 'center' }}>
+                  Classement indisponible hors ligne.
+                </p>
+              )}
+              {leaderboard && leaderboard.length > 0 && (
+                <div style={{ width: '100%', maxWidth: 260, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      letterSpacing: '0.06em',
+                      textTransform: 'uppercase',
+                      color: C.textDim,
+                      textAlign: 'center',
+                    }}
+                  >
+                    Classement d'équipe
+                  </span>
+                  {leaderboard.map((entry, i) => {
+                    const mine = entry.user_id === session?.user.id;
+                    return (
+                      <div
+                        key={entry.user_id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                          padding: '4px 8px',
+                          borderRadius: 8,
+                          background: mine ? 'rgba(164,198,57,0.18)' : 'transparent',
+                        }}
+                      >
+                        <span style={{ fontSize: 12.5, fontWeight: mine ? 700 : 600, color: mine ? C.green : C.text }}>
+                          {i + 1}. {entry.joueur ?? 'Anonyme'}
+                        </span>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: mine ? C.green : C.textDim }}>
+                          {entry.best_score}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <button
                 onClick={restart}
                 style={{
@@ -548,6 +689,7 @@ export default function PdfTetris() {
                   color: '#173000',
                   border: 'none',
                   cursor: 'pointer',
+                  flex: 'none',
                 }}
               >
                 Rejouer
@@ -573,7 +715,8 @@ export default function PdfTetris() {
           .bonusfx { animation-duration: 0.8s; }
         }
       `}</style>
-    </div>
+      </div>
+    </>
   );
 }
 

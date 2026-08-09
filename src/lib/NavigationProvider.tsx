@@ -100,6 +100,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goDossier = (dossierId: string) => push({ screen: 'dossier', dossierId });
   const goVaultEnroll = () => push({ screen: 'vaultEnroll' });
   const goVaultAdmin = () => push({ screen: 'vaultAdmin' });
+  const goGame = () => push({ screen: 'game' });
+  const goTools = () => push({ screen: 'tools' });
   // Passe TOUJOURS par l'historique : c'est le popstate en résultant qui
   // dépile (voir le handler ci-dessus), jamais un setStack direct ici.
   const goBack = () => {
@@ -123,6 +125,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goDossier,
         goVaultEnroll,
         goVaultAdmin,
+        goGame,
+        goTools,
         goBack,
       }}
     >

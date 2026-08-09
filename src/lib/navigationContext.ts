@@ -20,7 +20,9 @@ export type NavState =
   | { screen: 'dossiers' }
   | { screen: 'dossier'; dossierId: string }
   | { screen: 'vaultEnroll' }
-  | { screen: 'vaultAdmin' };
+  | { screen: 'vaultAdmin' }
+  | { screen: 'game' }
+  | { screen: 'tools' };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -59,6 +61,10 @@ export interface NavigationContextValue {
   /** Panneau admin du coffre (tranche 5) — réservé aux admins, garde-fou fait
    * par l'écran lui-même (is_vault_admin), pas par la navigation. */
   goVaultAdmin: () => void;
+  /** Mini-jeu PdfTetris lancé en autonome depuis l'accueil (hors recherche web). */
+  goGame: () => void;
+  /** Sous-menu "Outils" — regroupe diagnostic stockage et enrôlement coffre. */
+  goTools: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }

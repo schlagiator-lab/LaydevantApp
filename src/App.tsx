@@ -18,6 +18,8 @@ import { DossiersScreen } from './screens/DossiersScreen';
 import { DossierScreen } from './screens/DossierScreen';
 import { VaultEnrollScreen } from './screens/VaultEnrollScreen';
 import { VaultAdminScreen } from './screens/VaultAdminScreen';
+import { GameScreen } from './screens/GameScreen';
+import { ToolsScreen } from './screens/ToolsScreen';
 import { requestPersistentStorage } from './lib/storagePersistence';
 
 function Screens() {
@@ -43,6 +45,10 @@ function Screens() {
       return <VaultEnrollScreen />;
     case 'vaultAdmin':
       return <VaultAdminScreen />;
+    case 'game':
+      return <GameScreen />;
+    case 'tools':
+      return <ToolsScreen />;
   }
 }
 

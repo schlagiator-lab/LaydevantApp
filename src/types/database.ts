@@ -174,6 +174,14 @@ export interface DossierPhotoView {
   titre: string | null;
 }
 
+export interface GameLeaderboardEntry {
+  user_id: string;
+  joueur: string | null;
+  best_score: number;
+  best_lines: number;
+  updated_at: string;
+}
+
 export interface OnboardingInvitation {
   email: string;
   role: ProfileRole;
