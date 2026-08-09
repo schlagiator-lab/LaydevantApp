@@ -14,7 +14,7 @@ export interface WebSearchNoticesParams {
 // L'Edge Function a un timeout serveur ~150s (504 IDLE_TIMEOUT) sur les
 // recherches longues. On coupe côté client avant ça pour ne pas laisser
 // l'utilisateur attendre jusqu'au bout sans retour.
-const CLIENT_TIMEOUT_MS = 90_000;
+const CLIENT_TIMEOUT_MS = 135_000;
 
 /** Distingue un abandon côté client (délai dépassé) d'un échec réseau/serveur ordinaire. */
 export class WebSearchTimeoutError extends Error {
