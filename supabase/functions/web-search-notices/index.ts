@@ -30,12 +30,12 @@ const WEB_SEARCH_TOOL_TYPE = Deno.env.get('ANTHROPIC_WEB_SEARCH_TOOL_TYPE') ?? '
 // révélé trop agressif : sans deuxième essai, une requête trop étroite ou un
 // premier lot de résultats bruités renvoie une liste vide au lieu d'une
 // requête reformulée, ce qui a fait chuter le taux de résultats trouvés.
-// 3 est le compromis retenu : la variante à filtrage dynamique (ci-dessus)
+// 2 est le compromis retenu : la variante à filtrage dynamique (ci-dessus)
 // et le cache du prompt système (ci-dessous) font déjà l'essentiel du travail
 // de réduction de coût, donc quelques essais de recherche supplémentaires
 // restent marginaux — alors qu'ils redonnent à Claude la marge nécessaire
 // pour reformuler sa requête si le premier essai ne donne rien de fiable.
-const WEB_SEARCH_MAX_USES = Number(Deno.env.get('WEB_SEARCH_MAX_USES') ?? '3');
+const WEB_SEARCH_MAX_USES = Number(Deno.env.get('WEB_SEARCH_MAX_USES') ?? '2');
 const DAILY_LIMIT = Number(Deno.env.get('WEB_SEARCH_DAILY_LIMIT') ?? '50');
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
@@ -345,6 +345,7 @@ Deno.serve(async (req) => {
   }
 
   let anthropicResponse: Response;
+  const anthropicStartedAt = Date.now();
   try {
     anthropicResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -389,12 +390,40 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'search_failed' }, 502);
   }
 
+  const anthropicDurationMs = Date.now() - anthropicStartedAt;
   const data = await anthropicResponse.json();
   const contentBlocks: Array<{ type: string }> = data.content ?? [];
   const finalText = extractFinalText(contentBlocks);
+  // Chaque tour de recherche produit un bloc server_tool_use (la requête
+  // émise) et, normalement, un bloc web_search_tool_result correspondant (le
+  // résultat) — les deux ensemble donnent une mesure de l'activité de
+  // recherche du tour, y compris un tour amorcé mais non résolu.
+  const webSearchToolBlocks = contentBlocks.filter(
+    (block) => block.type === 'server_tool_use' || block.type === 'web_search_tool_result',
+  ).length;
+
+  // Une seule ligne par appel, sur tous les chemins (succès, vide, échec de
+  // parsing) — pour décider d'un correctif de latence sur des mesures plutôt
+  // que des suppositions (aucun secret dans les valeurs loguées).
+  const logSearchTiming = (status: 'ok' | 'empty' | 'parse_fail') => {
+    console.log(
+      'SEARCH_TIMING web-search-notices:',
+      'durée_ms =',
+      anthropicDurationMs,
+      '| tours_web =',
+      webSearchToolBlocks,
+      '| total_blocs =',
+      contentBlocks.length,
+      '| longueur_finalText =',
+      finalText.length,
+      '| statut =',
+      status,
+    );
+  };
 
   try {
     const results = parseResults(finalText);
+    logSearchTiming(results.length === 0 ? 'empty' : 'ok');
     if (results.length === 0) {
       const rawWebResults = extractRawWebResults(data.content ?? []);
       console.log(
@@ -412,6 +441,7 @@ Deno.serve(async (req) => {
     }
     return jsonResponse({ results });
   } catch (err) {
+    logSearchTiming('parse_fail');
     console.error(
       'PARSE_FAIL web-search-notices: longueur du texte =',
       finalText.length,
