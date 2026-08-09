@@ -36,24 +36,26 @@ export async function listDocuments(specialtyIds?: string[]): Promise<BrowseDocu
 
 /**
  * Document counts per specialty, for the Department screen (CLAUDE.md §5.2).
- * No GROUP BY available without touching the schema, so this fetches the
- * (small) id/specialty_id pairs and tallies them client-side.
+ * No GROUP BY available without touching the schema, so one exact head-count
+ * request per specialty (in parallel) rather than fetching rows and tallying
+ * them client-side — that approach silently capped at PostgREST's default
+ * 1000-row limit once a department passed 1000 documents.
  */
 export async function countDocumentsBySpecialty(
   specialtyIds: string[],
 ): Promise<Record<string, number>> {
   if (specialtyIds.length === 0) return {};
-  const { data, error } = await supabase
-    .from('documents')
-    .select('specialty_id')
-    .in('specialty_id', specialtyIds)
-    .returns<{ specialty_id: string }[]>();
-  if (error) throw error;
-  const counts: Record<string, number> = {};
-  for (const row of data ?? []) {
-    counts[row.specialty_id] = (counts[row.specialty_id] ?? 0) + 1;
-  }
-  return counts;
+  const entries = await Promise.all(
+    specialtyIds.map(async (specialtyId) => {
+      const { count, error } = await supabase
+        .from('documents')
+        .select('id', { count: 'exact', head: true })
+        .eq('specialty_id', specialtyId);
+      if (error) throw error;
+      return [specialtyId, count ?? 0] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
 }
 
 /** Signed URL for a document's PDF — expires in 1h, must be regenerated on demand (§8), never stored. */
