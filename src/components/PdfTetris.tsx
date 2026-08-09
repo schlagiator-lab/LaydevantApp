@@ -80,7 +80,7 @@ const CFG = {
   startDropMs: 850, // vitesse de chute initiale
   minDropMs: 140, // vitesse max (palier le plus rapide)
   speedupEvery: 8, // toutes les N lignes, on accélère
-  speedupFactor: 0.85, // facteur d'accélération par palier
+  speedupFactor: 0.8, // facteur d'accélération par palier (plus bas = paliers plus francs)
   softDropMs: 55, // chute pendant un glisser bas
   spawnDelayMs: 250, // petit répit avant que la nouvelle pièce commence à tomber
   swipeThreshold: 90, // px verticaux pour déclencher un hard drop (peu sensible)

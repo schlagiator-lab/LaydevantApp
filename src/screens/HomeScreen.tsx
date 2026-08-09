@@ -329,7 +329,7 @@ export function HomeScreen() {
         />
       </div>
 
-      <div style={{ flex: 'none', display: 'flex', gap: 12, padding: '0 16px 10px' }}>
+      <div style={{ flex: 'none', display: 'flex', justifyContent: 'space-between', padding: '0 16px 10px' }}>
         {/* Mini-jeu autonome (PdfTetris standalone) — occupe l'emplacement
             historique de "Diagnostic stockage", déplacé dans "Outils". */}
         <button

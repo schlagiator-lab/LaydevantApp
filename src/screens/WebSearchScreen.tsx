@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import type { WebSearchContext } from '../lib/navigationContext';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
-import { searchWebNotices } from '../lib/webSearch';
+import { searchWebNotices, WebSearchTimeoutError } from '../lib/webSearch';
 import { docTypeLabel } from '../lib/docType';
 import type { WebSearchResult } from '../types/webSearch';
 import { StatusPill } from '../components/StatusPill';
@@ -126,7 +126,11 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
       });
       setResults(rows);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'La recherche web a échoué.');
+      if (err instanceof WebSearchTimeoutError) {
+        setError('La recherche a pris trop de temps, réessaie.');
+      } else {
+        setError(err instanceof Error ? err.message : 'La recherche web a échoué.');
+      }
     } finally {
       setLoading(false);
     }
