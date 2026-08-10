@@ -35,7 +35,7 @@ const POLL_INTERVAL_MS = 3_000;
 // done/failed, c'est l'appli elle-même qui marque son propre job en 'failed'
 // (RLS : l'utilisateur met à jour ses propres jobs) avant d'abandonner, pour
 // ne pas laisser un job orphelin en 'pending'/'processing' indéfiniment.
-const CLIENT_TIMEOUT_MS = 180_000;
+const CLIENT_TIMEOUT_MS = 300_000;
 
 /** Le job est resté pending/processing au-delà du timeout client — distinct d'un échec serveur. */
 export class WebSearchTimeoutError extends Error {
