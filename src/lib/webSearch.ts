@@ -39,11 +39,15 @@ const JOB_COLUMNS =
 const INITIAL_POLL_DELAY_MS = 5_000;
 const POLL_INTERVAL_MS = 3_000;
 // Valeurs de validation, ajustables. Règle de terminaison :
-// - dès que les DEUX moteurs sont terminés (done/failed), on fusionne et on
-//   termine, quel que soit le temps écoulé ;
-// - sinon, passé ce délai, si AU MOINS un moteur est 'done', on termine avec
-//   ce(ux) qui a/ont répondu plutôt que d'attendre l'autre indéfiniment.
-const DECISION_TIMEOUT_MS = 120_000;
+// - dès que les DEUX moteurs sont terminés (done/failed — y compris un 'done'
+//   et un 'failed'), on fusionne et on termine, quel que soit le temps
+//   écoulé ;
+// - dès qu'UN SEUL moteur passe 'done' pendant que l'autre est encore
+//   pending/processing, on démarre ce délai de grâce : si l'autre ne termine
+//   pas avant son échéance, on termine avec ce qu'on a plutôt que d'attendre
+//   un moteur lent/absent indéfiniment (cas réel : Perplexity répond en
+//   quelques secondes, Anthropic traîne).
+const GRACE_PERIOD_MS = 25_000;
 // Pas de balai serveur côté n8n/Postgres : passé ce délai sans que les deux
 // moteurs soient terminés, c'est l'appli elle-même qui marque le(s) moteur(s)
 // restant(s) en 'failed' sur leur propre colonne (RLS : l'utilisateur met à
@@ -193,6 +197,10 @@ export async function searchWebNotices(
   );
   let lastAnthropicStatus: WebSearchJobStatus = job.status_anthropic;
   let lastPerplexityStatus: WebSearchJobStatus = job.status_perplexity;
+  // Échéance du délai de grâce, fixée au moment où un premier moteur passe
+  // 'done' pendant que l'autre est encore en cours ; null tant qu'aucun des
+  // deux n'est dans ce cas.
+  let graceDeadline: number | null = null;
 
   await sleep(INITIAL_POLL_DELAY_MS, signal);
 
@@ -236,26 +244,37 @@ export async function searchWebNotices(
 
     const anthropicTerminal = row.status_anthropic === 'done' || row.status_anthropic === 'failed';
     const perplexityTerminal = row.status_perplexity === 'done' || row.status_perplexity === 'failed';
+    const anthropicDone = row.status_anthropic === 'done';
+    const perplexityDone = row.status_perplexity === 'done';
 
     let shouldTerminate = false;
     let reason = '';
 
     if (anthropicTerminal && perplexityTerminal) {
+      // Couvre aussi bien "les deux done" que "un done, l'autre failed" : dans
+      // ce dernier cas pas de délai de grâce à attendre, l'autre a déjà échoué.
       shouldTerminate = true;
       reason = 'les deux moteurs terminés';
-    } else if (
-      elapsed >= DECISION_TIMEOUT_MS &&
-      (row.status_anthropic === 'done' || row.status_perplexity === 'done')
-    ) {
-      shouldTerminate = true;
-      reason = 'délai de décision (120s) atteint, au moins un moteur done';
     } else if (elapsed >= HARD_TIMEOUT_MS) {
       shouldTerminate = true;
       reason = 'limite dure (240s) atteinte';
+    } else if (anthropicDone || perplexityDone) {
+      if (graceDeadline === null) {
+        graceDeadline = Date.now() + GRACE_PERIOD_MS;
+        console.warn(
+          'WEBSEARCH_POLL: délai de grâce démarré (25s), moteur restant =',
+          anthropicDone ? 'perplexity' : 'anthropic',
+          '| job =',
+          job.id,
+        );
+      } else if (Date.now() >= graceDeadline) {
+        shouldTerminate = true;
+        reason = 'délai de grâce (25s) écoulé, moteur restant toujours pas fini';
+      }
     }
 
     if (!shouldTerminate) {
-      // pending / processing des deux côtés, sous les seuils : on continue de poller.
+      // Sous tous les seuils, ou délai de grâce en cours : on continue de poller.
       await sleep(POLL_INTERVAL_MS, signal);
       continue;
     }
@@ -273,9 +292,6 @@ export async function searchWebNotices(
     if (!perplexityTerminal) {
       await markEngineFailed(job.id, 'perplexity', reason);
     }
-
-    const anthropicDone = row.status_anthropic === 'done';
-    const perplexityDone = row.status_perplexity === 'done';
 
     if (anthropicDone || perplexityDone) {
       const merged = mergeAndDedupe(
