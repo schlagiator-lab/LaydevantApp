@@ -1,3 +1,4 @@
+import { FunctionsFetchError, FunctionsHttpError, FunctionsRelayError } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import type { WebSearchResult } from '../types/webSearch';
 
@@ -24,8 +25,34 @@ export class WebSearchTimeoutError extends Error {
   }
 }
 
+/** Absence de réseau détectée avant l'appel ou pendant celui-ci — distincte d'un vrai timeout serveur. */
+export class WebSearchOfflineError extends Error {
+  constructor() {
+    super('Pas de connexion — réessaie une fois en ligne.');
+    this.name = 'WebSearchOfflineError';
+  }
+}
+
+/**
+ * Diagnostic uniquement, jamais affiché à l'utilisateur : `invoke()` réduit
+ * toute défaillance à `{ error }` sans jamais rejeter (FunctionsClient.js),
+ * donc c'est ici qu'on explicite la cause réelle avant de la réduire au
+ * message générique affiché à l'écran — préfixe grep-able en console Chrome
+ * distante pour diagnostiquer sur le terrain.
+ */
+function logClientDiagnostic(cause: string, startedAt: number): void {
+  console.warn('WEBSEARCH_CLIENT: cause =', cause, '| écoulé_ms =', Date.now() - startedAt);
+}
+
 /** Recherche web de notices (Feature recherche web notices.md, §3-4). En ligne uniquement. */
 export async function searchWebNotices(params: WebSearchNoticesParams): Promise<WebSearchResult[]> {
+  const startedAt = Date.now();
+
+  if (!navigator.onLine) {
+    logClientDiagnostic('offline', startedAt);
+    throw new WebSearchOfflineError();
+  }
+
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -54,11 +81,30 @@ export async function searchWebNotices(params: WebSearchNoticesParams): Promise<
   }
 
   if (error) {
-    if (timedOut) throw new WebSearchTimeoutError();
+    if (timedOut) {
+      logClientDiagnostic('timeout', startedAt);
+      throw new WebSearchTimeoutError();
+    }
+    if (!navigator.onLine) {
+      logClientDiagnostic('offline', startedAt);
+      throw new WebSearchOfflineError();
+    }
     // supabase-js n'expose pas directement le code HTTP sur toutes les
     // versions du client — le contexte de la réponse le porte quand présent.
     const status = (error as { context?: { status?: number } }).context?.status;
-    if (status === 429) throw new Error('Limite de recherches web atteinte pour aujourd’hui.');
+    if (status === 429) {
+      logClientDiagnostic('http 429', startedAt);
+      throw new Error('Limite de recherches web atteinte pour aujourd’hui.');
+    }
+    if (error instanceof FunctionsHttpError) {
+      logClientDiagnostic(`http ${status ?? '?'}`, startedAt);
+      throw new Error('La recherche web a échoué.');
+    }
+    if (error instanceof FunctionsFetchError || error instanceof FunctionsRelayError) {
+      logClientDiagnostic('network', startedAt);
+      throw new Error('La recherche web a échoué.');
+    }
+    logClientDiagnostic('app', startedAt);
     throw new Error('La recherche web a échoué.');
   }
 
