@@ -1,4 +1,3 @@
-import { FunctionsFetchError, FunctionsHttpError, FunctionsRelayError } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import type { WebSearchResult } from '../types/webSearch';
 
@@ -12,12 +11,33 @@ export interface WebSearchNoticesParams {
   equipmentType?: string | null;
 }
 
-// L'Edge Function a un timeout serveur ~150s (504 IDLE_TIMEOUT) sur les
-// recherches longues. On coupe côté client avant ça pour ne pas laisser
-// l'utilisateur attendre jusqu'au bout sans retour.
-const CLIENT_TIMEOUT_MS = 135_000;
+export interface SearchWebNoticesOptions {
+  /** Permet à l'appelant de couper le polling proprement (composant démonté). */
+  signal?: AbortSignal;
+}
 
-/** Distingue un abandon côté client (délai dépassé) d'un échec réseau/serveur ordinaire. */
+type WebSearchJobStatus = 'pending' | 'processing' | 'done' | 'failed';
+
+interface WebSearchJobRow {
+  id: string;
+  status: WebSearchJobStatus;
+  results: WebSearchResult[] | null;
+  error: string | null;
+}
+
+// La recherche est maintenant asynchrone : un trigger Postgres déclenche un
+// workflow n8n à l'insertion du job, qui peut prendre plusieurs dizaines de
+// secondes (recherche web réelle). On laisse n8n démarrer avant le premier
+// poll, puis on interroge à intervalle régulier.
+const INITIAL_POLL_DELAY_MS = 5_000;
+const POLL_INTERVAL_MS = 3_000;
+// Pas de balai serveur côté n8n/Postgres : si ce délai est dépassé sans
+// done/failed, c'est l'appli elle-même qui marque son propre job en 'failed'
+// (RLS : l'utilisateur met à jour ses propres jobs) avant d'abandonner, pour
+// ne pas laisser un job orphelin en 'pending'/'processing' indéfiniment.
+const CLIENT_TIMEOUT_MS = 180_000;
+
+/** Le job est resté pending/processing au-delà du timeout client — distinct d'un échec serveur. */
 export class WebSearchTimeoutError extends Error {
   constructor() {
     super('La recherche a pris trop de temps.');
@@ -25,88 +45,126 @@ export class WebSearchTimeoutError extends Error {
   }
 }
 
-/** Absence de réseau détectée avant l'appel ou pendant celui-ci — distincte d'un vrai timeout serveur. */
-export class WebSearchOfflineError extends Error {
-  constructor() {
-    super('Pas de connexion — réessaie une fois en ligne.');
-    this.name = 'WebSearchOfflineError';
+/** Le job est passé en statut 'failed' côté n8n/serveur — message porté par job.error. */
+export class WebSearchFailedError extends Error {
+  constructor(message: string) {
+    super(message || 'La recherche web a échoué.');
+    this.name = 'WebSearchFailedError';
   }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Recherche annulée.', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Recherche annulée.', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
- * Diagnostic uniquement, jamais affiché à l'utilisateur : `invoke()` réduit
- * toute défaillance à `{ error }` sans jamais rejeter (FunctionsClient.js),
- * donc c'est ici qu'on explicite la cause réelle avant de la réduire au
- * message générique affiché à l'écran — préfixe grep-able en console Chrome
- * distante pour diagnostiquer sur le terrain.
+ * Recherche web de notices (Feature recherche web notices.md, §3-4). En ligne
+ * uniquement. Crée un job dans `web_search_jobs` (un trigger Postgres lance le
+ * workflow n8n) puis poll son statut jusqu'à 'done'/'failed' ou timeout
+ * client. `options.signal` permet à l'appelant d'arrêter le polling en cours
+ * (ex. démontage du composant) sans lever d'erreur applicative.
  */
-function logClientDiagnostic(cause: string, startedAt: number): void {
-  console.warn('WEBSEARCH_CLIENT: cause =', cause, '| écoulé_ms =', Date.now() - startedAt);
-}
-
-/** Recherche web de notices (Feature recherche web notices.md, §3-4). En ligne uniquement. */
-export async function searchWebNotices(params: WebSearchNoticesParams): Promise<WebSearchResult[]> {
+export async function searchWebNotices(
+  params: WebSearchNoticesParams,
+  options: SearchWebNoticesOptions = {},
+): Promise<WebSearchResult[]> {
+  const { signal } = options;
   const startedAt = Date.now();
 
-  if (!navigator.onLine) {
-    logClientDiagnostic('offline', startedAt);
-    throw new WebSearchOfflineError();
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError) throw userError;
+  const userId = userData.user?.id;
+  if (!userId) throw new Error('Session absente — impossible de lancer la recherche.');
+
+  const { data, error: insertError } = await supabase
+    .from('web_search_jobs')
+    .insert({
+      user_id: userId,
+      brand: params.brand,
+      model: params.model,
+      equipment_type: params.equipmentType?.trim() || null,
+      department_name: params.departmentName ?? null,
+      specialty_name: params.specialtyName ?? null,
+    })
+    .select('id, status, results, error')
+    .single();
+
+  if (insertError || !data) {
+    console.warn('WEBSEARCH_POLL: échec de création du job —', insertError?.message);
+    throw insertError ?? new Error('La recherche web a échoué.');
   }
+  const job = data as WebSearchJobRow;
 
-  const controller = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, CLIENT_TIMEOUT_MS);
+  console.warn('WEBSEARCH_POLL: job créé, id =', job.id);
+  let lastStatus: WebSearchJobStatus = job.status;
 
-  let data: { results: WebSearchResult[]; error?: string } | null;
-  let error: unknown;
-  try {
-    ({ data, error } = await supabase.functions.invoke<{ results: WebSearchResult[]; error?: string }>(
-      'web-search-notices',
-      {
-        body: {
-          brand: params.brand,
-          model: params.model,
-          department_name: params.departmentName ?? null,
-          specialty_name: params.specialtyName ?? null,
-          equipment_type: params.equipmentType?.trim() || null,
-        },
-        signal: controller.signal,
-      },
-    ));
-  } finally {
-    clearTimeout(timer);
-  }
+  await sleep(INITIAL_POLL_DELAY_MS, signal);
 
-  if (error) {
-    if (timedOut) {
-      logClientDiagnostic('timeout', startedAt);
+  for (;;) {
+    if (Date.now() - startedAt > CLIENT_TIMEOUT_MS) {
+      console.warn('WEBSEARCH_POLL: timeout client, job =', job.id);
+      // Best-effort : même si ce marquage échoue (réseau tombé pile à ce
+      // moment-là), on abandonne quand même côté client — l'utilisateur ne
+      // doit jamais rester bloqué en attente à cause d'un échec ici.
+      const { error: markFailedError } = await supabase
+        .from('web_search_jobs')
+        .update({ status: 'failed', error: 'Timeout client' })
+        .eq('id', job.id);
+      if (markFailedError) {
+        console.warn(
+          'WEBSEARCH_POLL: échec du marquage failed après timeout, job =',
+          job.id,
+          '—',
+          markFailedError.message,
+        );
+      }
       throw new WebSearchTimeoutError();
     }
-    if (!navigator.onLine) {
-      logClientDiagnostic('offline', startedAt);
-      throw new WebSearchOfflineError();
-    }
-    // supabase-js n'expose pas directement le code HTTP sur toutes les
-    // versions du client — le contexte de la réponse le porte quand présent.
-    const status = (error as { context?: { status?: number } }).context?.status;
-    if (status === 429) {
-      logClientDiagnostic('http 429', startedAt);
-      throw new Error('Limite de recherches web atteinte pour aujourd’hui.');
-    }
-    if (error instanceof FunctionsHttpError) {
-      logClientDiagnostic(`http ${status ?? '?'}`, startedAt);
-      throw new Error('La recherche web a échoué.');
-    }
-    if (error instanceof FunctionsFetchError || error instanceof FunctionsRelayError) {
-      logClientDiagnostic('network', startedAt);
-      throw new Error('La recherche web a échoué.');
-    }
-    logClientDiagnostic('app', startedAt);
-    throw new Error('La recherche web a échoué.');
-  }
 
-  return data?.results ?? [];
+    const { data: rowData, error: pollError } = await supabase
+      .from('web_search_jobs')
+      .select('id, status, results, error')
+      .eq('id', job.id)
+      .single();
+
+    if (pollError) {
+      console.warn('WEBSEARCH_POLL: échec de lecture, job =', job.id, '—', pollError.message);
+      throw pollError;
+    }
+    const row = rowData as WebSearchJobRow;
+
+    if (row.status !== lastStatus) {
+      console.warn('WEBSEARCH_POLL: transition', lastStatus, '→', row.status, '| job =', job.id);
+      lastStatus = row.status;
+    }
+
+    if (row.status === 'done') {
+      const results = row.results ?? [];
+      console.warn('WEBSEARCH_POLL: terminé, job =', job.id, '| résultats =', results.length);
+      return results;
+    }
+
+    if (row.status === 'failed') {
+      const message = row.error ?? 'La recherche web a échoué.';
+      console.warn('WEBSEARCH_POLL: échoué, job =', job.id, '—', message);
+      throw new WebSearchFailedError(message);
+    }
+
+    // pending / processing : on continue de poller.
+    await sleep(POLL_INTERVAL_MS, signal);
+  }
 }

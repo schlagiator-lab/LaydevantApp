@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'r
 import type { WebSearchContext } from '../lib/navigationContext';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
-import { searchWebNotices, WebSearchTimeoutError } from '../lib/webSearch';
+import { searchWebNotices, WebSearchFailedError, WebSearchTimeoutError } from '../lib/webSearch';
 import { docTypeLabel } from '../lib/docType';
 import type { WebSearchResult } from '../types/webSearch';
 import { StatusPill } from '../components/StatusPill';
@@ -37,9 +37,10 @@ const PATIENCE_MESSAGES = [
 
 /**
  * Mode "recherche web" (Feature recherche web notices.md, §4) : distinct de
- * la recherche interne, en ligne uniquement. Saisie marque + modèle → Edge
- * Function web-search-notices → liste courte triée, avec capture directe
- * vers la bibliothèque pour les résultats PDF (§5).
+ * la recherche interne, en ligne uniquement. Saisie marque + modèle → job
+ * asynchrone `web_search_jobs` (polling, voir src/lib/webSearch.ts) → liste
+ * courte triée, avec capture directe vers la bibliothèque pour les résultats
+ * PDF (§5).
  */
 export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const { isOnline } = useAuth();
@@ -73,6 +74,14 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [loading]);
+
+  // Recherche asynchrone (job + polling, voir src/lib/webSearch.ts) : si le
+  // monteur quitte l'écran en cours de recherche, on coupe le polling plutôt
+  // que de le laisser tourner et mettre à jour un composant démonté.
+  const abortControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => abortControllerRef.current?.abort();
+  }, []);
 
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
@@ -116,23 +125,35 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     setLoading(true);
     setError(null);
     setResults(null);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
-      const rows = await searchWebNotices({
-        brand: trimmedBrand,
-        model: trimmedModel,
-        departmentName: context.departmentName,
-        specialtyName: context.specialtyName,
-        equipmentType,
-      });
+      const rows = await searchWebNotices(
+        {
+          brand: trimmedBrand,
+          model: trimmedModel,
+          departmentName: context.departmentName,
+          specialtyName: context.specialtyName,
+          equipmentType,
+        },
+        { signal: controller.signal },
+      );
       setResults(rows);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return; // composant démonté pendant le polling : rien à mettre à jour
+      }
       if (err instanceof WebSearchTimeoutError) {
         setError('La recherche a pris trop de temps, réessaie.');
+      } else if (err instanceof WebSearchFailedError) {
+        setError(err.message);
       } else {
         setError(err instanceof Error ? err.message : 'La recherche web a échoué.');
       }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   };
 
