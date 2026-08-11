@@ -150,7 +150,7 @@ export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
   const [level, setLevel] = useState(1);
   const [over, setOver] = useState(false);
   const [score, setScore] = useState(0);
-  const [target, setTarget] = useState(EXT_LIST[(Math.random() * EXT_LIST.length) | 0]);
+  const [target, setTarget] = useState(() => EXT_LIST[(Math.random() * EXT_LIST.length) | 0]);
   const [bonusFx, setBonusFx] = useState(0); // horodatage pour animer le "+bonus"
 
   // Classement — bonus non bloquant : une panne réseau ne doit jamais
