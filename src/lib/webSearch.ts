@@ -24,13 +24,15 @@ interface WebSearchJobRow {
   status_anthropic: WebSearchJobStatus;
   results_anthropic: WebSearchResult[] | null;
   error_anthropic: string | null;
+  done_at_anthropic: string | null;
   status_perplexity: WebSearchJobStatus;
   results_perplexity: WebSearchResult[] | null;
   error_perplexity: string | null;
+  done_at_perplexity: string | null;
 }
 
 const JOB_COLUMNS =
-  'id, status_anthropic, results_anthropic, error_anthropic, status_perplexity, results_perplexity, error_perplexity';
+  'id, status_anthropic, results_anthropic, error_anthropic, done_at_anthropic, status_perplexity, results_perplexity, error_perplexity, done_at_perplexity';
 
 // La recherche est maintenant asynchrone à deux moteurs : deux workflows n8n
 // indépendants écrivent chacun leur colonne (status_anthropic/status_perplexity)
@@ -97,6 +99,26 @@ function confidenceRank(confidence: WebSearchConfidence): number {
   }
 }
 
+/** Rang de TYPE, meilleur = 1. Priorité au vrai document d'installation/programmation sur les fiches techniques. */
+const TYPE_PRIORITY: Record<string, number> = {
+  notice_installation: 1,
+  manuel_programmation: 1,
+  fiche_technique: 2,
+  autre: 3,
+};
+const UNKNOWN_TYPE_RANK = 4;
+
+function typeRank(type: string): number {
+  return TYPE_PRIORITY[type] ?? UNKNOWN_TYPE_RANK;
+}
+
+/** Ordonne deux résultats : type d'abord (meilleur en premier), puis confidence à type égal. */
+function compareResults(a: WebSearchResult, b: WebSearchResult): number {
+  const typeDelta = typeRank(a.type) - typeRank(b.type);
+  if (typeDelta !== 0) return typeDelta;
+  return confidenceRank(b.confidence) - confidenceRank(a.confidence);
+}
+
 /** trim + casse du domaine ignorée ; repli sur une comparaison texte si l'URL est malformée. */
 function normalizeUrl(url: string): string {
   const trimmed = url.trim();
@@ -109,7 +131,7 @@ function normalizeUrl(url: string): string {
   }
 }
 
-/** Fusionne les résultats des deux moteurs, dédupliqués par URL (meilleure confidence gagne), triés par confidence décroissante. */
+/** Fusionne les résultats des deux moteurs, dédupliqués par URL (meilleur selon type puis confidence gagne), triés pareil. */
 function mergeAndDedupe(
   anthropicResults: WebSearchResult[],
   perplexityResults: WebSearchResult[],
@@ -118,13 +140,11 @@ function mergeAndDedupe(
   for (const result of [...anthropicResults, ...perplexityResults]) {
     const key = normalizeUrl(result.url);
     const existing = byUrl.get(key);
-    if (!existing || confidenceRank(result.confidence) > confidenceRank(existing.confidence)) {
+    if (!existing || compareResults(result, existing) < 0) {
       byUrl.set(key, result);
     }
   }
-  return Array.from(byUrl.values()).sort(
-    (a, b) => confidenceRank(b.confidence) - confidenceRank(a.confidence),
-  );
+  return Array.from(byUrl.values()).sort(compareResults);
 }
 
 /** Best-effort : un moteur encore pending/processing à la terminaison est marqué failed sur sa propre colonne. */
@@ -213,6 +233,7 @@ export async function searchWebNotices(
     const row = rowData as WebSearchJobRow;
 
     if (row.status_anthropic !== lastAnthropicStatus) {
+      const isTerminal = row.status_anthropic === 'done' || row.status_anthropic === 'failed';
       console.warn(
         'WEBSEARCH_POLL: anthropic',
         lastAnthropicStatus,
@@ -220,10 +241,19 @@ export async function searchWebNotices(
         row.status_anthropic,
         '| job =',
         job.id,
+        ...(isTerminal
+          ? [
+              '| durée ≈',
+              `${Math.round((Date.now() - startedAt) / 1000)}s`,
+              '| done_at_anthropic =',
+              row.done_at_anthropic,
+            ]
+          : []),
       );
       lastAnthropicStatus = row.status_anthropic;
     }
     if (row.status_perplexity !== lastPerplexityStatus) {
+      const isTerminal = row.status_perplexity === 'done' || row.status_perplexity === 'failed';
       console.warn(
         'WEBSEARCH_POLL: perplexity',
         lastPerplexityStatus,
@@ -231,6 +261,14 @@ export async function searchWebNotices(
         row.status_perplexity,
         '| job =',
         job.id,
+        ...(isTerminal
+          ? [
+              '| durée ≈',
+              `${Math.round((Date.now() - startedAt) / 1000)}s`,
+              '| done_at_perplexity =',
+              row.done_at_perplexity,
+            ]
+          : []),
       );
       lastPerplexityStatus = row.status_perplexity;
     }
