@@ -14,7 +14,7 @@ export async function syncReferentiel(): Promise<void> {
       supabase.from('departments').select('id, name, slug, icon, sort_order').returns<Department[]>(),
       supabase
         .from('specialties')
-        .select('id, department_id, name, slug, sort_order')
+        .select('id, department_id, name, slug, sort_order, display_mode')
         .returns<Specialty[]>(),
     ]);
 

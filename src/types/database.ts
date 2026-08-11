@@ -12,6 +12,9 @@ export type DocType =
 
 export type ProfileRole = 'monteur' | 'admin';
 
+/** How a specialty's content is browsed — plain document list, or the photo-grid "galerie" mode. */
+export type DisplayMode = 'documents' | 'galerie';
+
 export interface Department {
   id: string;
   name: string;
@@ -26,6 +29,7 @@ export interface Specialty {
   name: string;
   slug: string;
   sort_order: number;
+  display_mode: DisplayMode;
 }
 
 export interface Product {
@@ -180,6 +184,34 @@ export interface GameLeaderboardEntry {
   best_score: number;
   best_lines: number;
   updated_at: string;
+}
+
+// Galerie — mode d'affichage alternatif d'une spécialité (pastilles produit
+// photo + nom plutôt que liste de documents PDF), lu depuis la vue
+// `galerie_items_view`. Schéma et vue déjà en place côté Supabase.
+
+export interface GaleriePhoto {
+  id: string;
+  storage_provider: string;
+  storage_key: string;
+  mime: string | null;
+  libelle: string | null;
+  largeur: number | null;
+  hauteur: number | null;
+  sort_order: number;
+}
+
+/** Row shape returned by `galerie_items_view` — `photos` arrive déjà triées par `sort_order`. */
+export interface GalerieItem {
+  id: string;
+  specialty_id: string;
+  name: string;
+  brand: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  nb_photos: number;
+  photos: GaleriePhoto[];
 }
 
 export interface OnboardingInvitation {

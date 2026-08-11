@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { Department } from '../types/database';
+import type { Department, Specialty } from '../types/database';
 import {
   NavigationContext,
   BLANK_SEARCH,
@@ -90,6 +90,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
 
   const goHome = () => setStack([HOME]);
   const goDepartment = (department: Department) => push({ screen: 'department', department });
+  const goGalerie = (specialty: Specialty) => push({ screen: 'galerie', specialty });
   const goSearchBlank = () => push({ screen: 'search', params: BLANK_SEARCH });
   const goPinned = () => push({ screen: 'search', params: { ...BLANK_SEARCH, pinnedOnly: true } });
   const goSearch = (params: SearchParams) => push({ screen: 'search', params });
@@ -115,6 +116,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         canGoBack: stack.length > 1,
         goHome,
         goDepartment,
+        goGalerie,
         goSearchBlank,
         goPinned,
         goSearch,
