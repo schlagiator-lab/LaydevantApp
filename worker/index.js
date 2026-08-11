@@ -7,6 +7,10 @@ async function getUser(request, env) {
   return res.ok ? await res.json() : null;
 }
 
+// Préfixes génériques (hors dossier) autorisés pour ?prefix= : allowlist
+// stricte tête + slug, aucun `..`, aucun `/` supplémentaire, aucun espace.
+const GALERIE_PREFIX_RE = /^galerie\/[a-z0-9-]+$/;
+
 async function handlePhotos(request, env) {
   const url = new URL(request.url);
 
@@ -15,10 +19,18 @@ async function handlePhotos(request, env) {
 
   if (request.method === "POST") {
     const dossierId = url.searchParams.get("dossier");
-    if (!dossierId) return new Response("dossier manquant", { status: 400 });
+    const prefix = url.searchParams.get("prefix");
+    let keyPrefix;
+    if (dossierId) {
+      keyPrefix = `dossiers/${dossierId}`;
+    } else if (prefix && GALERIE_PREFIX_RE.test(prefix)) {
+      keyPrefix = prefix;
+    } else {
+      return new Response("dossier ou prefix manquant/invalide", { status: 400 });
+    }
     const contentType = request.headers.get("Content-Type") || "image/jpeg";
     const ext = contentType.includes("png") ? "png" : "jpg";
-    const key = `dossiers/${dossierId}/${crypto.randomUUID()}.${ext}`;
+    const key = `${keyPrefix}/${crypto.randomUUID()}.${ext}`;
     const bytes = await request.arrayBuffer();
     await env.PHOTOS_BUCKET.put(key, bytes, { httpMetadata: { contentType } });
     return Response.json({ key, contentType });

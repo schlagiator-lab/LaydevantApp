@@ -2,18 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GalerieItem, Specialty } from '../types/database';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
-import { listGalerieItems } from '../lib/galerie';
+import { listGalerieItems, normalize } from '../lib/galerie';
 import { getPhotoObjectUrl } from '../lib/dossiers';
 import { StatusPill } from '../components/StatusPill';
+import { GalerieAddSheet } from '../components/GalerieAddSheet';
 import { colors, fonts, textA } from '../styles/tokens';
-
-/** Insensible à la casse et aux accents ("télécommande" ~ "telecommande"). */
-function normalize(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-}
 
 interface Viewer {
   item: GalerieItem;
@@ -23,7 +16,7 @@ interface Viewer {
 const SWIPE_THRESHOLD = 40;
 
 export function GalerieScreen({ specialty }: { specialty: Specialty }) {
-  const { isOnline } = useAuth();
+  const { isOnline, session } = useAuth();
   const nav = useNavigation();
 
   const [items, setItems] = useState<GalerieItem[] | null>(null);
@@ -32,6 +25,8 @@ export function GalerieScreen({ specialty }: { specialty: Specialty }) {
   const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({});
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [viewerUrls, setViewerUrls] = useState<Record<string, string>>({});
+  const [showAddSheet, setShowAddSheet] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const touchStartX = useRef<number | null>(null);
 
   useEffect(() => {
@@ -50,7 +45,7 @@ export function GalerieScreen({ specialty }: { specialty: Specialty }) {
     return () => {
       cancelled = true;
     };
-  }, [specialty.id]);
+  }, [specialty.id, reloadKey]);
 
   // Vignette = 1re photo de chaque item. Même pattern que CarnetSection :
   // chargement séquentiel des object URLs, révocation au démontage / changement.
@@ -259,6 +254,27 @@ export function GalerieScreen({ specialty }: { specialty: Specialty }) {
             </button>
           )}
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAddSheet(true)}
+          disabled={!isOnline || !session?.user.id}
+          style={{
+            marginTop: 12,
+            width: '100%',
+            height: 44,
+            borderRadius: 12,
+            border: 'none',
+            background: colors.accent,
+            color: '#132146',
+            fontSize: 14,
+            fontWeight: 700,
+            opacity: !isOnline || !session?.user.id ? 0.5 : 1,
+            cursor: !isOnline || !session?.user.id ? 'default' : 'pointer',
+          }}
+        >
+          + Ajouter une télécommande
+        </button>
       </div>
 
       <div style={{ flex: 1, padding: '14px 16px 24px', boxSizing: 'border-box' }}>
@@ -411,6 +427,16 @@ export function GalerieScreen({ specialty }: { specialty: Specialty }) {
             )}
           </div>
         </div>
+      )}
+
+      {showAddSheet && session?.user.id && (
+        <GalerieAddSheet
+          specialty={specialty}
+          items={items ?? []}
+          createdBy={session.user.id}
+          onClose={() => setShowAddSheet(false)}
+          onAdded={() => setReloadKey((k) => k + 1)}
+        />
       )}
     </div>
   );

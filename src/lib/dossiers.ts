@@ -226,7 +226,7 @@ async function getAccessToken(): Promise<string> {
 }
 
 /** Redimensionne + recompresse côté client avant l'upload (respecte l'EXIF). */
-async function compressImage(file: File, maxDim = 1600, quality = 0.75): Promise<Blob> {
+export async function compressImage(file: File, maxDim = 1600, quality = 0.75): Promise<Blob> {
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width * scale);
@@ -258,20 +258,28 @@ export async function listDossierPhotos(dossierId: string): Promise<DossierPhoto
   return (data ?? []) as DossierPhotoView[];
 }
 
+/** Envoi authentifié des octets vers le Worker /api/photos (§2/§10 CLAUDE.md). */
+export async function uploadPhotoBytes(
+  blob: Blob,
+  query: string
+): Promise<{ key: string; contentType: string }> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/photos?${query}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg' },
+    body: blob,
+  });
+  if (!res.ok) throw new Error(`Upload photo échoué (HTTP ${res.status})`);
+  return res.json() as Promise<{ key: string; contentType: string }>;
+}
+
 export async function uploadDossierPhoto(
   dossierId: string,
   file: File,
   auteur: string
 ): Promise<void> {
   const blob = await compressImage(file);
-  const token = await getAccessToken();
-  const res = await fetch(`/api/photos?dossier=${dossierId}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg' },
-    body: blob,
-  });
-  if (!res.ok) throw new Error(`Upload photo échoué (HTTP ${res.status})`);
-  const { key } = (await res.json()) as { key: string };
+  const { key } = await uploadPhotoBytes(blob, `dossier=${dossierId}`);
   const { error } = await supabase.from('dossier_photos').insert({
     dossier_id: dossierId,
     storage_provider: 'r2',
