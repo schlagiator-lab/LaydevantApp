@@ -11,9 +11,23 @@ export interface WebSearchNoticesParams {
   equipmentType?: string | null;
 }
 
+/** État progressif transmis par `onUpdate` une fois la révélation atteinte (§2 étape 2). */
+export interface WebSearchProgressUpdate {
+  results: WebSearchResult[];
+  /** Vrai tant qu'au moins un moteur n'est pas terminé — faux à la terminaison complète. */
+  stillSearching: boolean;
+}
+
 export interface SearchWebNoticesOptions {
   /** Permet à l'appelant de couper le polling proprement (composant démonté). */
   signal?: AbortSignal;
+  /**
+   * Appelé à chaque changement d'état affichable après la révélation
+   * (REVEAL_DELAY_MS, ou immédiatement si les deux moteurs finissent avant) :
+   * à la révélation elle-même, puis à chaque terminaison de moteur
+   * supplémentaire, puis une dernière fois à la terminaison complète.
+   */
+  onUpdate?: (update: WebSearchProgressUpdate) => void;
 }
 
 type WebSearchJobStatus = 'pending' | 'processing' | 'done' | 'failed';
@@ -40,19 +54,23 @@ const JOB_COLUMNS =
 // interroge à intervalle régulier.
 const INITIAL_POLL_DELAY_MS = 5_000;
 const POLL_INTERVAL_MS = 3_000;
-// Valeurs de validation, ajustables. Règle de terminaison : la qualité prime
-// sur la vitesse, donc on attend TOUJOURS les DEUX moteurs (done ou failed)
-// avant de fusionner et de terminer — pas de sortie anticipée dès qu'un seul
-// répond, même si l'autre est nettement plus lent (cas réel : Perplexity
-// répond en ~30s, Anthropic souvent plus pertinent mais met 1-2 min). Un jeu
-// fait patienter l'utilisateur pendant ce temps (cf. WebSearchScreen).
+// Valeurs de validation, ajustables. Règle de révélation : Perplexity répond
+// vite (~20s) mais ramène souvent des documents médiocres ; Anthropic est
+// lent (~2-5 min) mais trouve les vraies notices. On n'affiche donc rien
+// avant REVEAL_DELAY_MS (le mini-jeu occupe l'utilisateur, cf.
+// WebSearchScreen), sauf si les deux moteurs finissent avant — dans ce cas
+// le résultat est déjà complet, pas de raison d'attendre. Passé la
+// révélation, chaque terminaison de moteur supplémentaire refait remonter
+// les vraies notices en tête (comparateur type+confidence, cf.
+// compareResults plus bas).
 //
-// Pas de balai serveur côté n8n/Postgres : passé ce délai sans que les deux
-// moteurs soient terminés, c'est l'appli elle-même qui marque le(s) moteur(s)
-// restant(s) en 'failed' sur leur propre colonne (RLS : l'utilisateur met à
-// jour ses propres jobs) avant d'abandonner, pour ne pas laisser un job
-// orphelin en 'pending'/'processing' indéfiniment.
-const HARD_TIMEOUT_MS = 180_000;
+// Pas de balai serveur côté n8n/Postgres : passé HARD_LIMIT_MS sans que les
+// deux moteurs soient terminés, c'est l'appli elle-même qui marque le(s)
+// moteur(s) restant(s) en 'failed' sur leur propre colonne (RLS :
+// l'utilisateur met à jour ses propres jobs) avant d'abandonner, pour ne pas
+// laisser un job orphelin en 'pending'/'processing' indéfiniment.
+const REVEAL_DELAY_MS = 90_000;
+const HARD_LIMIT_MS = 300_000;
 
 /** Le job est resté pending/processing au-delà du timeout client — distinct d'un échec serveur. */
 export class WebSearchTimeoutError extends Error {
@@ -171,13 +189,16 @@ async function markEngineFailed(jobId: string, engine: WebSearchEngine, reason: 
  * uniquement. Crée un job dans `web_search_jobs` (un trigger Postgres lance le
  * workflow n8n) puis poll son statut jusqu'à 'done'/'failed' ou timeout
  * client. `options.signal` permet à l'appelant d'arrêter le polling en cours
- * (ex. démontage du composant) sans lever d'erreur applicative.
+ * (ex. démontage du composant) sans lever d'erreur applicative. `options.onUpdate`
+ * permet un affichage progressif (révélation à REVEAL_DELAY_MS, mise à jour à
+ * chaque moteur qui termine) ; la promesse résolue reste le résultat final
+ * complet, pour compatibilité avec un appelant qui ignorerait `onUpdate`.
  */
 export async function searchWebNotices(
   params: WebSearchNoticesParams,
   options: SearchWebNoticesOptions = {},
 ): Promise<WebSearchResult[]> {
-  const { signal } = options;
+  const { signal, onUpdate } = options;
   const startedAt = Date.now();
 
   const { data: userData, error: userError } = await supabase.auth.getUser();
@@ -214,6 +235,7 @@ export async function searchWebNotices(
   );
   let lastAnthropicStatus: WebSearchJobStatus = job.status_anthropic;
   let lastPerplexityStatus: WebSearchJobStatus = job.status_perplexity;
+  let revealed = false;
 
   await sleep(INITIAL_POLL_DELAY_MS, signal);
 
@@ -231,6 +253,8 @@ export async function searchWebNotices(
       throw pollError;
     }
     const row = rowData as WebSearchJobRow;
+    const statusChangedThisTick =
+      row.status_anthropic !== lastAnthropicStatus || row.status_perplexity !== lastPerplexityStatus;
 
     if (row.status_anthropic !== lastAnthropicStatus) {
       const isTerminal = row.status_anthropic === 'done' || row.status_anthropic === 'failed';
@@ -284,15 +308,34 @@ export async function searchWebNotices(
     if (anthropicTerminal && perplexityTerminal) {
       shouldTerminate = true;
       reason = 'les deux moteurs terminés';
-    } else if (elapsed >= HARD_TIMEOUT_MS) {
+    } else if (elapsed >= HARD_LIMIT_MS) {
       shouldTerminate = true;
-      reason = 'limite dure (180s) atteinte, moteur(s) restant(s) non fini(s)';
+      reason = 'limite dure (300s) atteinte, moteur(s) restant(s) non fini(s)';
     }
 
     if (!shouldTerminate) {
-      // Au moins un moteur encore pending/processing, sous la limite dure : on
-      // continue de poller — on n'affiche jamais tant que les deux ne sont pas
-      // finis.
+      // Au moins un moteur encore pending/processing, sous la limite dure.
+      // Avant REVEAL_DELAY_MS, on n'affiche rien (mini-jeu). Une fois
+      // atteint, on révèle l'état courant puis on met à jour à chaque
+      // terminaison de moteur supplémentaire (statusChangedThisTick), pas à
+      // chaque tick — évite de re-notifier l'appelant pour rien.
+      if (elapsed >= REVEAL_DELAY_MS) {
+        const justRevealed = !revealed;
+        revealed = true;
+        if (justRevealed || statusChangedThisTick) {
+          const merged = mergeAndDedupe(
+            anthropicDone ? row.results_anthropic ?? [] : [],
+            perplexityDone ? row.results_perplexity ?? [] : [],
+          );
+          console.warn(
+            'WEBSEARCH_POLL: révélation progressive, job =',
+            job.id,
+            '| résultats fusionnés =',
+            merged.length,
+          );
+          onUpdate?.({ results: merged, stillSearching: true });
+        }
+      }
       await sleep(POLL_INTERVAL_MS, signal);
       continue;
     }
@@ -317,6 +360,7 @@ export async function searchWebNotices(
         perplexityDone ? row.results_perplexity ?? [] : [],
       );
       console.warn('WEBSEARCH_POLL: terminé, job =', job.id, '| résultats fusionnés =', merged.length);
+      onUpdate?.({ results: merged, stillSearching: false });
       return merged;
     }
 

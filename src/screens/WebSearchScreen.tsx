@@ -51,6 +51,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const [equipmentType, setEquipmentType] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<WebSearchResult[] | null>(null);
+  const [stillSearching, setStillSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [captureTarget, setCaptureTarget] = useState<WebSearchResult | null>(null);
   const [patienceIndex, setPatienceIndex] = useState(() =>
@@ -125,6 +126,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     setLoading(true);
     setError(null);
     setResults(null);
+    setStillSearching(false);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
@@ -136,9 +138,16 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
           specialtyName: context.specialtyName,
           equipmentType,
         },
-        { signal: controller.signal },
+        {
+          signal: controller.signal,
+          onUpdate: ({ results: partial, stillSearching: searching }) => {
+            setResults(partial);
+            setStillSearching(searching);
+          },
+        },
       );
       setResults(rows);
+      setStillSearching(false);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         return; // composant démonté pendant le polling : rien à mettre à jour
@@ -150,6 +159,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
       } else {
         setError(err instanceof Error ? err.message : 'La recherche web a échoué.');
       }
+      setStillSearching(false);
     } finally {
       if (!controller.signal.aborted) {
         setLoading(false);
@@ -235,7 +245,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
         className="no-scrollbar"
         style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 24px', boxSizing: 'border-box' }}
       >
-        {loading && (
+        {loading && results === null && (
           <div style={{ marginTop: 40 }}>
             <div style={loadingBarTrackStyle}>
               <div style={loadingBarFillStyle} />
@@ -252,6 +262,17 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
           </div>
         )}
 
+        {loading && results !== null && results.length === 0 && (
+          <div style={{ marginTop: 40 }}>
+            <p style={{ fontSize: 14, color: textA(0.55), textAlign: 'center', marginTop: 14 }}>
+              Recherche sur le web… quelques secondes.
+            </p>
+            <p style={{ fontSize: 13, color: textA(0.45), textAlign: 'center', marginTop: 6 }}>
+              {PATIENCE_MESSAGES[patienceIndex]}
+            </p>
+          </div>
+        )}
+
         {error && <p style={{ fontSize: 14, color: colors.accent }}>{error}</p>}
 
         {!loading && !error && results && results.length === 0 && (
@@ -263,8 +284,16 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
           </div>
         )}
 
-        {!loading && !error && results && results.length > 0 && (
+        {!error && results && results.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {stillSearching && (
+              <div style={offlineBannerStyle}>
+                <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', background: colors.accent }} />
+                <span style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.4 }}>
+                  Recherche en cours — d'autres notices peuvent encore arriver.
+                </span>
+              </div>
+            )}
             {results.map((result, i) => (
               <div key={`${result.url}-${i}`} style={cardStyle}>
                 <div style={{ fontSize: 13, color: textA(0.6), fontWeight: 600 }}>
