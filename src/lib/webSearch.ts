@@ -121,8 +121,8 @@ function confidenceRank(confidence: WebSearchConfidence): number {
 const TYPE_PRIORITY: Record<string, number> = {
   notice_installation: 1,
   manuel_programmation: 1,
-  fiche_technique: 2,
-  autre: 3,
+  autre: 2,
+  fiche_technique: 3,
 };
 const UNKNOWN_TYPE_RANK = 4;
 
