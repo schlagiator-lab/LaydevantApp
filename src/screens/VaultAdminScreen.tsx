@@ -11,8 +11,11 @@ import {
   revokeVaultAccess,
   listAllProfiles,
   deleteAccount,
+  listDeletionRequests,
+  resolveDeletionRequest,
   type VaultUserKeySummary,
   type VaultDossierSummary,
+  type DossierDeletionRequestSummary,
 } from '../lib/vaultAdmin';
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
@@ -25,7 +28,7 @@ import { colors, fonts, textA, successA, accentA } from '../styles/tokens';
 
 type Phase = { kind: 'loading' } | { kind: 'checkError'; message: string } | { kind: 'forbidden' } | { kind: 'ready' };
 
-type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding';
+type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding' | 'demandes';
 
 type AccountsPhase =
   | { kind: 'loading' }
@@ -159,6 +162,7 @@ export function VaultAdminScreen() {
               <TabButton label="Accès" active={tab === 'acces'} onClick={() => setTab('acces')} />
               <TabButton label="Rotation" active={tab === 'rotation'} onClick={() => setTab('rotation')} />
               <TabButton label="Onboarding" active={tab === 'onboarding'} onClick={() => setTab('onboarding')} />
+              <TabButton label="Demandes" active={tab === 'demandes'} onClick={() => setTab('demandes')} />
             </div>
 
             {tab === 'comptes' && (
@@ -172,6 +176,7 @@ export function VaultAdminScreen() {
             {tab === 'acces' && <AccessTab accounts={accounts} onAccountsChanged={loadAccounts} />}
             {tab === 'rotation' && <RotationTab />}
             {tab === 'onboarding' && <OnboardingTab />}
+            {tab === 'demandes' && <DemandesTab />}
           </div>
         )}
       </div>
@@ -933,6 +938,127 @@ function OnboardingTab() {
           confirmLabel="Retirer"
           onCancel={() => setPendingRemove(null)}
           onConfirm={() => void handleConfirmRemove()}
+        />
+      )}
+    </div>
+  );
+}
+
+type DeletionRequestsPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: DossierDeletionRequestSummary[] };
+
+/**
+ * Onglet "Demandes" : demandes de suppression en attente (dossier à coffre
+ * configuré, refusées directement à un non-admin par le trigger côté base —
+ * voir DossierFormSheet.handleDelete). Approuver/rejeter passe exclusivement
+ * par `resolveDeletionRequest`, jamais par un soft delete direct ici : c'est
+ * la RPC `resolve_dossier_deletion_request` qui vérifie l'admin et fait le
+ * soft delete + la résolution de façon atomique.
+ */
+function DemandesTab() {
+  const [requests, setRequests] = useState<DeletionRequestsPhase>({ kind: 'loading' });
+  const [pendingApprove, setPendingApprove] = useState<DossierDeletionRequestSummary | null>(null);
+  const [pendingReject, setPendingReject] = useState<DossierDeletionRequestSummary | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [resolveError, setResolveError] = useState<string | null>(null);
+
+  const loadRequests = useCallback(async () => {
+    setRequests({ kind: 'loading' });
+    try {
+      const rows = await listDeletionRequests();
+      setRequests({ kind: 'loaded', rows });
+    } catch (err) {
+      setRequests({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRequests();
+  }, [loadRequests]);
+
+  async function handleResolve(request: DossierDeletionRequestSummary, approve: boolean) {
+    setPendingApprove(null);
+    setPendingReject(null);
+    setResolvingId(request.id);
+    setResolveError(null);
+    try {
+      await resolveDeletionRequest(request.id, approve);
+      await loadRequests();
+    } catch (err) {
+      setResolveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResolvingId(null);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {resolveError && <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {resolveError}</p>}
+
+      {requests.kind === 'loading' && (
+        <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>
+      )}
+      {requests.kind === 'error' && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {requests.message}</p>
+      )}
+      {requests.kind === 'loaded' && requests.rows.length === 0 && (
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucune demande en attente.</p>
+      )}
+
+      {requests.kind === 'loaded' &&
+        requests.rows.map((r) => {
+          const isResolving = resolvingId === r.id;
+          return (
+            <div key={r.id} style={accountRowStyle}>
+              <div style={{ fontSize: 14, fontWeight: 600, wordBreak: 'break-word' }}>{r.nom_client}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                {r.reason === 'vault_content' && <Badge label="Données sensibles" active />}
+                <span style={{ fontSize: 12, color: textA(0.55) }}>
+                  Demandé{r.requested_by_nom ? ` par ${r.requested_by_nom}` : ''} le {formatDate(r.created_at)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setPendingReject(r)}
+                  disabled={isResolving}
+                  style={{ ...revokeButtonStyle, opacity: isResolving ? 0.6 : 1 }}
+                >
+                  Rejeter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingApprove(r)}
+                  disabled={isResolving}
+                  style={{ ...activateButtonStyle, opacity: isResolving ? 0.6 : 1 }}
+                >
+                  {isResolving ? '…' : 'Approuver la suppression'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+      {pendingApprove && (
+        <ConfirmSheet
+          title="Approuver la suppression ?"
+          message={`« ${pendingApprove.nom_client} » sera définitivement supprimé — ses données sensibles ont été vérifiées.`}
+          confirmLabel="Supprimer"
+          danger
+          onCancel={() => setPendingApprove(null)}
+          onConfirm={() => void handleResolve(pendingApprove, true)}
+        />
+      )}
+
+      {pendingReject && (
+        <ConfirmSheet
+          title="Rejeter cette demande ?"
+          message={`« ${pendingReject.nom_client} » sera conservé ; la demande sera classée comme rejetée.`}
+          confirmLabel="Rejeter"
+          onCancel={() => setPendingReject(null)}
+          onConfirm={() => void handleResolve(pendingReject, false)}
         />
       )}
     </div>

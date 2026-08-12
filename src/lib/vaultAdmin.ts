@@ -154,6 +154,91 @@ export async function listAllProfiles(): Promise<Profile[]> {
   return (data ?? []) as Profile[];
 }
 
+export interface DossierDeletionRequestSummary {
+  id: string;
+  dossier_id: string;
+  /** Nom du dossier client — même embed par FK que `getAllVaultDossiers`. */
+  nom_client: string;
+  requested_by: string;
+  /** Best-effort, comme `full_name` dans `getAllVaultUserKeys` — même absence
+   * de FK directe entre `dossier_deletion_requests.requested_by` et
+   * `profiles` (les deux référencent `auth.users` séparément). */
+  requested_by_nom: string | null;
+  reason: string;
+  created_at: string;
+}
+
+/**
+ * Demandes de suppression en attente (onglet "Demandes"), plus ancienne
+ * d'abord. RLS : réservé aux admins (`is_vault_admin`), même garde-fou que
+ * le reste de ce module — cette requête échoue silencieusement (zéro ligne)
+ * pour un non-admin plutôt que de fuiter les demandes des autres.
+ */
+export async function listDeletionRequests(): Promise<DossierDeletionRequestSummary[]> {
+  const { data, error } = await supabase
+    .from('dossier_deletion_requests')
+    .select('id, dossier_id, requested_by, reason, created_at, dossiers(nom_client)')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+
+  type Row = {
+    id: string;
+    dossier_id: string;
+    requested_by: string;
+    reason: string;
+    created_at: string;
+    dossiers: { nom_client: string } | { nom_client: string }[] | null;
+  };
+  const rows = (data ?? []) as unknown as Row[];
+  if (rows.length === 0) return [];
+
+  const namesByUserId = new Map<string, string | null>();
+  try {
+    const { data: profiles, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in(
+        'id',
+        rows.map((r) => r.requested_by),
+      );
+    if (profilesError) throw profilesError;
+    for (const p of (profiles ?? []) as { id: string; full_name: string | null }[]) {
+      namesByUserId.set(p.id, p.full_name);
+    }
+  } catch {
+    // Best-effort — voir le commentaire de la fonction.
+  }
+
+  return rows.map((r) => {
+    const rel = Array.isArray(r.dossiers) ? r.dossiers[0] : r.dossiers;
+    return {
+      id: r.id,
+      dossier_id: r.dossier_id,
+      nom_client: rel?.nom_client ?? r.dossier_id,
+      requested_by: r.requested_by,
+      requested_by_nom: namesByUserId.get(r.requested_by) ?? null,
+      reason: r.reason,
+      created_at: r.created_at,
+    };
+  });
+}
+
+/**
+ * Approuve ou rejette une demande via la RPC `resolve_dossier_deletion_request`
+ * — jamais de soft delete direct depuis cet écran : la fonction vérifie
+ * l'admin et fait le soft delete + la résolution de façon atomique. Une
+ * demande déjà traitée par un autre admin entre-temps remonte telle quelle
+ * (le message d'erreur de la RPC est déjà lisible, pas de reformulation ici).
+ */
+export async function resolveDeletionRequest(requestId: string, approve: boolean): Promise<void> {
+  const { error } = await supabase.rpc('resolve_dossier_deletion_request', {
+    p_request_id: requestId,
+    p_approve: approve,
+  });
+  if (error) throw error;
+}
+
 /**
  * Supprime le compte applicatif d'un monteur via l'Edge Function
  * `delete-account` (service_role — la clé anon ne peut jamais supprimer un
