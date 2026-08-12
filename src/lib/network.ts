@@ -23,11 +23,23 @@ import { supabaseUrl } from './supabase';
 const PROBE_INTERVAL_MS = 5000;
 const PROBE_TIMEOUT_MS = 4000;
 
+// Cible de la sonde : la racine du projet ("/") n'est mappée nulle part côté
+// gateway Supabase et répond 404 à chaque tick — inoffensif pour la logique
+// (on ne lit que succès/échec de la requête réseau, jamais le code HTTP),
+// mais bruyant dans l'onglet Network en debug. `/rest/v1/departments` répond
+// 200 de façon fiable avec la clé anon existante, passée en query string —
+// en mode `no-cors` un en-tête custom comme `apikey` serait silencieusement
+// ignoré par le navigateur, d'où le query param plutôt qu'un header. Table
+// choisie pour sa stabilité (§3/§4 CLAUDE.md), `select=id&limit=1` pour
+// rester la requête la plus légère possible côté base (tick toutes les 5 s,
+// en continu).
+const probeUrl = `${supabaseUrl}/rest/v1/departments?select=id&limit=1&apikey=${import.meta.env.VITE_SUPABASE_ANON_KEY}`;
+
 async function isReachable(): Promise<boolean> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    await fetch(supabaseUrl, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+    await fetch(probeUrl, { method: 'HEAD', mode: 'no-cors', cache: 'no-store', signal: controller.signal });
     return true;
   } catch {
     return false;
