@@ -370,7 +370,6 @@ export async function listDossierPlans(dossierId: string): Promise<DossierPlanVi
     .from('dossier_plans_view')
     .select('*')
     .eq('dossier_id', dossierId)
-    .is('deleted_at', null)
     .order('created_at', { ascending: true });
   if (error) throw error;
   return (data ?? []) as DossierPlanView[];
