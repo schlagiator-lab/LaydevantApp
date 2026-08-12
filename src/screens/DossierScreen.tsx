@@ -277,13 +277,17 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   // Pré-check UX de suppression : réutilise EXACTEMENT les compteurs déjà en
   // mémoire (aucune requête de comptage supplémentaire). Le résultat n'est
   // que pour l'affichage — delete_dossier_if_empty revérifie côté serveur.
+  // Un coffre configuré n'entre PAS dans ce calcul : ce n'est plus un motif
+  // de "dossier non vide" côté serveur, c'est géré par DossierFormSheet
+  // (admin → suppression directe, non-admin → demande de suppression) —
+  // le bouton doit donc rester actionnable même quand vaultBadgeExtra vaut
+  // 'configure', sinon un monteur avec accès coffre ne peut jamais cliquer.
   const blockingLabels: string[] = [];
   if ((equipments?.length ?? 0) > 0) blockingLabels.push('équipements');
   if ((documents?.length ?? 0) > 0) blockingLabels.push('documentation');
   if ((notes?.length ?? 0) > 0) blockingLabels.push('notes');
   if ((photos?.length ?? 0) > 0) blockingLabels.push('photos');
   if ((plans?.length ?? 0) > 0) blockingLabels.push('plans');
-  if (vaultBadgeExtra === 'configure') blockingLabels.push('données sensibles');
   const dossierIsEmpty = blockingLabels.length === 0;
 
   return (
