@@ -10,10 +10,13 @@ import {
   insertVaultSecret,
   updateVaultSecret,
   insertDossierAccessRows,
+  destroyDossierVault,
   hasVaultAccess,
   type VaultDossierAccessRow,
 } from '../lib/vaultSecrets';
+import { isVaultAdmin } from '../lib/vaultAdmin';
 import { unwrapDek, decryptContent, generateDek, encryptContent, wrapDekForUser } from '../lib/vault.js';
+import { ConfirmSheet } from './ConfirmSheet';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface VaultSheetProps {
@@ -22,6 +25,21 @@ export interface VaultSheetProps {
   /** Compte réel de notes déchiffrées — jamais connu avant déverrouillage, donc
    * jamais appelé avant que `notes` reflète un contenu effectivement lu. */
   onNotesCountChange?: (count: number) => void;
+  /** Appelé après destruction réussie du coffre (bouton admin) — permet au
+   * parent (DossierScreen) de repasser son indicateur "Chiffré" de
+   * "configuré" à "vide" sans nouvel aller-retour réseau. */
+  onDestroyed?: () => void;
+}
+
+/** Les erreurs Supabase/PostgREST sont de simples objets `{ message, ... }`,
+ * jamais des instances d'Error — point de passage unique avant affichage. */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return String(err);
 }
 
 interface VaultNote {
@@ -76,7 +94,7 @@ function parseNotes(plaintext: string): VaultNote[] {
  * un seul blob chiffré par dossier (`vault_secrets`), les notes ne sont
  * qu'une structure JSON à l'intérieur de ce blob.
  */
-export function VaultSheet({ dossierId, onClose, onNotesCountChange }: VaultSheetProps) {
+export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed }: VaultSheetProps) {
   const { session, isOnline } = useAuth();
   const nav = useNavigation();
   const userId = session?.user.id ?? null;
@@ -111,6 +129,51 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange }: VaultShee
   const [enrollmentPhase, setEnrollmentPhase] = useState<'checking' | 'enrolled' | 'not-enrolled' | 'error'>(
     'checking',
   );
+
+  // Section "Détruire le coffre" (admin uniquement) : réutilise le même
+  // gating que VaultAdminScreen (is_vault_admin), pas un nouveau check de
+  // rôle. Indépendant du déverrouillage — la destruction ne déchiffre rien,
+  // elle supprime les lignes vault_secrets/vault_dossier_access côté serveur.
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [pendingDestroy, setPendingDestroy] = useState(false);
+  const [destroying, setDestroying] = useState(false);
+  const [destroyError, setDestroyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOnline) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const admin = await isVaultAdmin();
+        if (!cancelled) setIsAdmin(admin);
+      } catch {
+        // Échec réseau ponctuel sur ce seul check : reste non-admin par
+        // défaut, jamais de repli permissif sur une action irréversible.
+        if (!cancelled) setIsAdmin(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOnline]);
+
+  async function handleDestroyVault() {
+    if (destroying) return;
+    setDestroying(true);
+    setDestroyError(null);
+    try {
+      await destroyDossierVault(dossierId);
+      setPendingDestroy(false);
+      onDestroyed?.();
+      onClose();
+    } catch (err) {
+      setPendingDestroy(false);
+      const msg = errorMessage(err);
+      setDestroyError(msg.includes('NON_AUTORISE') ? 'Action réservée aux administrateurs.' : msg);
+    } finally {
+      setDestroying(false);
+    }
+  }
 
   useEffect(() => {
     if (!userId) return;
@@ -523,6 +586,36 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange }: VaultShee
           </div>
         )}
 
+        {isOnline && isAdmin && (
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${textA(0.12)}` }}>
+            <p style={{ fontSize: 12, color: textA(0.5), lineHeight: 1.5, margin: '0 0 10px' }}>
+              Efface définitivement toutes les données sensibles de ce dossier. Irréversible.
+            </p>
+            {destroyError && (
+              <p style={{ fontSize: 13, color: colors.accent, fontWeight: 600, margin: '0 0 10px' }}>{destroyError}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => setPendingDestroy(true)}
+              disabled={destroying}
+              style={{ ...destroyButtonStyle, opacity: destroying ? 0.5 : 1, cursor: destroying ? 'default' : 'pointer' }}
+            >
+              {destroying ? 'Destruction…' : 'Détruire le coffre de ce dossier'}
+            </button>
+          </div>
+        )}
+
+        {pendingDestroy && (
+          <ConfirmSheet
+            title="Détruire définitivement le coffre de ce dossier ?"
+            message="Toutes les données sensibles (notes, mots de passe, codes) seront perdues et irrécupérables."
+            confirmLabel="Détruire"
+            danger
+            onCancel={() => setPendingDestroy(false)}
+            onConfirm={() => void handleDestroyVault()}
+          />
+        )}
+
         {pendingDeleteId && (
           <div
             onClick={(e) => e.stopPropagation()}
@@ -701,6 +794,19 @@ const dangerLinkStyle: CSSProperties = {
   textAlign: 'left',
   alignSelf: 'flex-start',
   cursor: 'pointer',
+};
+
+const destroyButtonStyle: CSSProperties = {
+  width: '100%',
+  height: 44,
+  borderRadius: 12,
+  border: '1px solid #D14343',
+  background: 'transparent',
+  color: '#E77373',
+  fontSize: 14,
+  fontWeight: 700,
+  fontFamily: fonts.sans,
+  boxSizing: 'border-box',
 };
 
 const confirmOverlayStyle: CSSProperties = {

@@ -616,6 +616,10 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         <VaultSheet
           dossierId={dossier.id}
           onNotesCountChange={(count) => setHasVaultNote(count > 0)}
+          onDestroyed={() => {
+            setHasVaultNote(false);
+            setVaultBadgeExtra('vide');
+          }}
           onClose={() => setShowVault(false)}
         />
       )}

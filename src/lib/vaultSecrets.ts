@@ -107,6 +107,19 @@ export async function updateVaultSecret(dossierId: string, content: EncryptedCon
   if (error) throw error;
 }
 
+/**
+ * destroy_dossier_vault(p_dossier_id) (SECURITY DEFINER, admin-only côté
+ * fonction — vérifie is_vault_admin en interne, lève "NON_AUTORISE: ..."
+ * sinon). Supprime vault_dossier_access + vault_secrets du dossier en une
+ * transaction. Irréversible : permet de repasser un dossier "vide" au sens
+ * de delete_dossier_if_empty même après avoir vidé toutes ses notes (le
+ * ciphertext d'un tableau vide reste une ligne vault_secrets non vide).
+ */
+export async function destroyDossierVault(dossierId: string): Promise<void> {
+  const { error } = await supabase.rpc('destroy_dossier_vault', { p_dossier_id: dossierId });
+  if (error) throw error;
+}
+
 export async function insertDossierAccessRows(rows: VaultDossierAccessRow[]): Promise<void> {
   const { error } = await supabase.from('vault_dossier_access').insert(rows);
   if (error) throw error;

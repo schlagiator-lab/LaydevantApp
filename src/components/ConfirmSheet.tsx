@@ -4,12 +4,14 @@ export interface ConfirmSheetProps {
   title: string;
   message: string;
   confirmLabel?: string;
+  /** Rouge plutôt que l'accent par défaut — réservé aux actions les plus destructives. */
+  danger?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }
 
 /** Feuille de confirmation générique avant une suppression — un clic seul ne doit jamais suffire. */
-export function ConfirmSheet({ title, message, confirmLabel = 'Retirer', onCancel, onConfirm }: ConfirmSheetProps) {
+export function ConfirmSheet({ title, message, confirmLabel = 'Retirer', danger = false, onCancel, onConfirm }: ConfirmSheetProps) {
   return (
     <div onClick={onCancel} style={overlayStyle}>
       <div onClick={(e) => e.stopPropagation()} style={sheetStyle}>
@@ -20,7 +22,7 @@ export function ConfirmSheet({ title, message, confirmLabel = 'Retirer', onCance
           <button type="button" onClick={onCancel} style={cancelButtonStyle}>
             Annuler
           </button>
-          <button type="button" onClick={onConfirm} style={confirmButtonStyle}>
+          <button type="button" onClick={onConfirm} style={danger ? dangerConfirmButtonStyle : confirmButtonStyle}>
             {confirmLabel}
           </button>
         </div>
@@ -81,4 +83,10 @@ const confirmButtonStyle: React.CSSProperties = {
   fontWeight: 700,
   cursor: 'pointer',
   boxSizing: 'border-box',
+};
+
+const dangerConfirmButtonStyle: React.CSSProperties = {
+  ...confirmButtonStyle,
+  background: '#D14343',
+  color: '#FFFFFF',
 };
