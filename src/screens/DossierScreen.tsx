@@ -274,6 +274,18 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const equipmentProductIds = new Set((equipments ?? []).map((e) => e.productId));
   const documentIds = new Set((documents ?? []).map((d) => d.id));
 
+  // Pré-check UX de suppression : réutilise EXACTEMENT les compteurs déjà en
+  // mémoire (aucune requête de comptage supplémentaire). Le résultat n'est
+  // que pour l'affichage — delete_dossier_if_empty revérifie côté serveur.
+  const blockingLabels: string[] = [];
+  if ((equipments?.length ?? 0) > 0) blockingLabels.push('équipements');
+  if ((documents?.length ?? 0) > 0) blockingLabels.push('documentation');
+  if ((notes?.length ?? 0) > 0) blockingLabels.push('notes');
+  if ((photos?.length ?? 0) > 0) blockingLabels.push('photos');
+  if ((plans?.length ?? 0) > 0) blockingLabels.push('plans');
+  if (vaultBadgeExtra === 'configure') blockingLabels.push('données sensibles');
+  const dossierIsEmpty = blockingLabels.length === 0;
+
   return (
     <div
       className="no-scrollbar"
@@ -549,10 +561,17 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       {showEditDossier && dossier && (
         <DossierFormSheet
           dossier={dossier}
+          isEmpty={dossierIsEmpty}
+          blockingLabels={blockingLabels}
           onClose={() => setShowEditDossier(false)}
           onCreated={(saved) => {
             setDossier(saved);
             setShowEditDossier(false);
+          }}
+          onDeleted={() => {
+            setShowEditDossier(false);
+            showToast(`« ${dossier.nom_client} » a été supprimé.`);
+            nav.goDossiers();
           }}
         />
       )}

@@ -7,12 +7,6 @@ import { StatusPill } from '../components/StatusPill';
 import { DossierFormSheet } from '../components/DossierFormSheet';
 import { colors, fonts, textA } from '../styles/tokens';
 
-function countsLabel(nbProduits: number, nbDocuments: number): string {
-  const produits = `${nbProduits} équipement${nbProduits === 1 ? '' : 's'}`;
-  const documents = `${nbDocuments} document${nbDocuments === 1 ? '' : 's'}`;
-  return `${produits} · ${documents}`;
-}
-
 /**
  * Liste des dossiers clients (brief dossiers clients, étape A). Tout est en
  * ligne pour cette étape — pas de repli hors ligne, juste un état bloqué
@@ -173,10 +167,7 @@ export function DossiersScreen() {
                   </div>
                   {dossier.notes && <div style={noteBadgeStyle}>{dossier.notes}</div>}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: textA(0.55) }}>
-                    {countsLabel(dossier.nb_produits, dossier.nb_documents)}
-                  </span>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 2 }}>
                   <span style={{ color: textA(0.35), fontSize: 18 }}>›</span>
                 </div>
               </div>

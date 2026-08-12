@@ -1,19 +1,51 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/useAuth';
-import { createDossier, updateDossier } from '../lib/dossiers';
+import { createDossier, updateDossier, deleteDossierIfEmpty } from '../lib/dossiers';
 import type { Dossier } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
+import { ConfirmSheet } from './ConfirmSheet';
 
 export interface DossierFormSheetProps {
   /** Présent = édition d'un dossier existant ; absent = création. */
   dossier?: Dossier;
+  /** Édition uniquement : "dossier vide" calculé par le parent à partir des
+   * compteurs déjà chargés (aucune requête ici). Absent tant que ces
+   * compteurs ne sont pas tous connus — le bouton Supprimer reste alors caché. */
+  isEmpty?: boolean;
+  /** Libellés des sections encore non vides ("équipements", "photos", ...),
+   * affichés dans le message bloquant quand `isEmpty` vaut false. */
+  blockingLabels?: string[];
   onClose: () => void;
   onCreated: (dossier: Dossier) => void;
+  /** Appelé après suppression réussie côté serveur. */
+  onDeleted?: () => void;
+}
+
+/** Les erreurs Supabase/PostgREST sont de simples objets `{ message, ... }`,
+ * jamais des instances d'Error — point de passage unique avant affichage. */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return String(err);
+}
+
+const DOSSIER_NON_VIDE_PREFIX = 'DOSSIER_NON_VIDE:';
+
+/** Extrait la liste des sections bloquantes du message d'erreur RPC, ou
+ * `null` si ce n'est pas ce type d'erreur (filet de sécurité serveur, en
+ * course avec le pré-check client — voir §10 CLAUDE.md). */
+function extractDossierNonVideDetail(message: string): string | null {
+  const idx = message.indexOf(DOSSIER_NON_VIDE_PREFIX);
+  if (idx === -1) return null;
+  return message.slice(idx + DOSSIER_NON_VIDE_PREFIX.length).trim();
 }
 
 /** Formulaire de création/édition — nom du client requis, adresse et notes optionnelles. */
-export function DossierFormSheet({ dossier, onClose, onCreated }: DossierFormSheetProps) {
-  const { session } = useAuth();
+export function DossierFormSheet({ dossier, isEmpty, blockingLabels, onClose, onCreated, onDeleted }: DossierFormSheetProps) {
+  const { session, isOnline } = useAuth();
   const isEdit = !!dossier;
 
   const [nomClient, setNomClient] = useState(dossier?.nom_client ?? '');
@@ -21,8 +53,11 @@ export function DossierFormSheet({ dossier, onClose, onCreated }: DossierFormShe
   const [notes, setNotes] = useState(dossier?.notes ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const canSubmit = nomClient.trim().length > 0 && !submitting && !!session?.user.id;
+  const canDelete = isEdit && isEmpty === true && isOnline && !deleting;
 
   const handleSubmit = async () => {
     if (!canSubmit || !session) return;
@@ -46,6 +81,24 @@ export function DossierFormSheet({ dossier, onClose, onCreated }: DossierFormShe
       setError(err instanceof Error ? err.message : `Échec de ${isEdit ? 'la modification' : 'la création'}.`);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!dossier) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteDossierIfEmpty(dossier.id);
+      setPendingDelete(false);
+      onDeleted?.();
+    } catch (err) {
+      setPendingDelete(false);
+      const msg = errorMessage(err);
+      const detail = extractDossierNonVideDetail(msg);
+      setError(detail ? `Impossible de supprimer : le dossier contient encore ${detail}. Videz ces sections d'abord.` : msg);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -126,7 +179,36 @@ export function DossierFormSheet({ dossier, onClose, onCreated }: DossierFormShe
             {submitting ? (isEdit ? 'Enregistrement…' : 'Création…') : isEdit ? 'Enregistrer' : 'Créer le dossier'}
           </button>
         </div>
+
+        {isEdit && isEmpty !== undefined && (
+          <div style={{ marginTop: 24, paddingTop: 18, borderTop: `1px solid ${textA(0.12)}` }}>
+            {!isEmpty && blockingLabels && blockingLabels.length > 0 && (
+              <p style={{ fontSize: 12.5, color: textA(0.6), lineHeight: 1.5, marginBottom: 10 }}>
+                Impossible de supprimer : le dossier contient encore {blockingLabels.join(', ')}. Videz ces sections
+                d'abord.
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => canDelete && setPendingDelete(true)}
+              disabled={!canDelete}
+              style={{ ...deleteButtonStyle, opacity: canDelete ? 1 : 0.4, cursor: canDelete ? 'pointer' : 'default' }}
+            >
+              {deleting ? 'Suppression…' : 'Supprimer ce dossier'}
+            </button>
+          </div>
+        )}
       </div>
+
+      {pendingDelete && (
+        <ConfirmSheet
+          title="Supprimer définitivement ce dossier ?"
+          message="Cette action est irréversible."
+          confirmLabel="Supprimer"
+          onCancel={() => setPendingDelete(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
     </div>
   );
 }
@@ -174,4 +256,16 @@ const primaryButtonStyle: React.CSSProperties = {
   color: '#132146',
   fontSize: 15,
   fontWeight: 700,
+};
+
+const deleteButtonStyle: React.CSSProperties = {
+  width: '100%',
+  height: 48,
+  borderRadius: 12,
+  border: '1px solid #D14343',
+  background: 'transparent',
+  color: '#E77373',
+  fontSize: 15,
+  fontWeight: 700,
+  boxSizing: 'border-box',
 };

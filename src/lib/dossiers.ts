@@ -59,6 +59,13 @@ export async function updateDossier(
   return data as Dossier;
 }
 
+/** Supprime le dossier seulement s'il est vide (RPC `delete_dossier_if_empty`) —
+ * sinon lève une erreur dont le message commence par "DOSSIER_NON_VIDE:". */
+export async function deleteDossierIfEmpty(dossierId: string): Promise<void> {
+  const { error } = await supabase.rpc('delete_dossier_if_empty', { p_dossier_id: dossierId });
+  if (error) throw error;
+}
+
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */
 export async function getDossierDocumentsComplets(dossierId: string): Promise<DossierDocumentComplet[]> {
   const { data, error } = await supabase.rpc('dossier_documents_complets', { p_dossier_id: dossierId });
