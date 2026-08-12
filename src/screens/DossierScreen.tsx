@@ -42,6 +42,18 @@ function formatPlansBadge(count: number): string {
   return `${count} plan${count > 1 ? 's' : ''}`;
 }
 
+/** Les erreurs Supabase/PostgREST sont de simples objets `{ message, ... }`,
+ * jamais des instances d'Error — `String(err)` dessus donne "[object Object]".
+ * Point de passage unique pour tout message d'erreur affiché à l'écran. */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return String(err);
+}
+
 /**
  * Fiche dossier client (brief dossiers clients, étape A). Tout en ligne pour
  * cette étape : le chargement initial exige le réseau, mais des données déjà
@@ -62,6 +74,11 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [planUploadProgress, setPlanUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [equipmentsError, setEquipmentsError] = useState<string | null>(null);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [photosError, setPhotosError] = useState<string | null>(null);
+  const [plansError, setPlansError] = useState<string | null>(null);
   const [showAddEquipment, setShowAddEquipment] = useState(false);
   const [showAddDocument, setShowAddDocument] = useState(false);
   const [pendingRemoveEquipment, setPendingRemoveEquipment] = useState<DossierEquipment | null>(null);
@@ -81,57 +98,108 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   // sous-promettant plutôt que de prétendre refléter le nombre de notes.
   const [vaultBadgeExtra, setVaultBadgeExtra] = useState<'vide' | 'configure' | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!isOnline) return;
-      setLoadError(null);
-      try {
-        const [d, eqs, docs, notesRows, photosRows, plansRows, pinned, vaultSecret] = await Promise.all([
-          getDossier(dossierId),
-          listDossierEquipments(dossierId),
-          getDossierDocumentsComplets(dossierId),
-          listDossierNotes(dossierId),
-          listDossierPhotos(dossierId),
-          listDossierPlans(dossierId),
-          getAllPinnedDocuments(),
-          // Existence seule (RLS filtre déjà les non-autorisés) — jamais de
-          // déchiffrement ici, juste savoir s'il y a quelque chose à ouvrir.
-          getVaultSecret(dossierId).catch(() => null),
-        ]);
-        if (cancelled) return;
-        setDossier(d);
-        setEquipments(eqs);
-        setDocuments(docs);
-        setNotes(notesRows);
-        setPhotos(photosRows);
-        setPlans(plansRows);
-        setPinnedIds(new Set(pinned.map((p) => p.id)));
-        setHasVaultNote(vaultSecret !== null);
+  // Chaque section a son propre chargement, indépendant des autres : l'échec
+  // d'une seule (ex. listDossierPlans) ne doit jamais empêcher les autres de
+  // s'afficher — plus de Promise.all + try/catch unique qui faisait tomber
+  // tout l'écran sur la moindre erreur. Chaque fonction sert aussi de retry
+  // (bouton "Réessayer" dans la section concernée).
+  const loadDossier = async () => {
+    setLoadError(null);
+    try {
+      setDossier(await getDossier(dossierId));
+    } catch (err) {
+      setLoadError(errorMessage(err));
+    }
+  };
 
-        // Indicateur du badge "Chiffré" : réutilise le pré-check d'accès déjà
-        // en place (hasVaultAccess, celui de VaultSheet) — si l'utilisateur
-        // n'a pas accès au coffre, on ne révèle rien, jamais d'appel RPC
-        // superflu. Échec silencieux : ce n'est qu'un indicateur d'en-tête.
-        try {
-          const allowed = await hasVaultAccess();
-          if (cancelled) return;
-          if (!allowed) {
-            setVaultBadgeExtra(null);
-          } else {
-            const contains = await dossierVaultHasContent(dossierId);
-            if (!cancelled) setVaultBadgeExtra(contains ? 'configure' : 'vide');
-          }
-        } catch {
-          if (!cancelled) setVaultBadgeExtra(null);
+  const loadEquipments = async () => {
+    setEquipmentsError(null);
+    try {
+      setEquipments(await listDossierEquipments(dossierId));
+    } catch (err) {
+      setEquipmentsError(errorMessage(err));
+    }
+  };
+
+  const loadDocuments = async () => {
+    setDocumentsError(null);
+    try {
+      setDocuments(await getDossierDocumentsComplets(dossierId));
+    } catch (err) {
+      setDocumentsError(errorMessage(err));
+    }
+  };
+
+  const loadNotes = async () => {
+    setNotesError(null);
+    try {
+      setNotes(await listDossierNotes(dossierId));
+    } catch (err) {
+      setNotesError(errorMessage(err));
+    }
+  };
+
+  const loadPhotos = async () => {
+    setPhotosError(null);
+    try {
+      setPhotos(await listDossierPhotos(dossierId));
+    } catch (err) {
+      setPhotosError(errorMessage(err));
+    }
+  };
+
+  const loadPlans = async () => {
+    setPlansError(null);
+    try {
+      setPlans(await listDossierPlans(dossierId));
+    } catch (err) {
+      setPlansError(errorMessage(err));
+    }
+  };
+
+  useEffect(() => {
+    if (!isOnline) return;
+    void (async () => {
+      // Chaque section part indépendamment (pas de await ici) : l'échec ou
+      // la lenteur de l'une n'attend pas les autres et ne les bloque pas.
+      void loadDossier();
+      void loadEquipments();
+      void loadDocuments();
+      void loadNotes();
+      void loadPhotos();
+      void loadPlans();
+
+      // Best-effort : une épingle non chargée dégrade juste l'affichage des
+      // documents ("nécessite du réseau" au lieu de "disponible hors ligne"),
+      // jamais bloquant pour le reste de l'écran — pas d'état d'erreur dédié.
+      void getAllPinnedDocuments()
+        .then((pinned) => setPinnedIds(new Set(pinned.map((p) => p.id))))
+        .catch(() => {});
+
+      // Coffre (Données sensibles) : comportement inchangé — existence seule
+      // (RLS filtre déjà les non-autorisés), jamais de déchiffrement ici.
+      void getVaultSecret(dossierId)
+        .catch(() => null)
+        .then((vaultSecret) => setHasVaultNote(vaultSecret !== null));
+
+      // Indicateur du badge "Chiffré" : réutilise le pré-check d'accès déjà
+      // en place (hasVaultAccess, celui de VaultSheet) — si l'utilisateur n'a
+      // pas accès au coffre, on ne révèle rien, jamais d'appel RPC superflu.
+      // Échec silencieux : ce n'est qu'un indicateur d'en-tête, comportement
+      // inchangé.
+      try {
+        const allowed = await hasVaultAccess();
+        if (!allowed) {
+          setVaultBadgeExtra(null);
+        } else {
+          const contains = await dossierVaultHasContent(dossierId);
+          setVaultBadgeExtra(contains ? 'configure' : 'vide');
         }
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
+      } catch {
+        setVaultBadgeExtra(null);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dossierId, isOnline]);
 
   const handleRemoveEquipment = async (productId: string) => {
@@ -139,7 +207,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       await removeDossierEquipment(dossierId, productId);
       setEquipments((prev) => (prev ? prev.filter((e) => e.productId !== productId) : prev));
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Échec du retrait.');
+      showToast(errorMessage(err));
     }
   };
 
@@ -148,7 +216,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       await removeDossierDocument(dossierId, documentId);
       setDocuments((prev) => (prev ? prev.filter((d) => d.id !== documentId) : prev));
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Échec du retrait.');
+      showToast(errorMessage(err));
     }
   };
 
@@ -275,7 +343,11 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         </div>
       )}
 
-      {loadError && <p style={{ margin: '16px', fontSize: 14, color: colors.accent }}>Erreur : {loadError}</p>}
+      {loadError && (
+        <div style={{ margin: '16px' }}>
+          <SectionError title="Dossier indisponible" message={loadError} onRetry={() => void loadDossier()} />
+        </div>
+      )}
 
       {dossier && (
         <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -302,7 +374,9 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               </button>
             }
           >
-            {equipments === null ? (
+            {equipmentsError ? (
+              <SectionError title="Équipements indisponibles" message={equipmentsError} onRetry={() => void loadEquipments()} />
+            ) : equipments === null ? (
               <p style={{ fontSize: 14, color: textA(0.5) }}>Chargement…</p>
             ) : equipments.length === 0 ? (
               <p style={{ fontSize: 14, color: textA(0.55) }}>Aucun équipement rattaché à ce dossier.</p>
@@ -347,7 +421,9 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               </button>
             }
           >
-            {documents === null ? (
+            {documentsError ? (
+              <SectionError title="Documentation indisponible" message={documentsError} onRetry={() => void loadDocuments()} />
+            ) : documents === null ? (
               <p style={{ fontSize: 14, color: textA(0.5) }}>Chargement…</p>
             ) : documents.length === 0 ? (
               <p style={{ fontSize: 14, color: textA(0.55) }}>Aucun document rattaché à ce dossier.</p>
@@ -413,11 +489,12 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               </label>
             }
           >
-            <PlansSection
-              isOnline={isOnline}
-              plans={plans}
-              onPlansChanged={() => void listDossierPlans(dossierId).then(setPlans)}
-            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {plansError && (
+                <SectionError title="Plans indisponibles" message={plansError} onRetry={() => void loadPlans()} />
+              )}
+              <PlansSection isOnline={isOnline} plans={plans} onPlansChanged={() => void loadPlans()} />
+            </div>
           </CollapsibleSection>
 
           <CollapsibleSection
@@ -428,14 +505,22 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               )
             }
           >
-            <CarnetSection
-              dossierId={dossierId}
-              isOnline={isOnline}
-              notes={notes}
-              photos={photos}
-              onNotesChanged={() => void listDossierNotes(dossierId).then(setNotes)}
-              onPhotosChanged={() => void listDossierPhotos(dossierId).then(setPhotos)}
-            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {notesError && (
+                <SectionError title="Notes indisponibles" message={notesError} onRetry={() => void loadNotes()} />
+              )}
+              {photosError && (
+                <SectionError title="Photos indisponibles" message={photosError} onRetry={() => void loadPhotos()} />
+              )}
+              <CarnetSection
+                dossierId={dossierId}
+                isOnline={isOnline}
+                notes={notes}
+                photos={photos}
+                onNotesChanged={() => void loadNotes()}
+                onPhotosChanged={() => void loadPhotos()}
+              />
+            </div>
           </CollapsibleSection>
 
           <CollapsibleSection title="Données sensibles" badge={renderEncryptedBadge(vaultBadgeExtra)} keepMounted>
@@ -477,9 +562,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           dossierId={dossier.id}
           excludeProductIds={equipmentProductIds}
           onClose={() => setShowAddEquipment(false)}
-          onAdded={() => {
-            void listDossierEquipments(dossier.id).then(setEquipments);
-          }}
+          onAdded={() => void loadEquipments()}
         />
       )}
 
@@ -488,9 +571,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           dossierId={dossier.id}
           excludeDocumentIds={documentIds}
           onClose={() => setShowAddDocument(false)}
-          onAdded={() => {
-            void getDossierDocumentsComplets(dossier.id).then(setDocuments);
-          }}
+          onAdded={() => void loadDocuments()}
         />
       )}
 
@@ -613,6 +694,43 @@ const linkButtonStyle: React.CSSProperties = {
   textDecoration: 'underline',
   cursor: 'pointer',
   padding: 0,
+};
+
+/** État d'erreur discret et réessayable d'une section — jamais l'objet
+ * d'erreur brut, toujours un message déjà passé par errorMessage(). */
+function SectionError({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
+  return (
+    <div style={sectionErrorStyle}>
+      <p style={sectionErrorTitleStyle}>{title}</p>
+      <p style={sectionErrorMessageStyle}>{message}</p>
+      <button type="button" onClick={onRetry} style={{ ...linkButtonStyle, alignSelf: 'flex-start' }}>
+        Réessayer
+      </button>
+    </div>
+  );
+}
+
+const sectionErrorStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  background: 'rgba(222, 122, 34, 0.1)',
+  border: '1px solid rgba(222, 122, 34, 0.3)',
+  borderRadius: 12,
+  padding: '10px 12px',
+};
+
+const sectionErrorTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 14,
+  fontWeight: 700,
+  color: colors.accent,
+};
+
+const sectionErrorMessageStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 12.5,
+  color: textA(0.6),
 };
 
 const sensitivePlaceholderStyle: React.CSSProperties = {
