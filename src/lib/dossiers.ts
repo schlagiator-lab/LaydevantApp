@@ -66,6 +66,38 @@ export async function deleteDossierIfEmpty(dossierId: string): Promise<void> {
   if (error) throw error;
 }
 
+/** RPC `dossier_has_configured_vault` — booléen seul, aucun contenu sensible.
+ * Contrairement à `dossierVaultHasContent` (vaultSecrets.ts), appelable par
+ * n'importe quel authentifié même sans accès personnel au coffre : sert de
+ * pré-check avant suppression pour savoir si un non-admin doit passer par
+ * une demande plutôt qu'un soft delete direct. */
+export async function dossierHasConfiguredVault(dossierId: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('dossier_has_configured_vault', { p_dossier_id: dossierId });
+  if (error) throw error;
+  return Boolean(data);
+}
+
+export type RequestDossierDeletionResult = 'created' | 'already_pending';
+
+/** Crée une demande de suppression (`dossier_deletion_requests`) pour un
+ * dossier qu'un non-admin ne peut pas supprimer directement (coffre
+ * configuré, trigger côté base). L'index unique partiel sur les demandes
+ * `pending` est géré ici : une violation (23505) redevient un état distinct
+ * plutôt qu'une exception, pour que l'appelant affiche le bon message. */
+export async function requestDossierDeletion(dossierId: string): Promise<RequestDossierDeletionResult> {
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase.from('dossier_deletion_requests').insert({
+    dossier_id: dossierId,
+    requested_by: userData.user?.id ?? null,
+    reason: 'vault_content',
+  });
+  if (error) {
+    if (error.code === '23505') return 'already_pending';
+    throw error;
+  }
+  return 'created';
+}
+
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */
 export async function getDossierDocumentsComplets(dossierId: string): Promise<DossierDocumentComplet[]> {
   const { data, error } = await supabase.rpc('dossier_documents_complets', { p_dossier_id: dossierId });

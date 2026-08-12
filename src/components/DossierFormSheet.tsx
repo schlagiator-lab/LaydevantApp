@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/useAuth';
-import { createDossier, updateDossier, deleteDossierIfEmpty } from '../lib/dossiers';
+import {
+  createDossier,
+  updateDossier,
+  deleteDossierIfEmpty,
+  dossierHasConfiguredVault,
+  requestDossierDeletion,
+} from '../lib/dossiers';
+import { isVaultAdmin } from '../lib/vaultAdmin';
 import type { Dossier } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
 import { ConfirmSheet } from './ConfirmSheet';
@@ -53,6 +60,7 @@ export function DossierFormSheet({ dossier, isEmpty, blockingLabels, onClose, on
   const [notes, setNotes] = useState(dossier?.notes ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -88,7 +96,23 @@ export function DossierFormSheet({ dossier, isEmpty, blockingLabels, onClose, on
     if (!dossier) return;
     setDeleting(true);
     setError(null);
+    setInfoMessage(null);
     try {
+      // Un non-admin dont le dossier a un coffre configuré est bloqué côté
+      // base (trigger) : on le détecte AVANT l'appel pour créer une demande
+      // de suppression au lieu d'essuyer une erreur brute. L'admin garde le
+      // chemin direct inchangé — c'est lui qui incarne la revue humaine.
+      const admin = await isVaultAdmin();
+      if (!admin && (await dossierHasConfiguredVault(dossier.id))) {
+        const result = await requestDossierDeletion(dossier.id);
+        setPendingDelete(false);
+        setInfoMessage(
+          result === 'already_pending'
+            ? 'Une demande de suppression est déjà en attente pour ce dossier.'
+            : 'Ce dossier contient des données sensibles. Votre demande de suppression a été transmise à un administrateur, qui la vérifiera avant de supprimer le dossier.',
+        );
+        return;
+      }
       await deleteDossierIfEmpty(dossier.id);
       setPendingDelete(false);
       onDeleted?.();
@@ -165,6 +189,7 @@ export function DossierFormSheet({ dossier, isEmpty, blockingLabels, onClose, on
         </div>
 
         {error && <p style={{ fontSize: 13, color: colors.accent, marginTop: 14 }}>{error}</p>}
+        {infoMessage && <p style={{ fontSize: 13, color: textA(0.75), marginTop: 14, lineHeight: 1.5 }}>{infoMessage}</p>}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
           <button type="button" onClick={onClose} style={secondaryButtonStyle}>
