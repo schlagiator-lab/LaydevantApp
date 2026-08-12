@@ -20,11 +20,11 @@ import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
 import { DossierFormSheet } from '../components/DossierFormSheet';
 import { CarnetSection } from '../components/CarnetSection';
-import { SectionHeader } from '../components/SectionHeader';
+import { CollapsibleSection } from '../components/CollapsibleSection';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
 import { getVaultSecret } from '../lib/vaultSecrets';
-import { colors, fonts, textA } from '../styles/tokens';
+import { colors, fonts, radius, textA } from '../styles/tokens';
 
 /**
  * Fiche dossier client (brief dossiers clients, étape A). Tout en ligne pour
@@ -212,8 +212,20 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             </div>
           )}
 
-          <section>
-            <SectionHeader title="Équipements" onAdd={() => setShowAddEquipment(true)} addDisabled={!isOnline} />
+          <CollapsibleSection
+            title="Équipements"
+            badge={equipments !== null && <span style={countBadgeStyle}>{equipments.length}</span>}
+            action={
+              <button
+                type="button"
+                onClick={() => setShowAddEquipment(true)}
+                disabled={!isOnline}
+                style={{ ...addButtonStyle, opacity: isOnline ? 1 : 0.4 }}
+              >
+                + Ajouter
+              </button>
+            }
+          >
             {equipments === null ? (
               <p style={{ fontSize: 14, color: textA(0.5) }}>Chargement…</p>
             ) : equipments.length === 0 ? (
@@ -243,10 +255,22 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                 ))}
               </div>
             )}
-          </section>
+          </CollapsibleSection>
 
-          <section>
-            <SectionHeader title="Documentation" onAdd={() => setShowAddDocument(true)} addDisabled={!isOnline} />
+          <CollapsibleSection
+            title="Documentation"
+            badge={documents !== null && <span style={countBadgeStyle}>{documents.length}</span>}
+            action={
+              <button
+                type="button"
+                onClick={() => setShowAddDocument(true)}
+                disabled={!isOnline}
+                style={{ ...addButtonStyle, opacity: isOnline ? 1 : 0.4 }}
+              >
+                + Ajouter
+              </button>
+            }
+          >
             {documents === null ? (
               <p style={{ fontSize: 14, color: textA(0.5) }}>Chargement…</p>
             ) : documents.length === 0 ? (
@@ -286,19 +310,20 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                 })}
               </div>
             )}
-          </section>
+          </CollapsibleSection>
 
-          <CarnetSection
-            dossierId={dossierId}
-            isOnline={isOnline}
-            notes={notes}
-            photos={photos}
-            onNotesChanged={() => void listDossierNotes(dossierId).then(setNotes)}
-            onPhotosChanged={() => void listDossierPhotos(dossierId).then(setPhotos)}
-          />
+          <CollapsibleSection title="Carnet">
+            <CarnetSection
+              dossierId={dossierId}
+              isOnline={isOnline}
+              notes={notes}
+              photos={photos}
+              onNotesChanged={() => void listDossierNotes(dossierId).then(setNotes)}
+              onPhotosChanged={() => void listDossierPhotos(dossierId).then(setPhotos)}
+            />
+          </CollapsibleSection>
 
-          <section>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Données sensibles</div>
+          <CollapsibleSection title="Données sensibles" badge={encryptedBadge} keepMounted>
             <button
               type="button"
               onClick={() => setShowVault(true)}
@@ -317,7 +342,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                     : 'Coffre vide — mastercodes, WiFi'}
               </span>
             </button>
-          </section>
+          </CollapsibleSection>
         </div>
       )}
 
@@ -486,3 +511,54 @@ const sensitivePlaceholderStyle: React.CSSProperties = {
   textAlign: 'left',
   boxSizing: 'border-box',
 };
+
+const addButtonStyle: React.CSSProperties = {
+  flex: 'none',
+  height: 32,
+  borderRadius: radius.md,
+  border: 'none',
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 12.5,
+  fontWeight: 700,
+  padding: '0 12px',
+  cursor: 'pointer',
+};
+
+const countBadgeStyle: React.CSSProperties = {
+  flex: 'none',
+  minWidth: 20,
+  height: 20,
+  padding: '0 7px',
+  borderRadius: radius.pill,
+  background: textA(0.12),
+  color: textA(0.75),
+  fontSize: 12,
+  fontWeight: 700,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const encryptedBadgeStyle: React.CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '3px 8px 3px 6px',
+  borderRadius: radius.pill,
+  background: textA(0.12),
+  color: textA(0.75),
+  fontSize: 11.5,
+  fontWeight: 700,
+};
+
+const encryptedBadge = (
+  <span style={encryptedBadgeStyle}>
+    <svg width="11" height="11" viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke={textA(0.75)} strokeWidth="1.8" />
+      <path d="M7 9V6.5a3 3 0 016 0V9" fill="none" stroke={textA(0.75)} strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+    Chiffré
+  </span>
+);
