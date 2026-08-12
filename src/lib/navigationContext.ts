@@ -1,5 +1,5 @@
 import { createContext } from 'react';
-import type { Department, Specialty } from '../types/database';
+import type { Department, DocType, Specialty } from '../types/database';
 
 export interface SearchParams {
   query: string;
@@ -8,6 +8,14 @@ export interface SearchParams {
   /** Specialty drill-down from the Department screen, if any. */
   specialtyId: string | null;
   pinnedOnly: boolean;
+  /** Chips "type de document"/"fabricant" (mode parcours scopé) — portés par
+   * le cran plutôt que par un useState local, pour survivre à l'aller-retour
+   * document ouvert/refermé (SearchScreen démonte/remonte à chaque poussée/
+   * dépilement, seul ce qui vit dans `params` traverse ce cycle). Optionnels
+   * pour ne pas casser les autres call sites de SearchParams (BLANK_SEARCH,
+   * goSearchBlank, goPinned) qui n'ont pas ces filtres à connaître. */
+  docTypeFilter?: DocType | null;
+  brandFilter?: string | null;
 }
 
 export type NavState =
@@ -50,6 +58,13 @@ export interface NavigationContextValue {
   goSearchBlank: () => void;
   goPinned: () => void;
   goSearch: (params: SearchParams) => void;
+  /** Met à jour les params de l'entrée 'search' COURANTE en place (pas de
+   * push, pas de pop, `stack.length` inchangé — n'interagit jamais avec la
+   * synchro History API). No-op si le sommet de pile n'est pas 'search'. Sert
+   * à faire survivre les chips type/fabricant à un aller-retour vers une
+   * fiche document (le composant SearchScreen démonte/remonte, cette donnée
+   * portée par la pile non). */
+  updateSearchParams: (patch: Partial<SearchParams>) => void;
   goDocument: (documentId: string) => void;
   /** Storage diagnostic screen (CLAUDE.md §10) — not part of the core 4-screen UX. */
   goDiagnostic: () => void;

@@ -35,8 +35,13 @@ export function SearchScreen({ params }: { params: SearchParams }) {
   const [pinnedDocs, setPinnedDocs] = useState<PinnedDocumentRecord[]>([]);
   const [rawResults, setRawResults] = useState<ResultItem[] | null>(null);
   const [resultsError, setResultsError] = useState<string | null>(null);
-  const [docTypeFilter, setDocTypeFilter] = useState<DocType | null>(null);
-  const [brandFilter, setBrandFilter] = useState<string | null>(null);
+  // Seedés depuis params (le cran de pile), pas à null : ce composant démonte
+  // et remonte à chaque aller-retour vers une fiche document (App.tsx ne
+  // rend que le sommet de pile) — seul ce qui vit dans `params` traverse ce
+  // cycle. `nav.updateSearchParams` (écrit à la sélection d'un chip, plus bas)
+  // maintient `params` à jour en retour, sans jamais toucher à la pile elle-même.
+  const [docTypeFilter, setDocTypeFilter] = useState<DocType | null>(params.docTypeFilter ?? null);
+  const [brandFilter, setBrandFilter] = useState<string | null>(params.brandFilter ?? null);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,6 +195,18 @@ export function SearchScreen({ params }: { params: SearchParams }) {
     setDocTypeFilter(null);
     setBrandFilter(null);
   }
+
+  // Répercute les filtres locaux vers le cran de pile courant (pas l'inverse :
+  // l'état local reste la seule source de vérité pour le rendu). Couvre à la
+  // fois la sélection d'un chip et le reset ci-dessus. `nav` n'est
+  // volontairement pas dans les deps : `updateSearchParams` change de
+  // référence à chaque appel (nouveau `stack`), l'y ajouter boucherait sans
+  // rien changer d'observable — seuls docTypeFilter/brandFilter doivent
+  // déclencher une écriture.
+  useEffect(() => {
+    nav.updateSearchParams({ docTypeFilter, brandFilter });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docTypeFilter, brandFilter]);
 
   const availableDocTypes = useMemo(
     () => Array.from(new Set((rawResults ?? []).map((r) => r.docType))),

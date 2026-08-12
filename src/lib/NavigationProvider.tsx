@@ -94,6 +94,16 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goSearchBlank = () => push({ screen: 'search', params: BLANK_SEARCH });
   const goPinned = () => push({ screen: 'search', params: { ...BLANK_SEARCH, pinnedOnly: true } });
   const goSearch = (params: SearchParams) => push({ screen: 'search', params });
+  // Remplace le sommet par une copie à `params` mis à jour — même longueur de
+  // pile, donc l'effet de synchro History API ci-dessus ([stack.length]) ne
+  // se redéclenche même pas. Ni un push ni un pop : aucune interaction avec
+  // history.pushState/go/popstate.
+  const updateSearchParams = (patch: Partial<SearchParams>) =>
+    setStack((s) => {
+      const top = s[s.length - 1];
+      if (top.screen !== 'search') return s;
+      return [...s.slice(0, -1), { ...top, params: { ...top.params, ...patch } }];
+    });
   const goDocument = (documentId: string) => push({ screen: 'document', documentId });
   const goDiagnostic = () => push({ screen: 'diagnostic' });
   const goWebSearch = (context: WebSearchContext) => push({ screen: 'webSearch', context });
@@ -120,6 +130,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goSearchBlank,
         goPinned,
         goSearch,
+        updateSearchParams,
         goDocument,
         goDiagnostic,
         goWebSearch,
