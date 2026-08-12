@@ -5,6 +5,7 @@ import type {
   DossierDocumentComplet,
   DossierNoteView,
   DossierPhotoView,
+  DossierPlanView,
 } from '../types/database';
 
 /**
@@ -258,15 +259,19 @@ export async function listDossierPhotos(dossierId: string): Promise<DossierPhoto
   return (data ?? []) as DossierPhotoView[];
 }
 
-/** Envoi authentifié des octets vers le Worker /api/photos (§2/§10 CLAUDE.md). */
+/** Envoi authentifié des octets vers le Worker /api/photos (§2/§10 CLAUDE.md).
+ * `contentType` par défaut à 'image/jpeg' pour ne rien changer à l'appelant
+ * historique (uploadDossierPhoto) ; les plans (PDF/DWG/...) passent leur
+ * propre mime dérivé par extension (derivePlanType). */
 export async function uploadPhotoBytes(
   blob: Blob,
-  query: string
+  query: string,
+  contentType = 'image/jpeg'
 ): Promise<{ key: string; contentType: string }> {
   const token = await getAccessToken();
   const res = await fetch(`/api/photos?${query}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
     body: blob,
   });
   if (!res.ok) throw new Error(`Upload photo échoué (HTTP ${res.status})`);
@@ -315,5 +320,118 @@ export async function deleteDossierPhoto(photo: {
     .from('dossier_photos')
     .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
     .eq('id', photo.id);
+  if (error) throw error;
+}
+
+// --- Plans du dossier (octets sur Cloudflare R2 via /api/photos, préfixe plans/) --
+
+export type DossierPlanKind = 'pdf' | 'dwg' | 'image' | 'file';
+
+const PLAN_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp']);
+
+function fileExtension(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  return dot === -1 ? '' : filename.slice(dot + 1).toLowerCase();
+}
+
+function fileBaseName(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  return dot === -1 ? filename : filename.slice(0, dot);
+}
+
+/**
+ * Le navigateur ne renseigne pas fiablement le mime d'un .dwg (souvent
+ * application/octet-stream ou vide) — le type se dérive donc par extension du
+ * nom de fichier, pas par File.type. 'kind' pilote l'affichage (PlansSection),
+ * 'mime' est ce qu'on stocke en base et qu'on envoie au Worker comme
+ * Content-Type réel de l'objet R2.
+ */
+export function derivePlanType(file: File): { kind: DossierPlanKind; mime: string } {
+  const ext = fileExtension(file.name);
+  if (ext === 'pdf') return { kind: 'pdf', mime: 'application/pdf' };
+  if (ext === 'dwg') return { kind: 'dwg', mime: 'application/acad' };
+  if (PLAN_IMAGE_EXTENSIONS.has(ext)) return { kind: 'image', mime: file.type };
+  return { kind: 'file', mime: file.type || 'application/octet-stream' };
+}
+
+/** Charset restreint au NAME_RE du Worker ([a-zA-Z0-9._-]) : diacritiques
+ * retirées, tout le reste remplacé par "_", jamais vide. */
+function sanitizeFilename(name: string): string {
+  const cleaned = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/^\.+/, '');
+  return (cleaned || 'fichier').slice(0, 120);
+}
+
+export async function listDossierPlans(dossierId: string): Promise<DossierPlanView[]> {
+  const { data, error } = await supabase
+    .from('dossier_plans_view')
+    .select('*')
+    .eq('dossier_id', dossierId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as DossierPlanView[];
+}
+
+/**
+ * Compresse si image (comme les photos du carnet), envoie tel quel sinon
+ * (PDF/DWG/autre — jamais de recompression). Le nom envoyé au Worker porte
+ * toujours la VRAIE extension du contenu effectivement stocké : .jpg pour une
+ * image (compressImage réencode systématiquement en JPEG), l'extension
+ * d'origine pour le reste — jamais celle, potentiellement trompeuse, du
+ * fichier original de l'utilisateur pour une image (ex. .heic).
+ */
+export async function uploadDossierPlan(dossierId: string, file: File, auteur: string): Promise<void> {
+  const { kind, mime } = derivePlanType(file);
+
+  let bytes: Blob = file;
+  let largeur: number | null = null;
+  let hauteur: number | null = null;
+  let name = sanitizeFilename(file.name);
+
+  if (kind === 'image') {
+    bytes = await compressImage(file);
+    name = sanitizeFilename(`${fileBaseName(file.name)}.jpg`);
+    try {
+      const bitmap = await createImageBitmap(bytes);
+      largeur = bitmap.width;
+      hauteur = bitmap.height;
+      bitmap.close();
+    } catch {
+      // Dimensions best-effort seulement — l'upload continue sans elles.
+    }
+  }
+
+  const { key } = await uploadPhotoBytes(bytes, `prefix=plans/${dossierId}&name=${encodeURIComponent(name)}`, mime);
+
+  const { error } = await supabase.from('dossier_plans').insert({
+    dossier_id: dossierId,
+    storage_provider: 'r2',
+    storage_key: key,
+    mime,
+    taille: bytes.size,
+    largeur,
+    hauteur,
+    auteur,
+  });
+  if (error) throw error;
+}
+
+export async function updateDossierPlanTitre(planId: string, titre: string | null): Promise<void> {
+  const { error } = await supabase.from('dossier_plans').update({ titre }).eq('id', planId);
+  if (error) throw error;
+}
+
+/** Soft delete uniquement — le fichier R2 doit rester récupérable, jamais de
+ * suppression d'objet ici (même logique que deleteDossierPhoto). */
+export async function deleteDossierPlan(planId: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from('dossier_plans')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
+    .eq('id', planId);
   if (error) throw error;
 }

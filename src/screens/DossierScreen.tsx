@@ -11,15 +11,18 @@ import {
   removeDossierDocument,
   listDossierNotes,
   listDossierPhotos,
+  listDossierPlans,
+  uploadDossierPlan,
   type DossierEquipment,
 } from '../lib/dossiers';
-import type { Dossier, DossierDocumentComplet, DossierNoteView, DossierPhotoView } from '../types/database';
+import type { Dossier, DossierDocumentComplet, DossierNoteView, DossierPhotoView, DossierPlanView } from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
 import { DossierFormSheet } from '../components/DossierFormSheet';
 import { CarnetSection } from '../components/CarnetSection';
+import { PlansSection } from '../components/PlansSection';
 import { CollapsibleSection } from '../components/CollapsibleSection';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
@@ -34,6 +37,11 @@ function formatCarnetBadge(notesCount: number, photosCount: number): string {
   return parts.length > 0 ? parts.join(' · ') : 'Vide';
 }
 
+/** "3 plans" / "1 plan" — appelant ne rend ce badge que si count > 0. */
+function formatPlansBadge(count: number): string {
+  return `${count} plan${count > 1 ? 's' : ''}`;
+}
+
 /**
  * Fiche dossier client (brief dossiers clients, étape A). Tout en ligne pour
  * cette étape : le chargement initial exige le réseau, mais des données déjà
@@ -41,7 +49,7 @@ function formatCarnetBadge(notesCount: number, photosCount: number): string {
  * actions d'écriture (ajout/retrait) sont bloquées hors ligne.
  */
 export function DossierScreen({ dossierId }: { dossierId: string }) {
-  const { isOnline } = useAuth();
+  const { isOnline, session } = useAuth();
   const nav = useNavigation();
   const { showToast } = useToast();
 
@@ -50,6 +58,8 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [documents, setDocuments] = useState<DossierDocumentComplet[] | null>(null);
   const [notes, setNotes] = useState<DossierNoteView[] | null>(null);
   const [photos, setPhotos] = useState<DossierPhotoView[] | null>(null);
+  const [plans, setPlans] = useState<DossierPlanView[] | null>(null);
+  const [planUploadProgress, setPlanUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showAddEquipment, setShowAddEquipment] = useState(false);
@@ -77,12 +87,13 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       if (!isOnline) return;
       setLoadError(null);
       try {
-        const [d, eqs, docs, notesRows, photosRows, pinned, vaultSecret] = await Promise.all([
+        const [d, eqs, docs, notesRows, photosRows, plansRows, pinned, vaultSecret] = await Promise.all([
           getDossier(dossierId),
           listDossierEquipments(dossierId),
           getDossierDocumentsComplets(dossierId),
           listDossierNotes(dossierId),
           listDossierPhotos(dossierId),
+          listDossierPlans(dossierId),
           getAllPinnedDocuments(),
           // Existence seule (RLS filtre déjà les non-autorisés) — jamais de
           // déchiffrement ici, juste savoir s'il y a quelque chose à ouvrir.
@@ -94,6 +105,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         setDocuments(docs);
         setNotes(notesRows);
         setPhotos(photosRows);
+        setPlans(plansRows);
         setPinnedIds(new Set(pinned.map((p) => p.id)));
         setHasVaultNote(vaultSecret !== null);
 
@@ -159,6 +171,36 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       return;
     }
     nav.goDocument(doc.id);
+  };
+
+  // Envoi séquentiel (pas Promise.all) : une connexion chantier ne supporte
+  // pas des uploads en parallèle. Un échec par fichier n'interrompt pas les
+  // suivants ; onPlansChanged (ici : un simple re-fetch) n'est appelé qu'une
+  // fois à la fin.
+  const handlePlanFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    const auteur = session?.user.id;
+    if (files.length === 0 || !auteur) return;
+
+    let successCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < files.length; i++) {
+      setPlanUploadProgress({ current: i + 1, total: files.length });
+      try {
+        await uploadDossierPlan(dossierId, files[i], auteur);
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setPlanUploadProgress(null);
+    void listDossierPlans(dossierId).then(setPlans);
+    if (failCount > 0) {
+      showToast(
+        `${successCount} plan${successCount > 1 ? 's' : ''} ajouté${successCount > 1 ? 's' : ''}, ${failCount} échec${failCount > 1 ? 's' : ''}`
+      );
+    }
   };
 
   const equipmentProductIds = new Set((equipments ?? []).map((e) => e.productId));
@@ -344,6 +386,38 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                 })}
               </div>
             )}
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            title="Plans"
+            badge={plans !== null && plans.length > 0 && <span style={carnetBadgeStyle}>{formatPlansBadge(plans.length)}</span>}
+            action={
+              <label
+                style={{
+                  ...addButtonStyle,
+                  opacity: !isOnline || planUploadProgress ? 0.4 : 1,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  cursor: !isOnline || planUploadProgress ? 'default' : 'pointer',
+                }}
+              >
+                {planUploadProgress ? `${planUploadProgress.current}/${planUploadProgress.total}` : '+ Ajouter'}
+                <input
+                  type="file"
+                  accept=".pdf,.dwg,image/*"
+                  multiple
+                  onChange={(e) => void handlePlanFilesChange(e)}
+                  disabled={!isOnline || planUploadProgress !== null || !session?.user.id}
+                  style={{ display: 'none' }}
+                />
+              </label>
+            }
+          >
+            <PlansSection
+              isOnline={isOnline}
+              plans={plans}
+              onPlansChanged={() => void listDossierPlans(dossierId).then(setPlans)}
+            />
           </CollapsibleSection>
 
           <CollapsibleSection

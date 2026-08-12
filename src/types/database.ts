@@ -178,6 +178,21 @@ export interface DossierPhotoView {
   titre: string | null;
 }
 
+export interface DossierPlanView {
+  id: string;
+  dossier_id: string;
+  titre: string | null;
+  storage_provider: string;
+  storage_key: string;
+  mime: string | null;
+  taille: number | null;
+  largeur: number | null;
+  hauteur: number | null;
+  auteur: string | null;
+  auteur_nom: string | null;
+  created_at: string;
+}
+
 export interface GameLeaderboardEntry {
   user_id: string;
   joueur: string | null;
