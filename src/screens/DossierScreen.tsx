@@ -63,9 +63,13 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [hasVaultNote, setHasVaultNote] = useState<boolean | null>(null);
   // Indicateur du badge "Chiffré" (en-tête repliée) : null = pas d'info à
   // montrer (pas encore su, ou pas d'accès coffre — ne RIEN révéler dans ce
-  // cas). Sinon 'vide' | 'contient', via dossier_vault_has_content, jamais
-  // de déchiffrement.
-  const [vaultBadgeExtra, setVaultBadgeExtra] = useState<'vide' | 'contient' | null>(null);
+  // cas). Sinon 'vide' | 'configure', via dossier_vault_has_content — qui
+  // constate juste qu'une ligne vault_secrets existe, jamais son contenu
+  // déchiffré. D'où "configuré" et non "contient des données" : supprimer la
+  // dernière note laisse la ligne en place (ciphertext d'un tableau vide),
+  // donc ce signal reste à true après un coffre vidé — libellé volontairement
+  // sous-promettant plutôt que de prétendre refléter le nombre de notes.
+  const [vaultBadgeExtra, setVaultBadgeExtra] = useState<'vide' | 'configure' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +108,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             setVaultBadgeExtra(null);
           } else {
             const contains = await dossierVaultHasContent(dossierId);
-            if (!cancelled) setVaultBadgeExtra(contains ? 'contient' : 'vide');
+            if (!cancelled) setVaultBadgeExtra(contains ? 'configure' : 'vide');
           }
         } catch {
           if (!cancelled) setVaultBadgeExtra(null);
@@ -602,15 +606,17 @@ const encryptedBadgeStyle: React.CSSProperties = {
 };
 
 /** Badge "Données sensibles" de l'en-tête repliée. `extra` reste `null` tant
- * que l'accès coffre n'est pas confirmé — jamais de fuite avant vérification. */
-function renderEncryptedBadge(extra: 'vide' | 'contient' | null) {
+ * que l'accès coffre n'est pas confirmé — jamais de fuite avant vérification.
+ * "configuré" plutôt que "contient des données" : la seule chose constatée
+ * est qu'une ligne vault_secrets existe, jamais son contenu déchiffré. */
+function renderEncryptedBadge(extra: 'vide' | 'configure' | null) {
   return (
     <span style={encryptedBadgeStyle}>
       <svg width="11" height="11" viewBox="0 0 20 20" aria-hidden="true">
         <rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke={textA(0.75)} strokeWidth="1.8" />
         <path d="M7 9V6.5a3 3 0 016 0V9" fill="none" stroke={textA(0.75)} strokeWidth="1.8" strokeLinecap="round" />
       </svg>
-      {extra === 'contient' ? 'Chiffré · contient des données' : extra === 'vide' ? 'Chiffré · vide' : 'Chiffré'}
+      {extra === 'configure' ? 'Chiffré · configuré' : extra === 'vide' ? 'Chiffré · vide' : 'Chiffré'}
     </span>
   );
 }
