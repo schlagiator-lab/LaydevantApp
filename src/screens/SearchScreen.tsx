@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import type { SearchParams } from '../lib/navigationContext';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
@@ -220,6 +220,22 @@ export function SearchScreen({ params }: { params: SearchParams }) {
     [rawResults],
   );
 
+  // Amène le chip actif dans le viewport de sa ligne défilante horizontale —
+  // sans ça, un filtre restauré depuis le cran de pile (retour depuis une
+  // fiche document) reste sélectionné mais invisible si la marque est loin
+  // dans la liste, puisque le scroll horizontal, lui, repart toujours à 0 au
+  // remontage. `availableBrands`/`availableDocTypes` en dépendance : au
+  // premier rendu les chips n'existent pas encore (résultats pas chargés),
+  // le ref ne se pose qu'une fois la ligne réellement peuplée.
+  const activeDocTypeChipRef = useRef<HTMLButtonElement | null>(null);
+  const activeBrandChipRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    activeDocTypeChipRef.current?.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }, [docTypeFilter, availableDocTypes]);
+  useEffect(() => {
+    activeBrandChipRef.current?.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }, [brandFilter, availableBrands]);
+
   const results = useMemo(() => {
     if (!rawResults) return null;
     return rawResults.filter(
@@ -391,6 +407,7 @@ export function SearchScreen({ params }: { params: SearchParams }) {
               {availableDocTypes.map((dt) => (
                 <button
                   key={dt}
+                  ref={dt === docTypeFilter ? activeDocTypeChipRef : undefined}
                   type="button"
                   onClick={() => setDocTypeFilter(dt)}
                   style={chipStyle(docTypeFilter === dt)}
@@ -415,6 +432,7 @@ export function SearchScreen({ params }: { params: SearchParams }) {
                 {availableBrands.map((brand) => (
                   <button
                     key={brand}
+                    ref={brand === brandFilter ? activeBrandChipRef : undefined}
                     type="button"
                     onClick={() => setBrandFilter(brand)}
                     style={chipStyle(brandFilter === brand)}
