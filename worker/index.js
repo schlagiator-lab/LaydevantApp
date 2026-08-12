@@ -9,7 +9,16 @@ async function getUser(request, env) {
 
 // Préfixes génériques (hors dossier) autorisés pour ?prefix= : allowlist
 // stricte tête + slug, aucun `..`, aucun `/` supplémentaire, aucun espace.
-const GALERIE_PREFIX_RE = /^galerie\/[a-z0-9-]+$/;
+// "plans" réutilise ce même mécanisme (slug = dossier_id, qui matche déjà
+// [a-z0-9-]+ en tant qu'UUID) plutôt que le paramètre dédié ?dossier=, lequel
+// reste figé sur le préfixe `dossiers/` pour ne rien changer aux photos.
+const GENERIC_PREFIX_RE = /^(galerie|plans)\/[a-z0-9-]+$/;
+
+// Nom de fichier optionnel (?name=) : accolé tel quel après l'UUID généré,
+// pour que la clé porte la vraie extension (pdf/dwg/...) plutôt que le
+// .jpg/.png deviné depuis le Content-Type. Charset restreint : pas de `/`,
+// donc aucun risque de sortir du préfixe.
+const NAME_RE = /^[a-zA-Z0-9._-]{1,120}$/;
 
 async function handlePhotos(request, env) {
   const url = new URL(request.url);
@@ -23,14 +32,23 @@ async function handlePhotos(request, env) {
     let keyPrefix;
     if (dossierId) {
       keyPrefix = `dossiers/${dossierId}`;
-    } else if (prefix && GALERIE_PREFIX_RE.test(prefix)) {
+    } else if (prefix && GENERIC_PREFIX_RE.test(prefix)) {
       keyPrefix = prefix;
     } else {
       return new Response("dossier ou prefix manquant/invalide", { status: 400 });
     }
     const contentType = request.headers.get("Content-Type") || "image/jpeg";
-    const ext = contentType.includes("png") ? "png" : "jpg";
-    const key = `${keyPrefix}/${crypto.randomUUID()}.${ext}`;
+
+    const rawName = url.searchParams.get("name");
+    let filename;
+    if (rawName !== null) {
+      if (!NAME_RE.test(rawName)) return new Response("name invalide", { status: 400 });
+      filename = `${crypto.randomUUID()}-${rawName}`;
+    } else {
+      const ext = contentType.includes("png") ? "png" : "jpg";
+      filename = `${crypto.randomUUID()}.${ext}`;
+    }
+    const key = `${keyPrefix}/${filename}`;
     const bytes = await request.arrayBuffer();
     await env.PHOTOS_BUCKET.put(key, bytes, { httpMetadata: { contentType } });
     return Response.json({ key, contentType });
