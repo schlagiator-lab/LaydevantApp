@@ -50,6 +50,16 @@ export async function hasVaultAccess(): Promise<boolean> {
   return Boolean(data);
 }
 
+/** dossier_vault_has_content() (SECURITY DEFINER) — existence seule, jamais de
+ * déchiffrement. Sert uniquement à afficher un indicateur vide/non-vide sur
+ * le badge "Chiffré" ; à n'appeler qu'après avoir confirmé hasVaultAccess(),
+ * sinon rien à en tirer côté affichage. */
+export async function dossierVaultHasContent(dossierId: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('dossier_vault_has_content', { p_dossier_id: dossierId });
+  if (error) throw error;
+  return Boolean(data);
+}
+
 export async function getVaultSecret(dossierId: string): Promise<VaultSecretRow | null> {
   const { data, error } = await supabase
     .from('vault_secrets')

@@ -23,8 +23,16 @@ import { CarnetSection } from '../components/CarnetSection';
 import { CollapsibleSection } from '../components/CollapsibleSection';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
-import { getVaultSecret } from '../lib/vaultSecrets';
+import { getVaultSecret, hasVaultAccess, dossierVaultHasContent } from '../lib/vaultSecrets';
 import { colors, fonts, radius, textA } from '../styles/tokens';
+
+/** "3 notes · 2 photos" — omet les segments à 0, "Vide" si les deux sont à 0. */
+function formatCarnetBadge(notesCount: number, photosCount: number): string {
+  const parts: string[] = [];
+  if (notesCount > 0) parts.push(`${notesCount} note${notesCount > 1 ? 's' : ''}`);
+  if (photosCount > 0) parts.push(`${photosCount} photo${photosCount > 1 ? 's' : ''}`);
+  return parts.length > 0 ? parts.join(' · ') : 'Vide';
+}
 
 /**
  * Fiche dossier client (brief dossiers clients, étape A). Tout en ligne pour
@@ -53,6 +61,11 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   // null = pas encore su (chargement ou hors ligne) ; true/false = présence
   // réelle d'une ligne vault_secrets, sans jamais la déchiffrer ici.
   const [hasVaultNote, setHasVaultNote] = useState<boolean | null>(null);
+  // Indicateur du badge "Chiffré" (en-tête repliée) : null = pas d'info à
+  // montrer (pas encore su, ou pas d'accès coffre — ne RIEN révéler dans ce
+  // cas). Sinon 'vide' | 'contient', via dossier_vault_has_content, jamais
+  // de déchiffrement.
+  const [vaultBadgeExtra, setVaultBadgeExtra] = useState<'vide' | 'contient' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +92,23 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
         setPhotos(photosRows);
         setPinnedIds(new Set(pinned.map((p) => p.id)));
         setHasVaultNote(vaultSecret !== null);
+
+        // Indicateur du badge "Chiffré" : réutilise le pré-check d'accès déjà
+        // en place (hasVaultAccess, celui de VaultSheet) — si l'utilisateur
+        // n'a pas accès au coffre, on ne révèle rien, jamais d'appel RPC
+        // superflu. Échec silencieux : ce n'est qu'un indicateur d'en-tête.
+        try {
+          const allowed = await hasVaultAccess();
+          if (cancelled) return;
+          if (!allowed) {
+            setVaultBadgeExtra(null);
+          } else {
+            const contains = await dossierVaultHasContent(dossierId);
+            if (!cancelled) setVaultBadgeExtra(contains ? 'contient' : 'vide');
+          }
+        } catch {
+          if (!cancelled) setVaultBadgeExtra(null);
+        }
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       }
@@ -312,7 +342,14 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             )}
           </CollapsibleSection>
 
-          <CollapsibleSection title="Carnet">
+          <CollapsibleSection
+            title="Carnet"
+            badge={
+              notes !== null && photos !== null && (
+                <span style={carnetBadgeStyle}>{formatCarnetBadge(notes.length, photos.length)}</span>
+              )
+            }
+          >
             <CarnetSection
               dossierId={dossierId}
               isOnline={isOnline}
@@ -323,7 +360,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             />
           </CollapsibleSection>
 
-          <CollapsibleSection title="Données sensibles" badge={encryptedBadge} keepMounted>
+          <CollapsibleSection title="Données sensibles" badge={renderEncryptedBadge(vaultBadgeExtra)} keepMounted>
             <button
               type="button"
               onClick={() => setShowVault(true)}
@@ -540,6 +577,17 @@ const countBadgeStyle: React.CSSProperties = {
   justifyContent: 'center',
 };
 
+const carnetBadgeStyle: React.CSSProperties = {
+  flex: 'none',
+  padding: '3px 9px',
+  borderRadius: radius.pill,
+  background: textA(0.12),
+  color: textA(0.75),
+  fontSize: 11.5,
+  fontWeight: 700,
+  whiteSpace: 'nowrap',
+};
+
 const encryptedBadgeStyle: React.CSSProperties = {
   flex: 'none',
   display: 'flex',
@@ -553,12 +601,16 @@ const encryptedBadgeStyle: React.CSSProperties = {
   fontWeight: 700,
 };
 
-const encryptedBadge = (
-  <span style={encryptedBadgeStyle}>
-    <svg width="11" height="11" viewBox="0 0 20 20" aria-hidden="true">
-      <rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke={textA(0.75)} strokeWidth="1.8" />
-      <path d="M7 9V6.5a3 3 0 016 0V9" fill="none" stroke={textA(0.75)} strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-    Chiffré
-  </span>
-);
+/** Badge "Données sensibles" de l'en-tête repliée. `extra` reste `null` tant
+ * que l'accès coffre n'est pas confirmé — jamais de fuite avant vérification. */
+function renderEncryptedBadge(extra: 'vide' | 'contient' | null) {
+  return (
+    <span style={encryptedBadgeStyle}>
+      <svg width="11" height="11" viewBox="0 0 20 20" aria-hidden="true">
+        <rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke={textA(0.75)} strokeWidth="1.8" />
+        <path d="M7 9V6.5a3 3 0 016 0V9" fill="none" stroke={textA(0.75)} strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+      {extra === 'contient' ? 'Chiffré · contient des données' : extra === 'vide' ? 'Chiffré · vide' : 'Chiffré'}
+    </span>
+  );
+}
