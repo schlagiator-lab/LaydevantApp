@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { getSignedDocumentUrl } from './documents';
+import { fetchPdfBlob, fetchPdfBlobR2 } from './documents';
 import { putPdf, deletePdf } from './pdfCache';
 import { putPinnedDocument, deletePinnedDocument, type PinnedDocumentRecord } from './db';
 import type { DocumentDetail } from './documentDetail';
@@ -12,12 +12,13 @@ import type { DocumentDetail } from './documentDetail';
  * available offline *here*, the DB row alone would not.
  */
 export async function pinDocument(detail: DocumentDetail, userId: string): Promise<void> {
-  const signedUrl = await getSignedDocumentUrl(detail.doc.file_path);
-  const response = await fetch(signedUrl);
-  if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
-  const blob = await response.blob();
+  const { doc } = detail;
+  const blob =
+    doc.storage_provider === 'r2'
+      ? await fetchPdfBlobR2(doc.file_path, doc.mime_type)
+      : await fetchPdfBlob(doc.file_path, doc.mime_type);
 
-  await putPdf(detail.doc.id, blob, detail.doc.mime_type || 'application/pdf');
+  await putPdf(doc.id, blob, doc.mime_type || 'application/pdf');
 
   const record: PinnedDocumentRecord = {
     ...detail.doc,
