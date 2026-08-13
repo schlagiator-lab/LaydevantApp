@@ -18,7 +18,7 @@ export async function getDocumentDetail(documentId: string): Promise<DocumentDet
   const { data, error } = await supabase
     .from('documents')
     .select(
-      'id, specialty_id, product_id, title, doc_type, file_path, file_size, mime_type, content, source_url, retrieved_at, version_label, tags, created_by, created_at, updated_at, specialties(name, departments(name)), products(brand, model)',
+      'id, specialty_id, product_id, title, doc_type, storage_provider, file_path, file_size, mime_type, content, source_url, retrieved_at, version_label, tags, created_by, created_at, updated_at, specialties(name, departments(name)), products(brand, model)',
     )
     .eq('id', documentId)
     .single()

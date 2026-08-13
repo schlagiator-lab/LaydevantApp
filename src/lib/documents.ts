@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { getAccessToken } from './dossiers';
 import type { BrowseDocumentRow, SearchDocumentsResult } from '../types/database';
 
 /** Online search across the full corpus (CLAUDE.md §3). Requires a query. */
@@ -77,6 +78,23 @@ export async function getSignedDocumentUrl(filePath: string, expiresInSeconds = 
 export async function fetchPdfBlob(filePath: string, mimeType: string | null): Promise<Blob> {
   const signedUrl = await getSignedDocumentUrl(filePath);
   const response = await fetch(signedUrl);
+  if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
+  const blob = await response.blob();
+  return new Blob([blob], { type: mimeType || 'application/pdf' });
+}
+
+/**
+ * Pendant R2 de fetchPdfBlob, pour les documents migrés (storage_provider
+ * 'r2'). Même contrat de sortie (Blob re-typé) que le chemin Supabase, pour
+ * que DocumentScreen n'ait rien d'autre à distinguer en aval. Passe par le
+ * Worker /api/photos (§2 CLAUDE.md), authentifié par JWT plutôt que par URL
+ * signée — la lecture y est préfixe-agnostique, `documents/` inclus.
+ */
+export async function fetchPdfBlobR2(filePath: string, mimeType: string | null): Promise<Blob> {
+  const token = await getAccessToken();
+  const response = await fetch(`/api/photos/documents/${filePath}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
   const blob = await response.blob();
   return new Blob([blob], { type: mimeType || 'application/pdf' });

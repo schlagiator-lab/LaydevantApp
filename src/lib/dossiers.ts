@@ -258,7 +258,7 @@ export async function deleteDossierNote(noteId: string): Promise<void> {
 
 // --- Carnet public : photos (octets sur Cloudflare R2 via /api/photos) ------
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new Error('Session absente — reconnecte-toi pour gérer les photos.');

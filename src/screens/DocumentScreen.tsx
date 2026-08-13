@@ -5,7 +5,7 @@ import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import { getPinnedDocument, deletePinnedDocument, recordRecentDocument } from '../lib/db';
 import { getDocumentDetail } from '../lib/documentDetail';
-import { fetchPdfBlob } from '../lib/documents';
+import { fetchPdfBlob, fetchPdfBlobR2 } from '../lib/documents';
 import { getPdf } from '../lib/pdfCache';
 import { pinDocument, unpinDocument, isPinnedOnAccount } from '../lib/pinning';
 import { StatusPill } from '../components/StatusPill';
@@ -56,7 +56,11 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       const account = await isPinnedOnAccount(id, uid).catch(() => false);
       setIsPinnedElsewhere(account);
       try {
-        setPdfBlob(await fetchPdfBlob(detail.doc.file_path, detail.doc.mime_type));
+        setPdfBlob(
+          detail.doc.storage_provider === 'r2'
+            ? await fetchPdfBlobR2(detail.doc.file_path, detail.doc.mime_type)
+            : await fetchPdfBlob(detail.doc.file_path, detail.doc.mime_type),
+        );
       } catch (err) {
         setPdfError(err instanceof Error ? err.message : String(err));
       }

@@ -46,6 +46,7 @@ export interface DocumentRow {
   product_id: string | null;
   title: string;
   doc_type: DocType;
+  storage_provider: 'supabase' | 'r2';
   file_path: string;
   file_size: number | null;
   mime_type: string | null;
