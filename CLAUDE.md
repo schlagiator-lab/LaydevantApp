@@ -35,7 +35,12 @@ uniquement.
 - **React + Vite + TypeScript**
 - **vite-plugin-pwa** pour le service worker et le manifest (précache le
   shell applicatif seulement — les PDF sont gérés à la main via Cache API,
-  pas par workbox)
+  pas par workbox). Le `globPatterns` du workbox (`vite.config.ts`) doit
+  couvrir tout format d'asset local précaché — actuellement
+  `js,css,html,svg,png,ico,woff2,mjs,jpg,jpeg,webp,avif,gif` ; un format
+  manquant devient invisible en avion prolongé. Ne jamais laisser une image
+  métier (photos carnet, galerie, plans — sur R2) atterrir dans `public/`
+  ou `dist/` : seul le shell applicatif doit être précaché.
 - **@supabase/supabase-js** pour la base, le stockage, l'authentification et
   l'appel à l'Edge Function de recherche web
 - **pdfjs-dist** pour l'aperçu PDF in-app (chargé en lazy/code-split, ~1 Mo,
@@ -48,11 +53,12 @@ uniquement.
   pièce du système qui appelle l'API Anthropic
 - **Cloudflare Workers** (static assets) pour l'hébergement, avec une route
   API (`/api/photos`, `worker/index.js`) qui sert de proxy authentifié vers
-  un bucket **Cloudflare R2** (`PHOTOS_BUCKET`) pour les photos du carnet
-  client (§10) — indépendant du bucket Supabase `documents` (§3). Le Worker
-  valide le bearer token en le rejouant sur `GET /auth/v1/user` de l'API
-  Supabase Auth avant tout accès ; pas de signed URL, pas de RLS ici, la
-  vérification est entièrement côté Worker
+  le bucket **Cloudflare R2** `laydevant-photos` (binding `PHOTOS_BUCKET`) —
+  il sert à la fois les PDF de la bibliothèque de documents (préfixe
+  `documents/`, §3) et les photos du carnet client (§10). Le Worker valide
+  le bearer token en le rejouant sur `GET /auth/v1/user` de l'API Supabase
+  Auth avant tout accès ; pas de signed URL, pas de RLS ici, la vérification
+  est entièrement côté Worker
 
 Pas de framework CSS lourd, tout en styles inline avec les tokens de
 `src/styles/tokens.ts`. Le design est fourni en HTML/CSS dans `design/`, porté
@@ -76,9 +82,10 @@ dépôt — seule leur évolution ultérieure (`titre`) est versionnée.
 departments      id, name, slug, icon, sort_order
 specialties      id, department_id, name, slug, sort_order
 products         id, specialty_id, brand, model, name
-documents        id, specialty_id, product_id, title, doc_type, file_path,
-                 file_size, mime_type, content, source_url, retrieved_at,
-                 version_label, tags[], created_by, created_at, updated_at
+documents        id, specialty_id, product_id, title, doc_type,
+                 storage_provider, file_path, file_size, mime_type, content,
+                 source_url, retrieved_at, version_label, tags[], created_by,
+                 created_at, updated_at
 profiles         id, full_name, role ('monteur' | 'admin')
 pinned_documents user_id, document_id, pinned_at
 ```
@@ -212,17 +219,36 @@ n8n, y compris pour la capture web, §9).
 
 ### Stockage
 
-Bucket Supabase `documents`, **privé** — bibliothèque de notices uniquement.
-Accès uniquement par URL signée :
+Les PDF de la bibliothèque vivent dans le bucket **Cloudflare R2**
+`laydevant-photos` (même bucket que les photos du carnet, §10), sous le
+préfixe `documents/` — la clé R2 complète est `'documents/' + file_path`.
+`documents.storage_provider` (`'supabase' | 'r2'`) distingue le backend ligne
+par ligne ; **toutes les lignes valent aujourd'hui `'r2'`** depuis la
+migration qui a vidé le bucket Supabase `documents`.
 
-```ts
-supabase.storage.from('documents').createSignedUrl(file_path, 3600);
-```
+Lecture d'un PDF — double-lecture branchée sur `storage_provider` dans
+`fetchOnlineDetail` (`src/screens/DocumentScreen.tsx`) :
 
-Les photos du carnet client (§10) ne passent **pas** par ce bucket : elles
-vivent dans un bucket **Cloudflare R2** séparé, derrière le Worker `/api/photos`
-(§2) — RLS Postgres non applicable à ces octets, la vérification d'accès est
-entièrement côté Worker (bearer token rejoué sur Supabase Auth).
+- `'r2'` → `fetchPdfBlobR2` (`src/lib/documents.ts`), qui récupère les octets
+  via le Worker `/api/photos` (§2) et renvoie un `Blob`. `file_path` lui est
+  transmis **nu** (sans le préfixe `documents/`, ajouté côté Worker/R2).
+- sinon (repli `'supabase'`, chemin conservé dans le code mais plus jamais
+  emprunté par les données actuelles) → `fetchPdfBlob`, URL signée Supabase
+  Storage :
+  ```ts
+  supabase.storage.from('documents').createSignedUrl(file_path, 3600);
+  ```
+
+Dans les deux cas le résultat est **toujours un `Blob`** — ne jamais mélanger
+`Blob` et object URL entre les deux branches. `getDocumentDetail`
+(`src/lib/documentDetail.ts`) inclut `storage_provider` dans son `SELECT` ;
+`DocumentRow` (`src/types/database.ts`) porte `storage_provider`, `file_path`,
+`mime_type`.
+
+Les photos du carnet client (§10) partagent le même bucket R2, sous un
+préfixe différent (`dossiers/{dossier_id}/{uuid}.{ext}`) — RLS Postgres non
+applicable à ces octets ni aux PDF R2 ; la vérification d'accès est
+entièrement côté Worker (bearer token rejoué sur Supabase Auth, §2).
 
 ---
 
@@ -257,13 +283,16 @@ document) exige le réseau.
 
 ### Épingler un document
 
-1. Obtenir une URL signée
-2. `fetch()` le PDF → blob (le type MIME est forcé explicitement plutôt que de
-   faire confiance au Content-Type du stockage, qui peut être absent ou faux
-   côté objets uploadés par n8n)
-3. Stocker le blob dans le Cache API sous une clé stable : `/offline-pdf/{document_id}`
-4. Stocker métadonnées + `content` dans IndexedDB
-5. Insérer la ligne dans `pinned_documents` (synchronise l'épingle entre appareils)
+1. Récupérer le PDF en `Blob`, backend branché sur `storage_provider` — même
+   motif que l'ouverture (§3) : `'r2'` via le Worker `/api/photos`, repli
+   `'supabase'` via URL signée + `fetch()`. Le type MIME est forcé
+   explicitement plutôt que de faire confiance au Content-Type du stockage,
+   qui peut être absent ou faux côté objets uploadés par n8n.
+2. Stocker le blob dans le Cache API (`pdfCache.ts`, cache
+   `laydevant-offline-pdfs`) sous une clé stable : `/offline-pdf/{document_id}`
+3. Stocker métadonnées + `content` dans IndexedDB (`db.ts`, base
+   `laydevant-docs`, store `pinnedDocuments`)
+4. Insérer la ligne dans `pinned_documents` (synchronise l'épingle entre appareils)
 
 Retirer = l'inverse, dans l'ordre inverse (`src/lib/pinning.ts`) ; le retrait
 côté ligne `pinned_documents` est best-effort si hors ligne (retirer le PDF de
@@ -496,8 +525,8 @@ PWA → Edge Function "web-search-notices" → API Anthropic (avec recherche web
 
 ```
 PWA → webhook n8n "ingest-from-url" → télécharge le PDF → mêmes étapes que le
-     formulaire d'ingestion existant (extraction texte, upload Storage,
-     upsert produit + insert document) → confirmation
+     formulaire d'ingestion existant (extraction texte, upload R2, upsert
+     produit + insert document) → confirmation
 ```
 
 - Le bouton « Ajouter à la bibliothèque » n'apparaît que si `is_pdf` est true
@@ -506,7 +535,11 @@ PWA → webhook n8n "ingest-from-url" → télécharge le PDF → mêmes étapes
   document) dans une feuille de confirmation (`CaptureSheet`) avant envoi.
 - `src/lib/captureIngest.ts` poste vers `VITE_N8N_INGEST_URL`, avec un header
   `x-webhook-secret: VITE_N8N_INGEST_SECRET`. Le front n'écrit **jamais**
-  directement dans Storage ni dans `documents`/`products`.
+  directement dans R2 ni dans `documents`/`products`.
+- Les 3 workflows d'ingestion n8n (formulaire, capture URL, lot) écrivent
+  l'octet en R2 (`documents/{file_path}`) et insèrent la ligne avec
+  `storage_provider = 'r2'` (littéral dans l'`INSERT`, aucun paramètre `$N`
+  ajouté).
 - Échec honnête : certaines sources fabricant bloquent le téléchargement
   automatique (403, portail, JS) — l'erreur remonte telle quelle, l'utilisateur
   peut alors télécharger le PDF à la main et repasser par le formulaire
@@ -681,14 +714,28 @@ espacement disloque le mot.
 - La clé `anon` est publique par conception ; c'est la RLS qui protège les
   données. `SUPABASE_ANON_KEY` dupliquée dans les `vars` du Worker (§14) est
   cette même clé publique, pas un nouveau secret.
-- Le Worker `/api/photos` (§2/§10) valide qu'un JWT Supabase est présent et
-  valide, mais ne vérifie pas que l'appelant a un lien avec le `dossier_id`
-  de la clé R2 demandée — cohérent avec la RLS `dossiers` (lecture/écriture
-  pour tout utilisateur authentifié, §3), pas un relâchement supplémentaire,
-  mais à garder en tête si ce modèle de permission évolue un jour.
-- Les URL signées expirent (1 h). Ne pas les stocker : les régénérer à la
-  demande. Une fois le PDF téléchargé dans le Cache API, il est servi
-  localement et l'expiration n'a plus d'effet.
+- Le Worker `/api/photos` (§2/§3/§10) valide qu'un JWT Supabase est présent
+  et valide, mais ne vérifie pas que l'appelant a un lien avec le
+  `dossier_id` ni avec le document demandé — cohérent avec la RLS `dossiers`
+  (lecture/écriture pour tout utilisateur authentifié, §3), pas un
+  relâchement supplémentaire, mais à garder en tête si ce modèle de
+  permission évolue un jour.
+- **Dette de sécurité, priorité relevée** : la lecture (`GET`) du Worker est
+  volontairement préfixe-agnostique (elle sert aussi bien `documents/` que
+  les autres préfixes du bucket) et l'upload (`POST`) reste borné par
+  l'allowlist `GENERIC_PREFIX_RE` (`galerie|plans` — les PDF, eux, sont
+  écrits en R2 par n8n, jamais par le Worker, §9). Mais **`DELETE` n'a
+  aucune restriction de préfixe** : tout utilisateur authentifié peut
+  supprimer n'importe quel objet R2, y compris un PDF de bibliothèque sous
+  `documents/`. C'était tolérable tant que Supabase Storage servait de
+  filet ; maintenant que R2 est la **source unique** des PDF (bucket
+  Supabase `documents` vidé, §3), une suppression malveillante ou
+  accidentelle y est irréversible sans re-ingestion n8n. À durcir en
+  admin-only avant tout usage plus large de l'app.
+- Les URL signées Supabase Storage (repli `storage_provider = 'supabase'`,
+  §3) expirent (1 h) : ne pas les stocker, les régénérer à la demande. Une
+  fois le PDF téléchargé dans le Cache API, il est servi localement et
+  l'expiration n'a plus d'effet.
 - **Règle de contenu** (§9) : documentation fabricant librement diffusée
   uniquement — jamais de contenu sous licence de tiers (normes NIN/NIBT,
   contenus payants) capturé vers la bibliothèque.
@@ -749,6 +796,11 @@ build front.
 
 HTTPS est fourni automatiquement — indispensable, sans lui pas de service
 worker donc pas de PWA.
+
+Pour un accès S3-compatible direct au bucket R2 (admin/débogage, hors
+Worker) : endpoint **sans** nom de bucket dans l'URL, **Force Path Style
+ON**, région `'auto'` — jamais `us-east-1`, sinon le listage renvoie 0 objet
+sans erreur, piège silencieux.
 
 ---
 
