@@ -84,6 +84,20 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     return () => abortControllerRef.current?.abort();
   }, []);
 
+  // Le plateau + son en-tête + l'indication de contrôles en dessous dépassent
+  // souvent la hauteur visible : sans ce scroll, la partie basse (indication
+  // de jeu) reste tronquée tant que l'utilisateur ne scrolle pas lui-même.
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!loading || results !== null) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [loading, results]);
+
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
   useEffect(() => {
@@ -242,6 +256,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
       </div>
 
       <div
+        ref={scrollContainerRef}
         className="no-scrollbar"
         style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 24px', boxSizing: 'border-box' }}
       >
