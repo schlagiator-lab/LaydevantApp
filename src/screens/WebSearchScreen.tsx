@@ -253,9 +253,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
             <p style={{ fontSize: 14, color: textA(0.55), textAlign: 'center', marginTop: 14 }}>
               Recherche sur le web… quelques secondes.
             </p>
-            <p style={{ fontSize: 13, color: textA(0.45), textAlign: 'center', marginTop: 6 }}>
-              {PATIENCE_MESSAGES[patienceIndex]}
-            </p>
+            <p style={patienceMessageStyle}>{PATIENCE_MESSAGES[patienceIndex]}</p>
             <div style={{ marginTop: 20 }}>
               <PdfTetris />
             </div>
@@ -360,6 +358,19 @@ const offlineBannerStyle: React.CSSProperties = {
   border: '1px solid rgba(222, 122, 34, 0.4)',
   borderRadius: 10,
   padding: '9px 12px',
+};
+
+// Hauteur réservée pour 3 lignes (lineHeight explicite pour un calc lisible) :
+// un message plus long qu'anticipé ou un écran étroit peut faire passer le
+// texte sur 3 lignes ; sans ce plancher, chaque rotation (7 s) fait varier la
+// hauteur du <p> et décale PdfTetris juste en dessous, dans le même flux.
+const patienceMessageStyle: React.CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.4,
+  color: textA(0.45),
+  textAlign: 'center',
+  marginTop: 6,
+  minHeight: 'calc(1.4em * 3)',
 };
 
 const searchSummaryStyle: React.CSSProperties = {
