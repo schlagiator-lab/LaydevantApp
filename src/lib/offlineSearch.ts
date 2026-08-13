@@ -1,5 +1,5 @@
 import MiniSearch from 'minisearch';
-import type { DocumentRow } from '../types/database';
+import type { PinnedDocumentRecord } from './db';
 import { sanitizeHeadline } from './excerpt';
 
 const EXCERPT_CONTEXT_CHARS = 60;
@@ -9,18 +9,23 @@ const EXCERPT_CONTEXT_CHARS = 60;
  * Pinned counts are small (a technician's own device cache), so rebuilding
  * per search is cheap — no need for the incremental-update complexity of
  * keeping a persistent index in sync with pin/unpin.
+ *
+ * `productLabel` (marque + modèle, denormalized at pin time — CLAUDE.md §4)
+ * is indexed and boosted above `title` : c'est le signal d'identité le plus
+ * fort côté technicien (référence produit tapée telle quelle), même
+ * hiérarchie que la RPC en ligne (marque/modèle avant le titre).
  */
-export function buildOfflineIndex(docs: DocumentRow[]): MiniSearch<DocumentRow> {
-  const index = new MiniSearch<DocumentRow>({
-    fields: ['title', 'content'],
+export function buildOfflineIndex(docs: PinnedDocumentRecord[]): MiniSearch<PinnedDocumentRecord> {
+  const index = new MiniSearch<PinnedDocumentRecord>({
+    fields: ['title', 'content', 'productLabel'],
     storeFields: ['id'],
-    searchOptions: { prefix: true, fuzzy: 0.2, boost: { title: 2 } },
+    searchOptions: { prefix: true, fuzzy: 0.2, boost: { title: 2, productLabel: 3 } },
   });
-  index.addAll(docs.map((d) => ({ ...d, content: d.content ?? '' })));
+  index.addAll(docs.map((d) => ({ ...d, content: d.content ?? '', productLabel: d.productLabel ?? '' })));
   return index;
 }
 
-export function searchOfflineIds(index: MiniSearch<DocumentRow>, query: string): string[] {
+export function searchOfflineIds(index: MiniSearch<PinnedDocumentRecord>, query: string): string[] {
   if (!query.trim()) return [];
   return index.search(query).map((result) => String(result.id));
 }
