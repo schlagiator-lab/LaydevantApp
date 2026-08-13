@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback, type PointerEvent as ReactPoi
 import { useNavigation } from '../lib/useNavigation';
 import { useAuth } from '../lib/useAuth';
 import { submitScore, getLeaderboard } from '../lib/gameScores';
+import { Leaderboard } from './Leaderboard';
 import type { GameLeaderboardEntry } from '../types/database';
 
 /**
@@ -139,9 +140,13 @@ interface PdfTetrisProps {
   /** Lancé depuis l'accueil comme jeu autonome (pas pendant une recherche
    * web) : affiche un en-tête titre + retour au lieu de rien. */
   standalone?: boolean;
+  /** Fourni uniquement par le menu d'attente de la recherche web : affiche un
+   * bouton "Classement" à côté de "Rejouer" sur l'écran de fin de partie,
+   * pour retourner au sous-écran classement du parent. */
+  onShowLeaderboard?: () => void;
 }
 
-export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
+export default function PdfTetris({ standalone = false, onShowLeaderboard }: PdfTetrisProps) {
   const nav = useNavigation();
   const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -158,7 +163,13 @@ export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
   // = situation nominale). `null` = pas encore résolu, `undefined` = échec.
   const [bestScore, setBestScore] = useState<number | null | undefined>(null);
   const [leaderboard, setLeaderboard] = useState<GameLeaderboardEntry[] | null | undefined>(null);
+  const [isNewRecord, setIsNewRecord] = useState(false);
   const submittedRef = useRef(false);
+  // Meilleur score connu AVANT la partie qui vient de se terminer — jamais
+  // réinitialisé par restart() (contrairement à bestScore/leaderboard), pour
+  // détecter un nouveau record par simple comparaison côté client, sans RPC
+  // ni colonne dédiée.
+  const lastKnownBestRef = useRef<number | null>(null);
 
   const g = useRef<GameState>({
     grid: emptyGrid(),
@@ -436,6 +447,7 @@ export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
     submittedRef.current = false;
     setBestScore(null);
     setLeaderboard(null);
+    setIsNewRecord(false);
   }, []);
 
   // fin de partie : enregistre le score une seule fois puis lit le classement —
@@ -451,9 +463,13 @@ export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
     const timer = window.setTimeout(() => {
       const finalScore = g.current.score;
       const finalLines = g.current.lines;
+      const previousBest = lastKnownBestRef.current;
       void (async () => {
         try {
-          setBestScore(await submitScore(finalScore, finalLines));
+          const newBest = await submitScore(finalScore, finalLines);
+          setBestScore(newBest);
+          if (previousBest !== null && finalScore > previousBest) setIsNewRecord(true);
+          lastKnownBestRef.current = newBest;
         } catch {
           setBestScore(undefined); // échec réseau/hors ligne — pas bloquant
         }
@@ -628,72 +644,51 @@ export default function PdfTetris({ standalone = false }: PdfTetrisProps) {
               <p style={{ fontSize: 14, color: C.textDim, margin: 0 }}>
                 score {score} · {lines} documents rangés
               </p>
+              {isNewRecord && (
+                <p style={{ fontSize: 13, fontWeight: 700, color: C.shelf, margin: 0 }}>Nouveau record !</p>
+              )}
               {bestScore != null && (
                 <p style={{ fontSize: 13, fontWeight: 700, color: C.green, margin: 0 }}>
                   Record perso&nbsp;: {bestScore}
                 </p>
               )}
-              {leaderboard === undefined && (
-                <p style={{ fontSize: 11.5, color: C.textDim, margin: 0, textAlign: 'center' }}>
-                  Classement indisponible hors ligne.
-                </p>
-              )}
-              {leaderboard && leaderboard.length > 0 && (
-                <div style={{ width: '100%', maxWidth: 260, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span
+              <div style={{ width: '100%', maxWidth: 260 }}>
+                <Leaderboard entries={leaderboard} currentUserId={session?.user.id} />
+              </div>
+              <div style={{ display: 'flex', gap: 8, flex: 'none' }}>
+                <button
+                  onClick={restart}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: 12,
+                    fontSize: 14,
+                    fontWeight: 600,
+                    background: C.green,
+                    color: '#173000',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Rejouer
+                </button>
+                {onShowLeaderboard && (
+                  <button
+                    onClick={onShowLeaderboard}
                     style={{
-                      fontSize: 10.5,
+                      padding: '8px 16px',
+                      borderRadius: 12,
+                      fontSize: 14,
                       fontWeight: 600,
-                      letterSpacing: '0.06em',
-                      textTransform: 'uppercase',
-                      color: C.textDim,
-                      textAlign: 'center',
+                      background: 'transparent',
+                      color: C.text,
+                      border: `1px solid ${C.textDim}`,
+                      cursor: 'pointer',
                     }}
                   >
-                    Classement d'équipe
-                  </span>
-                  {leaderboard.map((entry, i) => {
-                    const mine = entry.user_id === session?.user.id;
-                    return (
-                      <div
-                        key={entry.user_id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                          padding: '4px 8px',
-                          borderRadius: 8,
-                          background: mine ? 'rgba(164,198,57,0.18)' : 'transparent',
-                        }}
-                      >
-                        <span style={{ fontSize: 12.5, fontWeight: mine ? 700 : 600, color: mine ? C.green : C.text }}>
-                          {i + 1}. {entry.joueur ?? 'Anonyme'}
-                        </span>
-                        <span style={{ fontSize: 12.5, fontWeight: 700, color: mine ? C.green : C.textDim }}>
-                          {entry.best_score}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              <button
-                onClick={restart}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: 12,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  background: C.green,
-                  color: '#173000',
-                  border: 'none',
-                  cursor: 'pointer',
-                  flex: 'none',
-                }}
-              >
-                Rejouer
-              </button>
+                    Classement
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
