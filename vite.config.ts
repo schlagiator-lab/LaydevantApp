@@ -38,7 +38,7 @@ export default defineConfig({
       workbox: {
         // Document PDFs are handled by our own Cache API logic (§4 of CLAUDE.md),
         // not by workbox — this only precaches the app shell.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2,mjs}'],
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2,mjs,jpg,jpeg,webp,avif,gif}'],
       },
     }),
   ],
