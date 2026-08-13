@@ -31,6 +31,7 @@ export type NavState =
   | { screen: 'vaultEnroll' }
   | { screen: 'vaultAdmin' }
   | { screen: 'game' }
+  | { screen: 'gameLeaderboard' }
   | { screen: 'tools' };
 
 export const BLANK_SEARCH: SearchParams = {
@@ -81,6 +82,10 @@ export interface NavigationContextValue {
   goVaultAdmin: () => void;
   /** Mini-jeu PdfTetris lancé en autonome depuis l'accueil (hors recherche web). */
   goGame: () => void;
+  /** Classement du mini-jeu, accessible depuis le menu du jeu ou l'écran de
+   * fin de partie — cran séparé pour que le retour Android revienne au menu
+   * du jeu plutôt qu'à l'accueil. */
+  goGameLeaderboard: () => void;
   /** Sous-menu "Outils" — regroupe diagnostic stockage et enrôlement coffre. */
   goTools: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */

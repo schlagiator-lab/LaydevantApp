@@ -8,9 +8,6 @@ import type { WebSearchResult } from '../types/webSearch';
 import { StatusPill } from '../components/StatusPill';
 import { CaptureSheet } from '../components/CaptureSheet';
 import PdfTetris from '../components/PdfTetris';
-import { Leaderboard } from '../components/Leaderboard';
-import { getLeaderboard } from '../lib/gameScores';
-import type { GameLeaderboardEntry } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
 
 const CONFIDENCE_LABELS: Record<WebSearchResult['confidence'], string> = {
@@ -60,11 +57,6 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const [patienceIndex, setPatienceIndex] = useState(() =>
     Math.floor(Math.random() * PATIENCE_MESSAGES.length)
   );
-  // Contenu par défaut de l'attente : menu Jouer/Classement, purement local à
-  // cet écran — l'arrivée des résultats (results !== null, voir le rendu plus
-  // bas) prend le dessus quelle que soit la sous-vue active, sans lien avec
-  // cet état.
-  const [waitView, setWaitView] = useState<'menu' | 'game' | 'leaderboard'>('menu');
 
   useEffect(() => {
     if (!loading) return;
@@ -135,7 +127,6 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     setError(null);
     setResults(null);
     setStillSearching(false);
-    setWaitView('menu');
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
@@ -266,11 +257,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
               {PATIENCE_MESSAGES[patienceIndex]}
             </p>
             <div style={{ marginTop: 20 }}>
-              {waitView === 'menu' && (
-                <WaitMenu onPlay={() => setWaitView('game')} onLeaderboard={() => setWaitView('leaderboard')} />
-              )}
-              {waitView === 'game' && <PdfTetris onShowLeaderboard={() => setWaitView('leaderboard')} />}
-              {waitView === 'leaderboard' && <WaitLeaderboard onBack={() => setWaitView('menu')} />}
+              <PdfTetris />
             </div>
           </div>
         )}
@@ -341,55 +328,6 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
           onCaptured={handleCaptured}
         />
       )}
-    </div>
-  );
-}
-
-/** Contenu par défaut de la zone d'attente (voir l'état `waitView` plus haut). */
-function WaitMenu({ onPlay, onLeaderboard }: { onPlay: () => void; onLeaderboard: () => void }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <p style={{ fontSize: 13, color: textA(0.55), marginBottom: 12 }}>Pendant que ça cherche —</p>
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-        <button type="button" onClick={onPlay} style={smallPrimaryButtonStyle}>
-          Jouer
-        </button>
-        <button type="button" onClick={onLeaderboard} style={smallSecondaryButtonStyle}>
-          Classement
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** Classement consultable sans jouer, depuis le menu d'attente. */
-function WaitLeaderboard({ onBack }: { onBack: () => void }) {
-  const { session } = useAuth();
-  const [entries, setEntries] = useState<GameLeaderboardEntry[] | null | undefined>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const rows = await getLeaderboard();
-        if (!cancelled) setEntries(rows);
-      } catch {
-        if (!cancelled) setEntries(undefined); // hors ligne/erreur — bonus non bloquant
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return (
-    <div style={{ maxWidth: 320, margin: '0 auto' }}>
-      <Leaderboard entries={entries} currentUserId={session?.user.id} />
-      <div style={{ textAlign: 'center', marginTop: 14 }}>
-        <button type="button" onClick={onBack} style={smallSecondaryButtonStyle}>
-          Retour
-        </button>
-      </div>
     </div>
   );
 }
