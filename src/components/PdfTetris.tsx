@@ -410,6 +410,23 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize); };
   }, [step, applyClears, collides]);
 
+  // Musique de fond, en boucle pendant toute la durée de vie du composant
+  // (partie + écran de fin) — volume moyen/bas pour rester secondaire à la
+  // recherche. Le montage vient toujours d'un geste utilisateur (bouton
+  // "Jouer" ou soumission du formulaire de recherche), donc play() est
+  // généralement autorisé ; si le navigateur le bloque quand même, on
+  // n'insiste pas (le jeu doit rester jouable sans son).
+  useEffect(() => {
+    const audio = new Audio('/tetris_audio.mp3');
+    audio.loop = true;
+    audio.volume = 0.35;
+    void audio.play().catch(() => {});
+    return () => {
+      audio.pause();
+      audio.currentTime = 0;
+    };
+  }, []);
+
   // ---- actions ----
   const move = useCallback((dx: number) => {
     const st = g.current;

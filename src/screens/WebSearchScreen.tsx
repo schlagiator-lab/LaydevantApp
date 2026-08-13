@@ -87,13 +87,16 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   // Le plateau + son en-tête + l'indication de contrôles en dessous dépassent
   // souvent la hauteur visible : sans ce scroll, la partie basse (indication
   // de jeu) reste tronquée tant que l'utilisateur ne scrolle pas lui-même.
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  // scrollIntoView (plutôt qu'un scrollTop sur un conteneur précis) trouve
+  // tout seul l'ancêtre réellement scrollable — ici la page elle-même, #root
+  // n'ayant qu'un min-height (global.css) et grandissant avec son contenu.
+  const gameBottomRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!loading || results !== null) return;
-    const el = scrollContainerRef.current;
+    const el = gameBottomRef.current;
     if (!el) return;
     const raf = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
+      el.scrollIntoView({ block: 'end' });
     });
     return () => cancelAnimationFrame(raf);
   }, [loading, results]);
@@ -256,7 +259,6 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
       </div>
 
       <div
-        ref={scrollContainerRef}
         className="no-scrollbar"
         style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '14px 16px 24px', boxSizing: 'border-box' }}
       >
@@ -269,7 +271,7 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
               Recherche sur le web… quelques secondes.
             </p>
             <p style={patienceMessageStyle}>{PATIENCE_MESSAGES[patienceIndex]}</p>
-            <div style={{ marginTop: 20 }}>
+            <div ref={gameBottomRef} style={{ marginTop: 20 }}>
               <PdfTetris />
             </div>
           </div>
