@@ -68,6 +68,13 @@ export function SearchScreen({ params }: { params: SearchParams }) {
   const restrictToPinned = pinnedOnly || !isOnline;
   const trimmedQuery = query.trim();
   const hasQuery = trimmedQuery.length > 0;
+  // Une recherche TEXTE couvre toujours toute la base, quel que soit l'écran
+  // de départ (drill-down département/spécialité) — seul le mode parcours
+  // (requête vide) reste scopé. `departmentId`/`specialtyId` eux-mêmes restent
+  // intacts (chips, picker, persistance) : seules ces valeurs dérivées
+  // alimentent les deux moteurs de recherche plus bas.
+  const effectiveDepartmentId = hasQuery ? null : departmentId;
+  const effectiveSpecialtyId = hasQuery ? null : specialtyId;
   // Already narrowed to a branch (came from Department/Specialty drill-down,
   // or picked a chip before that row got replaced below) — department chips
   // no longer earn their space, swap them for doc-type/manufacturer filters.
@@ -80,8 +87,8 @@ export function SearchScreen({ params }: { params: SearchParams }) {
     let cancelled = false;
 
     const matchesFilter = (doc: PinnedDocumentRecord) => {
-      if (specialtyId) return doc.specialty_id === specialtyId;
-      if (departmentId) return specialtiesById.get(doc.specialty_id)?.department_id === departmentId;
+      if (effectiveSpecialtyId) return doc.specialty_id === effectiveSpecialtyId;
+      if (effectiveDepartmentId) return specialtiesById.get(doc.specialty_id)?.department_id === effectiveDepartmentId;
       return true;
     };
 
@@ -124,8 +131,8 @@ export function SearchScreen({ params }: { params: SearchParams }) {
         } else if (hasQuery) {
           const rows = await searchDocuments({
             q: trimmedQuery,
-            departmentSlug: departmentId ? (departmentsById.get(departmentId)?.slug ?? null) : null,
-            specialtySlug: specialtyId ? (specialtiesById.get(specialtyId)?.slug ?? null) : null,
+            departmentSlug: effectiveDepartmentId ? (departmentsById.get(effectiveDepartmentId)?.slug ?? null) : null,
+            specialtySlug: effectiveSpecialtyId ? (specialtiesById.get(effectiveSpecialtyId)?.slug ?? null) : null,
           });
           if (cancelled) return;
           setRawResults(
@@ -177,6 +184,8 @@ export function SearchScreen({ params }: { params: SearchParams }) {
     trimmedQuery,
     departmentId,
     specialtyId,
+    effectiveDepartmentId,
+    effectiveSpecialtyId,
     pinnedDocs,
     specialties,
     specialtiesById,
