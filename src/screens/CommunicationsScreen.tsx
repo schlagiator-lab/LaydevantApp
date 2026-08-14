@@ -175,7 +175,12 @@ export function CommunicationsScreen() {
       await softDeleteCommunication(pendingDelete.id);
       void reload();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Échec de la suppression.');
+      console.error('[communications] softDelete failed:', err);
+      const message =
+        typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message: unknown }).message === 'string'
+          ? (err as { message: string }).message
+          : 'Échec de la suppression.';
+      showToast(message);
     } finally {
       setPendingDelete(null);
     }
