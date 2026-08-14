@@ -12,14 +12,23 @@ import {
   listDossierNotes,
   listDossierPhotos,
   listDossierPlans,
+  listDossierEquipmentRequests,
   uploadDossierPlan,
   type DossierEquipment,
 } from '../lib/dossiers';
-import type { Dossier, DossierDocumentComplet, DossierNoteView, DossierPhotoView, DossierPlanView } from '../types/database';
+import type {
+  Dossier,
+  DossierDocumentComplet,
+  DossierNoteView,
+  DossierPhotoView,
+  DossierPlanView,
+  EquipmentRequest,
+} from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
+import { EquipmentRequestSheet } from '../components/EquipmentRequestSheet';
 import { DossierFormSheet } from '../components/DossierFormSheet';
 import { CarnetSection } from '../components/CarnetSection';
 import { PlansSection } from '../components/PlansSection';
@@ -27,7 +36,14 @@ import { CollapsibleSection } from '../components/CollapsibleSection';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
 import { getVaultSecret, hasVaultAccess, dossierVaultHasContent } from '../lib/vaultSecrets';
-import { colors, fonts, radius, textA } from '../styles/tokens';
+import { colors, fonts, radius, textA, accentA } from '../styles/tokens';
+
+/** Même format que VaultAdminScreen.tsx:783 — dupliqué localement (dette
+ * connue, signalée §12 du morceau 2, pas de partage inter-écrans introduit
+ * pour ce petit bout de texte). */
+function formatDate(iso: string): string {
+  return new Intl.DateTimeFormat('fr-CH', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso));
+}
 
 /** "3 notes · 2 photos" — omet les segments à 0, "Vide" si les deux sont à 0. */
 function formatCarnetBadge(notesCount: number, photosCount: number): string {
@@ -67,6 +83,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
 
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [equipments, setEquipments] = useState<DossierEquipment[] | null>(null);
+  const [equipmentRequests, setEquipmentRequests] = useState<EquipmentRequest[] | null>(null);
   const [documents, setDocuments] = useState<DossierDocumentComplet[] | null>(null);
   const [notes, setNotes] = useState<DossierNoteView[] | null>(null);
   const [photos, setPhotos] = useState<DossierPhotoView[] | null>(null);
@@ -75,11 +92,13 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [equipmentsError, setEquipmentsError] = useState<string | null>(null);
+  const [equipmentRequestsError, setEquipmentRequestsError] = useState<string | null>(null);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [photosError, setPhotosError] = useState<string | null>(null);
   const [plansError, setPlansError] = useState<string | null>(null);
   const [showAddEquipment, setShowAddEquipment] = useState(false);
+  const [showAddEquipmentRequest, setShowAddEquipmentRequest] = useState(false);
   const [showAddDocument, setShowAddDocument] = useState(false);
   const [pendingRemoveEquipment, setPendingRemoveEquipment] = useState<DossierEquipment | null>(null);
   const [pendingRemoveDocument, setPendingRemoveDocument] = useState<DossierDocumentComplet | null>(null);
@@ -118,6 +137,15 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       setEquipments(await listDossierEquipments(dossierId));
     } catch (err) {
       setEquipmentsError(errorMessage(err));
+    }
+  };
+
+  const loadEquipmentRequests = async () => {
+    setEquipmentRequestsError(null);
+    try {
+      setEquipmentRequests(await listDossierEquipmentRequests(dossierId));
+    } catch (err) {
+      setEquipmentRequestsError(errorMessage(err));
     }
   };
 
@@ -164,6 +192,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       // la lenteur de l'une n'attend pas les autres et ne les bloque pas.
       void loadDossier();
       void loadEquipments();
+      void loadEquipmentRequests();
       void loadDocuments();
       void loadNotes();
       void loadPhotos();
@@ -378,7 +407,14 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
 
           <CollapsibleSection
             title="Équipements"
-            badge={equipments !== null && <span style={countBadgeStyle}>{equipments.length}</span>}
+            badge={
+              <>
+                {equipments !== null && <span style={countBadgeStyle}>{equipments.length}</span>}
+                {equipmentRequests !== null && equipmentRequests.length > 0 && (
+                  <span style={pendingCountBadgeStyle}>{equipmentRequests.length} en attente</span>
+                )}
+              </>
+            }
             action={
               <button
                 type="button"
@@ -394,32 +430,83 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               <SectionError title="Équipements indisponibles" message={equipmentsError} onRetry={() => void loadEquipments()} />
             ) : equipments === null ? (
               <p style={{ fontSize: 14, color: textA(0.5) }}>Chargement…</p>
-            ) : equipments.length === 0 ? (
-              <p style={{ fontSize: 14, color: textA(0.55) }}>Aucun équipement rattaché à ce dossier.</p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {equipments.map((eq) => (
-                  <div key={eq.productId} style={rowStyle}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {eq.productLabel}
+              <>
+                {equipments.length === 0 ? (
+                  <p style={{ fontSize: 14, color: textA(0.55) }}>Aucun équipement rattaché à ce dossier.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {equipments.map((eq) => (
+                      <div key={eq.productId} style={rowStyle}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {eq.productLabel}
+                          </div>
+                          <div style={{ fontSize: 12.5, color: textA(0.55), fontWeight: 500 }}>
+                            {eq.specialtyName}
+                            {eq.note ? ` · ${eq.note}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPendingRemoveEquipment(eq)}
+                          disabled={!isOnline}
+                          style={{ ...removeButtonStyle, opacity: isOnline ? 1 : 0.4 }}
+                        >
+                          Retirer
+                        </button>
                       </div>
-                      <div style={{ fontSize: 12.5, color: textA(0.55), fontWeight: 500 }}>
-                        {eq.specialtyName}
-                        {eq.note ? ` · ${eq.note}` : ''}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setPendingRemoveEquipment(eq)}
-                      disabled={!isOnline}
-                      style={{ ...removeButtonStyle, opacity: isOnline ? 1 : 0.4 }}
-                    >
-                      Retirer
-                    </button>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+
+                {equipmentRequestsError && (
+                  <div style={{ marginTop: 10 }}>
+                    <SectionError
+                      title="Demandes indisponibles"
+                      message={equipmentRequestsError}
+                      onRetry={() => void loadEquipmentRequests()}
+                    />
+                  </div>
+                )}
+
+                {equipmentRequests !== null && equipmentRequests.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                    <p style={pendingBlockTitleStyle}>Demandes en attente</p>
+                    {equipmentRequests.map((req) => (
+                      <div key={req.id} style={pendingRowStyle}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {req.marque}
+                            {req.modele ? ` ${req.modele}` : ''}
+                          </div>
+                          {req.commentaire && (
+                            <div style={{ fontSize: 12.5, color: textA(0.6), fontWeight: 500, marginTop: 2 }}>
+                              {req.commentaire}
+                            </div>
+                          )}
+                          <div style={{ fontSize: 11.5, color: textA(0.5), fontWeight: 600, marginTop: 4 }}>
+                            Demandé par {req.requested_by_nom ?? 'inconnu'} le {formatDate(req.created_at)}
+                          </div>
+                        </div>
+                        <span style={pendingChipStyle}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: colors.accent }} />
+                          En attente
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setShowAddEquipmentRequest(true)}
+                  disabled={!isOnline}
+                  style={{ ...linkButtonStyle, opacity: isOnline ? 1 : 0.4, marginTop: 12 }}
+                >
+                  + Équipement absent de la base ?
+                </button>
+              </>
             )}
           </CollapsibleSection>
 
@@ -586,6 +673,17 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           excludeProductIds={equipmentProductIds}
           onClose={() => setShowAddEquipment(false)}
           onAdded={() => void loadEquipments()}
+        />
+      )}
+
+      {showAddEquipmentRequest && dossier && (
+        <EquipmentRequestSheet
+          dossierId={dossier.id}
+          onClose={() => setShowAddEquipmentRequest(false)}
+          onCreated={() => {
+            setShowAddEquipmentRequest(false);
+            void loadEquipmentRequests();
+          }}
         />
       )}
 
@@ -798,6 +896,56 @@ const countBadgeStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
+};
+
+/** Second badge d'en-tête, distinct du compteur d'équipements réels — ne
+ * fusionne jamais les deux chiffres (une demande n'est pas un équipement
+ * actif). N'apparaît que si des demandes 'pending' existent. */
+const pendingCountBadgeStyle: React.CSSProperties = {
+  flex: 'none',
+  padding: '3px 9px',
+  borderRadius: radius.pill,
+  background: accentA(0.18),
+  color: colors.accent,
+  fontSize: 11.5,
+  fontWeight: 700,
+  whiteSpace: 'nowrap',
+};
+
+const pendingBlockTitleStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 12.5,
+  fontWeight: 700,
+  color: textA(0.55),
+};
+
+/** Fond/bordure teintés accent + trait pointillé : distingue visuellement une
+ * demande (provisoire) d'un équipement réel (rowStyle, carte pleine). */
+const pendingRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  justifyContent: 'space-between',
+  gap: 10,
+  background: accentA(0.06),
+  border: `1px dashed ${accentA(0.35)}`,
+  borderRadius: 12,
+  padding: '10px 12px',
+};
+
+/** Même style que StatusChip(kind: 'pending') de VaultAdminScreen.tsx:1068 —
+ * dupliqué localement plutôt qu'exporté (pas d'abstraction partagée entre
+ * écrans pour ce petit badge). */
+const pendingChipStyle: React.CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  padding: '3px 9px',
+  borderRadius: 100,
+  background: accentA(0.18),
+  color: colors.accent,
+  fontSize: 11.5,
+  fontWeight: 700,
 };
 
 const carnetBadgeStyle: React.CSSProperties = {

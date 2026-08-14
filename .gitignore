@@ -14,6 +14,10 @@ dev-dist
 .wrangler
 *.local
 
+# Cache local du CLI Supabase (project ref/org id régénérés par `supabase
+# link`) — machine-spécifique, jamais versionné
+supabase/.temp/
+
 # Env files (never commit secrets, even the anon key — keep it out of history)
 .env
 .env.*
