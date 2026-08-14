@@ -2,7 +2,7 @@
 // Octets sur Cloudflare R2 via le Worker /api/photos, préfixe communications/
 // (cf. CLAUDE.md §2/§3). Même pattern que les plans de dossier (dossiers.ts),
 // sans compression : ce sont toujours des PDF, jamais des images.
-import { supabase } from './supabase';
+import { supabase, supabaseUrl } from './supabase';
 import { getAccessToken, getPhotoObjectUrl, sanitizeFilename, uploadPhotoBytes } from './dossiers';
 import type { Communication, ProfileRole } from '../types/database';
 
@@ -76,15 +76,42 @@ export async function getCommunicationBlob(storageKey: string): Promise<Blob> {
   return new Blob([blob], { type: 'application/pdf' });
 }
 
-/** Soft delete uniquement — l'octet R2 reste récupérable, jamais de
- * suppression d'objet ici (même logique que deleteDossierPlan/Photo). */
+/**
+ * Soft delete uniquement — l'octet R2 reste récupérable, jamais de
+ * suppression d'objet ici (même logique que deleteDossierPlan/Photo).
+ *
+ * PATCH fetch direct (au lieu du SDK) : la policy SELECT de `communications`
+ * est `deleted_at IS NULL`, donc la revalidation de la ligne que PostgREST
+ * fait pour la réponse échoue en 42501 dès que `.update()` vient de poser
+ * `deleted_at`. `Prefer: return=minimal` supprime cette revalidation — le SDK
+ * 2.110.8 n'expose pas ce Prefer par requête, d'où le fetch ciblé ici, sans
+ * toucher au client global ni aux autres écritures qui, elles, dépendent de
+ * `return=representation` via `.select()`.
+ */
 export async function softDeleteCommunication(id: string): Promise<void> {
   const { data: userData } = await supabase.auth.getUser();
-  const { error } = await supabase
-    .from('communications')
-    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
-    .eq('id', id);
-  if (error) throw error;
+  const token = await getAccessToken();
+  const res = await fetch(`${supabaseUrl}/rest/v1/communications?id=eq.${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+      'Content-Profile': 'public',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify({
+      deleted_at: new Date().toISOString(),
+      deleted_by: userData.user?.id ?? null,
+    }),
+  });
+  // return=minimal : succès = 204 No Content, y compris si aucune ligne ne
+  // matchait l'id — PostgREST ne distingue pas les deux cas dans ce mode,
+  // sans conséquence pour un soft-delete (pas de compteur à en tirer).
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
+    throw Object.assign(new Error(body.message ?? `HTTP ${res.status}`), body);
+  }
 }
 
 /**
