@@ -3,7 +3,7 @@
 // (cf. CLAUDE.md §2/§3). Même pattern que les plans de dossier (dossiers.ts),
 // sans compression : ce sont toujours des PDF, jamais des images.
 import { supabase } from './supabase';
-import { getPhotoObjectUrl, sanitizeFilename, uploadPhotoBytes } from './dossiers';
+import { getAccessToken, getPhotoObjectUrl, sanitizeFilename, uploadPhotoBytes } from './dossiers';
 import type { Communication, ProfileRole } from '../types/database';
 
 export async function listCommunications(): Promise<Communication[]> {
@@ -60,6 +60,21 @@ export async function uploadCommunication({ file, titre }: UploadCommunicationIn
 /** Même fetch authentifié que les photos/plans — storage_key porte déjà le
  * préfixe communications/, aucune logique propre nécessaire ici. */
 export const getCommunicationObjectUrl = getPhotoObjectUrl;
+
+/**
+ * Même fetch authentifié que getPhotoObjectUrl, mais renvoie le Blob brut
+ * (re-typé application/pdf, comme fetchPdfBlobR2) plutôt qu'une object URL —
+ * nécessaire pour PdfViewer, qui prend un Blob en prop, pas une URL.
+ */
+export async function getCommunicationBlob(storageKey: string): Promise<Blob> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/photos/${storageKey}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Chargement du PDF échoué (HTTP ${res.status})`);
+  const blob = await res.blob();
+  return new Blob([blob], { type: 'application/pdf' });
+}
 
 /** Soft delete uniquement — l'octet R2 reste récupérable, jamais de
  * suppression d'objet ici (même logique que deleteDossierPlan/Photo). */
