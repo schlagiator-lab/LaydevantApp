@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useVaultSession } from '../lib/useVaultSession';
@@ -13,6 +13,8 @@ import {
   deleteAccount,
   listDeletionRequests,
   resolveDeletionRequest,
+  listPendingEquipmentRequests,
+  resolveEquipmentRequest,
   type VaultUserKeySummary,
   type VaultDossierSummary,
   type DossierDeletionRequestSummary,
@@ -20,7 +22,8 @@ import {
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
 import { listInvitations, addInvitation, removeInvitation } from '../lib/onboarding';
-import type { OnboardingInvitation, ProfileRole, Profile } from '../types/database';
+import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
+import type { OnboardingInvitation, ProfileRole, Profile, Department, Specialty, EquipmentRequest } from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { VaultRotationSheet } from '../components/VaultRotationSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
@@ -949,15 +952,41 @@ type DeletionRequestsPhase =
   | { kind: 'error'; message: string }
   | { kind: 'loaded'; rows: DossierDeletionRequestSummary[] };
 
+type EquipmentRequestsPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: EquipmentRequest[] };
+
 /**
- * Onglet "Demandes" : demandes de suppression en attente (dossier à coffre
- * configuré, refusées directement à un non-admin par le trigger côté base —
- * voir DossierFormSheet.handleDelete). Approuver/rejeter passe exclusivement
- * par `resolveDeletionRequest`, jamais par un soft delete direct ici : c'est
- * la RPC `resolve_dossier_deletion_request` qui vérifie l'admin et fait le
- * soft delete + la résolution de façon atomique.
+ * Onglet "Demandes" : deux sous-blocs autonomes, chacun avec son propre
+ * chargement/état d'erreur/liste — pas d'état partagé, comme
+ * AccountsTab/AccessTab sont déjà deux composants séparés. Suppression de
+ * dossier (inchangé) d'abord, puis équipement manquant (item 1, morceau 3).
  */
 function DemandesTab() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p style={eyebrowStyle}>Suppression de dossier</p>
+        <DeletionRequestsSection />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p style={eyebrowStyle}>Équipement manquant</p>
+        <EquipmentRequestsSection />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Demandes de suppression en attente (dossier à coffre configuré, refusées
+ * directement à un non-admin par le trigger côté base — voir
+ * DossierFormSheet.handleDelete). Approuver/rejeter passe exclusivement par
+ * `resolveDeletionRequest`, jamais par un soft delete direct ici : c'est la
+ * RPC `resolve_dossier_deletion_request` qui vérifie l'admin et fait le soft
+ * delete + la résolution de façon atomique.
+ */
+function DeletionRequestsSection() {
   const [requests, setRequests] = useState<DeletionRequestsPhase>({ kind: 'loading' });
   const [pendingApprove, setPendingApprove] = useState<DossierDeletionRequestSummary | null>(null);
   const [pendingReject, setPendingReject] = useState<DossierDeletionRequestSummary | null>(null);
@@ -1057,6 +1086,188 @@ function DemandesTab() {
           title="Rejeter cette demande ?"
           message={`« ${pendingReject.nom_client} » sera conservé ; la demande sera classée comme rejetée.`}
           confirmLabel="Rejeter"
+          onCancel={() => setPendingReject(null)}
+          onConfirm={() => void handleResolve(pendingReject, false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Demandes d'équipement absent de la base (item 1, morceau 3). Approuver
+ * exige une spécialité (la RPC `resolve_dossier_equipment_request` la refuse
+ * sinon) — le bouton reste désactivé tant qu'aucune n'est choisie pour la
+ * ligne. Référentiel spécialités réutilisé tel quel (getLocalDepartments/
+ * getLocalSpecialties, IndexedDB déjà synchronisé — CLAUDE.md §4), pas de
+ * nouvelle requête.
+ */
+function EquipmentRequestsSection() {
+  const [requests, setRequests] = useState<EquipmentRequestsPhase>({ kind: 'loading' });
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [selectedSpecialtyByRequest, setSelectedSpecialtyByRequest] = useState<Record<string, string>>({});
+  const [pendingApprove, setPendingApprove] = useState<EquipmentRequest | null>(null);
+  const [pendingReject, setPendingReject] = useState<EquipmentRequest | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [resolveError, setResolveError] = useState<string | null>(null);
+
+  const loadRequests = useCallback(async () => {
+    setRequests({ kind: 'loading' });
+    try {
+      const rows = await listPendingEquipmentRequests();
+      setRequests({ kind: 'loaded', rows });
+    } catch (err) {
+      setRequests({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRequests();
+  }, [loadRequests]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [depts, specs] = await Promise.all([getLocalDepartments(), getLocalSpecialties()]);
+      if (cancelled) return;
+      setDepartments(depts);
+      setSpecialties(specs);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const specialtiesByDepartment = useMemo(() => {
+    const map = new Map<string, Specialty[]>();
+    for (const s of specialties) {
+      const list = map.get(s.department_id) ?? [];
+      list.push(s);
+      map.set(s.department_id, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    return map;
+  }, [specialties]);
+
+  async function handleResolve(request: EquipmentRequest, approve: boolean) {
+    setPendingApprove(null);
+    setPendingReject(null);
+    setResolvingId(request.id);
+    setResolveError(null);
+    try {
+      await resolveEquipmentRequest(request.id, {
+        approve,
+        specialtyId: approve ? selectedSpecialtyByRequest[request.id] : undefined,
+      });
+      await loadRequests();
+    } catch (err) {
+      setResolveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResolvingId(null);
+    }
+  }
+
+  const approveSpecialtyName = pendingApprove
+    ? (specialties.find((s) => s.id === selectedSpecialtyByRequest[pendingApprove.id])?.name ?? '')
+    : '';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {resolveError && <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {resolveError}</p>}
+
+      {requests.kind === 'loading' && (
+        <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>
+      )}
+      {requests.kind === 'error' && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {requests.message}</p>
+      )}
+      {requests.kind === 'loaded' && requests.rows.length === 0 && (
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucune demande d'équipement en attente.</p>
+      )}
+
+      {requests.kind === 'loaded' &&
+        requests.rows.map((r) => {
+          const isResolving = resolvingId === r.id;
+          const selectedSpecialtyId = selectedSpecialtyByRequest[r.id] ?? '';
+          const canApprove = selectedSpecialtyId !== '' && !isResolving;
+          return (
+            <div key={r.id} style={accountRowStyle}>
+              <div style={{ fontSize: 14, fontWeight: 600, wordBreak: 'break-word' }}>
+                {r.marque}
+                {r.modele ? ` ${r.modele}` : ''}
+              </div>
+              {r.commentaire && (
+                <div style={{ fontSize: 12.5, color: textA(0.6), marginTop: 4, lineHeight: 1.4 }}>{r.commentaire}</div>
+              )}
+              <div style={{ fontSize: 12, color: textA(0.55), marginTop: 8 }}>
+                Dossier : {r.nom_client ?? r.dossier_id}
+              </div>
+              <div style={{ fontSize: 12, color: textA(0.55), marginTop: 2 }}>
+                Demandé{r.requested_by_nom ? ` par ${r.requested_by_nom}` : ''} le {formatDate(r.created_at)}
+              </div>
+
+              <select
+                value={selectedSpecialtyId}
+                onChange={(e) =>
+                  setSelectedSpecialtyByRequest((prev) => ({ ...prev, [r.id]: e.target.value }))
+                }
+                disabled={isResolving}
+                style={{ ...tabInputStyle, height: 40, marginTop: 10 }}
+              >
+                <option value="">Choisir une spécialité…</option>
+                {departments.map((dept) => {
+                  const deptSpecialties = specialtiesByDepartment.get(dept.id) ?? [];
+                  if (deptSpecialties.length === 0) return null;
+                  return (
+                    <optgroup key={dept.id} label={dept.name}>
+                      {deptSpecialties.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setPendingReject(r)}
+                  disabled={isResolving}
+                  style={{ ...revokeButtonStyle, opacity: isResolving ? 0.6 : 1 }}
+                >
+                  Refuser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingApprove(r)}
+                  disabled={!canApprove}
+                  style={{ ...activateButtonStyle, opacity: canApprove ? 1 : 0.5 }}
+                >
+                  {isResolving ? '…' : 'Approuver'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+      {pendingApprove && (
+        <ConfirmSheet
+          title="Approuver la demande ?"
+          message={`Créer le produit « ${pendingApprove.marque}${pendingApprove.modele ? ' ' + pendingApprove.modele : ''} » dans la spécialité « ${approveSpecialtyName} » et le rattacher au dossier « ${pendingApprove.nom_client ?? pendingApprove.dossier_id} » ?`}
+          confirmLabel="Approuver"
+          onCancel={() => setPendingApprove(null)}
+          onConfirm={() => void handleResolve(pendingApprove, true)}
+        />
+      )}
+
+      {pendingReject && (
+        <ConfirmSheet
+          title="Refuser cette demande ?"
+          message={`La demande pour « ${pendingReject.marque}${pendingReject.modele ? ' ' + pendingReject.modele : ''} » sera classée comme refusée.`}
+          confirmLabel="Refuser"
           onCancel={() => setPendingReject(null)}
           onConfirm={() => void handleResolve(pendingReject, false)}
         />
