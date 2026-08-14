@@ -7,12 +7,32 @@ async function getUser(request, env) {
   return res.ok ? await res.json() : null;
 }
 
+// Rejoue le Bearer de l'appelant sur la RPC is_vault_admin() (SECURITY
+// DEFINER, teste profiles.role = 'admin' — même rôle admin que le reste de
+// l'app, pas une notion propre au coffre) plutôt que de lire profiles
+// directement : indépendant de la RLS de `profiles`, aucun secret
+// service_role nécessaire côté Worker.
+async function checkIsAdmin(request, env) {
+  const auth = request.headers.get("Authorization");
+  if (!auth?.startsWith("Bearer ")) return false;
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/is_vault_admin`, {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY,
+      Authorization: auth,
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  });
+  return res.ok && (await res.json()) === true;
+}
+
 // Préfixes génériques (hors dossier) autorisés pour ?prefix= : allowlist
 // stricte tête + slug, aucun `..`, aucun `/` supplémentaire, aucun espace.
 // "plans" réutilise ce même mécanisme (slug = dossier_id, qui matche déjà
 // [a-z0-9-]+ en tant qu'UUID) plutôt que le paramètre dédié ?dossier=, lequel
 // reste figé sur le préfixe `dossiers/` pour ne rien changer aux photos.
-const GENERIC_PREFIX_RE = /^(galerie|plans)\/[a-z0-9-]+$/;
+const GENERIC_PREFIX_RE = /^(galerie|plans|communications)\/[a-z0-9-]+$/;
 
 // Nom de fichier optionnel (?name=) : accolé tel quel après l'UUID généré,
 // pour que la clé porte la vraie extension (pdf/dwg/...) plutôt que le
@@ -67,6 +87,16 @@ async function handlePhotos(request, env) {
   }
 
   if (request.method === "DELETE") {
+    // Admin-only : le POST/GET restent ouverts à tout authentifié, mais une
+    // suppression R2 est irréversible et la lecture (GET) est
+    // préfixe-agnostique (documents/ inclus, §13 CLAUDE.md). is_vault_admin()
+    // teste `profiles.role = 'admin'` en SECURITY DEFINER (même rôle admin
+    // que le reste de l'app, pas une notion propre au coffre) — appelée en
+    // HTTP brut avec le Bearer de l'appelant, sans introduire de secret
+    // service_role dans le Worker.
+    const isAdmin = await checkIsAdmin(request, env);
+    if (!isAdmin) return new Response("Forbidden", { status: 403 });
+
     const key = decodeURIComponent(url.pathname.replace("/api/photos/", ""));
     await env.PHOTOS_BUCKET.delete(key);
     return new Response(null, { status: 204 });
