@@ -267,3 +267,19 @@ export interface OnboardingInvitation {
   consumed_at: string | null;
   consumed_by: string | null;
 }
+
+// Communications d'entreprise (item 4) — espace global, pas de dossier_id.
+// Lue via communications_view, qui joint profiles pour exposer auteur_nom
+// (même convention que dossier_notes_view/dossier_photos_view/dossier_plans_view).
+
+export interface Communication {
+  id: string;
+  titre: string | null;
+  storage_provider: string;
+  storage_key: string;
+  mime: string | null;
+  taille: number | null;
+  auteur: string | null;
+  auteur_nom: string | null;
+  created_at: string;
+}

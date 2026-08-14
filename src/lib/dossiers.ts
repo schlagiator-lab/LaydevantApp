@@ -441,8 +441,9 @@ export function derivePlanType(file: File): { kind: DossierPlanKind; mime: strin
 }
 
 /** Charset restreint au NAME_RE du Worker ([a-zA-Z0-9._-]) : diacritiques
- * retirées, tout le reste remplacé par "_", jamais vide. */
-function sanitizeFilename(name: string): string {
+ * retirées, tout le reste remplacé par "_", jamais vide. Exportée pour être
+ * réutilisée par communications.ts (même contrainte de nommage côté Worker). */
+export function sanitizeFilename(name: string): string {
   const cleaned = name
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')

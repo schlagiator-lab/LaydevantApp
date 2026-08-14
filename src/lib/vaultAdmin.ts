@@ -154,6 +154,14 @@ export async function listAllProfiles(): Promise<Profile[]> {
   return (data ?? []) as Profile[];
 }
 
+/** Geste admin (item 4, communications) : active/désactive le droit de
+ * publier des communications pour un compte. La RPC (SECURITY DEFINER) est
+ * le vrai verrou côté base ; erreur remontée telle quelle. */
+export async function setCommsPublisher(userId: string, enabled: boolean): Promise<void> {
+  const { error } = await supabase.rpc('set_comms_publisher', { p_user_id: userId, p_enabled: enabled });
+  if (error) throw error;
+}
+
 export interface DossierDeletionRequestSummary {
   id: string;
   dossier_id: string;
