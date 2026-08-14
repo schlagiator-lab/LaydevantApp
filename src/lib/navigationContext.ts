@@ -32,7 +32,8 @@ export type NavState =
   | { screen: 'vaultAdmin' }
   | { screen: 'game' }
   | { screen: 'gameLeaderboard' }
-  | { screen: 'tools' };
+  | { screen: 'tools' }
+  | { screen: 'communications' };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -88,6 +89,9 @@ export interface NavigationContextValue {
   goGameLeaderboard: () => void;
   /** Sous-menu "Outils" — regroupe diagnostic stockage et enrôlement coffre. */
   goTools: () => void;
+  /** Liste des communications d'entreprise (item 4) — remplace l'ancien
+   * raccourci "Toute la documentation" sur l'accueil. */
+  goCommunications: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }

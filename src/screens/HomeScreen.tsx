@@ -289,7 +289,7 @@ export function HomeScreen() {
 
         <button
           type="button"
-          onClick={nav.goSearchBlank}
+          onClick={nav.goCommunications}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -307,7 +307,7 @@ export function HomeScreen() {
           }}
         >
           <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: colors.text }}>
-            Toute la documentation
+            Communication d'entreprise
           </span>
           <span style={{ color: textA(0.35), fontSize: 18 }}>›</span>
         </button>
