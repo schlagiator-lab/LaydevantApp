@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react';
+import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
-import { listCommunications, getCommunicationObjectUrl } from '../lib/communications';
+import {
+  canPublishCommunications,
+  getCommunicationObjectUrl,
+  listCommunications,
+  uploadCommunication,
+} from '../lib/communications';
 import type { Communication } from '../types/database';
-import { colors, fonts, textA } from '../styles/tokens';
+import { colors, fonts, radius, textA } from '../styles/tokens';
 
 function formatDate(iso: string): string {
   return new Intl.DateTimeFormat('fr-CH', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso));
@@ -29,24 +35,65 @@ function communicationLabel(comm: Communication): string {
  */
 export function CommunicationsScreen() {
   const nav = useNavigation();
+  const { session, isOnline } = useAuth();
   const { showToast } = useToast();
   const [items, setItems] = useState<Communication[] | null | undefined>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [canPublish, setCanPublish] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
+
+  const reload = async () => {
+    try {
+      const rows = await listCommunications();
+      setItems(rows);
+    } catch {
+      setItems(undefined);
+    }
+  };
+
+  useEffect(() => {
+    void reload();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const rows = await listCommunications();
-        if (!cancelled) setItems(rows);
+        const value = await canPublishCommunications();
+        if (!cancelled) setCanPublish(value);
       } catch {
-        if (!cancelled) setItems(undefined);
+        // Reste caché en cas d'échec — pas d'entrée "Publier" affichée à tort.
       }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const handleFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length === 0) return;
+
+    let successCount = 0;
+    let failCount = 0;
+    for (let i = 0; i < files.length; i++) {
+      setUploadProgress({ current: i + 1, total: files.length });
+      try {
+        await uploadCommunication({ file: files[i] });
+        successCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setUploadProgress(null);
+    void reload();
+    if (failCount > 0) {
+      showToast(
+        `${successCount} communication${successCount > 1 ? 's' : ''} ajoutée${successCount > 1 ? 's' : ''}, ${failCount} échec${failCount > 1 ? 's' : ''}`
+      );
+    }
+  };
 
   const handleOpen = async (comm: Communication) => {
     if (busyId) return;
@@ -94,7 +141,37 @@ export function CommunicationsScreen() {
         >
           ‹
         </button>
-        <span style={{ fontSize: 18, fontWeight: 700 }}>Communication d'entreprise</span>
+        <span style={{ flex: 1, fontSize: 18, fontWeight: 700 }}>Communication d'entreprise</span>
+
+        {canPublish && (
+          <label
+            style={{
+              flex: 'none',
+              height: 32,
+              borderRadius: radius.md,
+              border: 'none',
+              background: colors.accent,
+              color: '#132146',
+              fontSize: 12.5,
+              fontWeight: 700,
+              padding: '0 12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              opacity: !isOnline || uploadProgress ? 0.4 : 1,
+              cursor: !isOnline || uploadProgress ? 'default' : 'pointer',
+            }}
+          >
+            {uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : '+ Publier'}
+            <input
+              type="file"
+              accept="application/pdf"
+              multiple
+              onChange={(e) => void handleFilesChange(e)}
+              disabled={!isOnline || uploadProgress !== null || !session?.user.id}
+              style={{ display: 'none' }}
+            />
+          </label>
+        )}
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
