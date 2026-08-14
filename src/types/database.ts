@@ -64,6 +64,7 @@ export interface Profile {
   id: string;
   full_name: string | null;
   role: ProfileRole;
+  is_comms_publisher: boolean;
 }
 
 export interface PinnedDocument {

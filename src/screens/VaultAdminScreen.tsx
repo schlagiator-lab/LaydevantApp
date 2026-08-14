@@ -10,6 +10,7 @@ import {
   getDossierAccessRowsForUser,
   revokeVaultAccess,
   listAllProfiles,
+  setCommsPublisher,
   deleteAccount,
   listDeletionRequests,
   resolveDeletionRequest,
@@ -222,6 +223,8 @@ function AccountsTab({
   const [pendingDelete, setPendingDelete] = useState<Profile | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [publisherId, setPublisherId] = useState<string | null>(null);
+  const [publisherError, setPublisherError] = useState<string | null>(null);
 
   async function handleConfirmDelete() {
     const target = pendingDelete;
@@ -237,6 +240,19 @@ function AccountsTab({
       setDeleteError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleTogglePublisher(target: Profile) {
+    setPublisherId(target.id);
+    setPublisherError(null);
+    try {
+      await setCommsPublisher(target.id, !target.is_comms_publisher);
+      onProfilesChanged();
+    } catch (err) {
+      setPublisherError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPublisherId(null);
     }
   }
 
@@ -258,6 +274,9 @@ function AccountsTab({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {deleteError && <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {deleteError}</p>}
+      {publisherError && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {publisherError}</p>
+      )}
 
       {profiles.rows.map((p) => {
         const vault = vaultByUserId.get(p.id) ?? null;
@@ -265,6 +284,7 @@ function AccountsTab({
         const isRecoveryAdmin = vault?.is_recovery_admin === true;
         const canDelete = p.role === 'monteur' && !vaultAccessOn && !isRecoveryAdmin;
         const isDeleting = deletingId === p.id;
+        const isTogglingPublisher = publisherId === p.id;
         return (
           <div key={p.id} style={accountRowStyle}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, wordBreak: 'break-all' }}>
@@ -281,6 +301,10 @@ function AccountsTab({
               ) : (
                 <Badge label="Coffre : non enrôlé" active={false} />
               )}
+              {/* Sans effet sur un admin (canPublishCommunications = admin OU
+                  publisher) : badge et bouton réservés aux monteurs pour ne
+                  jamais afficher un geste qui ne changerait rien. */}
+              {p.role === 'monteur' && <Badge label="Publie" active={p.is_comms_publisher} />}
             </div>
 
             {p.role === 'monteur' && (
@@ -295,14 +319,31 @@ function AccountsTab({
                     Compte récupérateur — suppression impossible depuis cet écran.
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setPendingDelete(p)}
-                  disabled={!canDelete || isDeleting}
-                  style={{ ...revokeButtonStyle, alignSelf: 'flex-start', opacity: !canDelete || isDeleting ? 0.5 : 1 }}
-                >
-                  {isDeleting ? 'Suppression…' : 'Supprimer le compte'}
-                </button>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => void handleTogglePublisher(p)}
+                    disabled={isTogglingPublisher}
+                    style={{
+                      ...(p.is_comms_publisher ? revokeButtonStyle : activateButtonStyle),
+                      opacity: isTogglingPublisher ? 0.5 : 1,
+                    }}
+                  >
+                    {isTogglingPublisher
+                      ? 'Mise à jour…'
+                      : p.is_comms_publisher
+                        ? 'Retirer la publication'
+                        : 'Autoriser à publier'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingDelete(p)}
+                    disabled={!canDelete || isDeleting}
+                    style={{ ...revokeButtonStyle, opacity: !canDelete || isDeleting ? 0.5 : 1 }}
+                  >
+                    {isDeleting ? 'Suppression…' : 'Supprimer le compte'}
+                  </button>
+                </div>
               </div>
             )}
           </div>

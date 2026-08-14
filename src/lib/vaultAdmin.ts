@@ -149,7 +149,7 @@ export async function getDossierAccessRowsForUser(userId: string): Promise<Dossi
  * légitime à la suppression de compte (onglet "Comptes").
  */
 export async function listAllProfiles(): Promise<Profile[]> {
-  const { data, error } = await supabase.from('profiles').select('id, full_name, role');
+  const { data, error } = await supabase.from('profiles').select('id, full_name, role, is_comms_publisher');
   if (error) throw error;
   return (data ?? []) as Profile[];
 }
