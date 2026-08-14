@@ -673,6 +673,10 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           excludeProductIds={equipmentProductIds}
           onClose={() => setShowAddEquipment(false)}
           onAdded={() => void loadEquipments()}
+          onRequestMissing={() => {
+            setShowAddEquipment(false);
+            setShowAddEquipmentRequest(true);
+          }}
         />
       )}
 

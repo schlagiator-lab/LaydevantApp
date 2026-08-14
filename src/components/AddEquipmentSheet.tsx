@@ -8,10 +8,14 @@ export interface AddEquipmentSheetProps {
   excludeProductIds: Set<string>;
   onClose: () => void;
   onAdded: (productId: string) => void;
+  /** Le produit cherché n'existe pas au catalogue — ouvre le formulaire de
+   * déclaration (EquipmentRequestSheet), à la charge du parent (ferme cette
+   * sheet-ci pour éviter d'empiler deux overlays plein écran). */
+  onRequestMissing: () => void;
 }
 
 /** Recherche dans le catalogue produits pour rattacher un équipement au dossier. */
-export function AddEquipmentSheet({ dossierId, excludeProductIds, onClose, onAdded }: AddEquipmentSheetProps) {
+export function AddEquipmentSheet({ dossierId, excludeProductIds, onClose, onAdded, onRequestMissing }: AddEquipmentSheetProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ProductSearchResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +66,10 @@ export function AddEquipmentSheet({ dossierId, excludeProductIds, onClose, onAdd
           style={inputStyle}
           autoFocus
         />
+
+        <button type="button" onClick={onRequestMissing} style={{ ...linkButtonStyle, marginTop: 10 }}>
+          + Équipement absent de la base ?
+        </button>
 
         {error && <p style={{ fontSize: 13, color: colors.accent, marginTop: 10 }}>{error}</p>}
 
@@ -155,6 +163,19 @@ const rowStyle: React.CSSProperties = {
   background: colors.card,
   borderRadius: 12,
   padding: '10px 12px',
+};
+
+/** Même style que linkButtonStyle de DossierScreen.tsx — dupliqué localement
+ * (pas d'abstraction partagée entre écrans/sheets pour ce petit bouton). */
+const linkButtonStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: textA(0.55),
+  fontSize: 12,
+  fontWeight: 700,
+  textDecoration: 'underline',
+  cursor: 'pointer',
+  padding: 0,
 };
 
 const smallPrimaryButtonStyle: React.CSSProperties = {
