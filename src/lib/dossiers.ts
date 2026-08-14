@@ -6,6 +6,7 @@ import type {
   DossierNoteView,
   DossierPhotoView,
   DossierPlanView,
+  EquipmentRequest,
 } from '../types/database';
 
 /**
@@ -96,6 +97,52 @@ export async function requestDossierDeletion(dossierId: string): Promise<Request
     throw error;
   }
   return 'created';
+}
+
+// --- Demandes d'équipement manuel absent de la base (item 1) --------------
+
+/** Crée une demande d'équipement (`dossier_equipment_requests`) pour un
+ * produit absent de la base — résolue plus tard par un admin (voir
+ * `resolveEquipmentRequest` dans vaultAdmin.ts). `marque` obligatoire côté
+ * appelant ; `modele`/`commentaire` optionnels. */
+export async function createEquipmentRequest(input: {
+  dossierId: string;
+  marque: string;
+  modele?: string | null;
+  commentaire?: string | null;
+}): Promise<EquipmentRequest> {
+  const { data: userData } = await supabase.auth.getUser();
+  const { data, error } = await supabase
+    .from('dossier_equipment_requests')
+    .insert({
+      dossier_id: input.dossierId,
+      requested_by: userData.user?.id ?? null,
+      marque: input.marque,
+      modele: input.modele ?? null,
+      commentaire: input.commentaire ?? null,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as EquipmentRequest;
+}
+
+/** Demandes d'équipement d'un dossier, plus ancienne d'abord — seulement
+ * `pending` par défaut (affichage provisoire dans la fiche dossier) ;
+ * `opts.all` pour tout récupérer (historique éventuel). */
+export async function listDossierEquipmentRequests(
+  dossierId: string,
+  opts?: { all?: boolean }
+): Promise<EquipmentRequest[]> {
+  let query = supabase
+    .from('dossier_equipment_requests')
+    .select('*')
+    .eq('dossier_id', dossierId)
+    .order('created_at', { ascending: true });
+  if (!opts?.all) query = query.eq('status', 'pending');
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []) as EquipmentRequest[];
 }
 
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */

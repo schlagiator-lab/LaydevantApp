@@ -3,7 +3,7 @@
 // l'emballage/déballage de DEK, ce module ne fait que lire/poser des lignes
 // déjà chiffrées, autorisé par les policies RLS pour is_vault_admin().
 import { supabase, supabaseUrl } from './supabase';
-import type { Profile } from '../types/database';
+import type { Profile, EquipmentRequest, EquipmentRequestStatus } from '../types/database';
 
 export async function isVaultAdmin(): Promise<boolean> {
   const { data, error } = await supabase.rpc('is_vault_admin');
@@ -235,6 +235,100 @@ export async function resolveDeletionRequest(requestId: string, approve: boolean
   const { error } = await supabase.rpc('resolve_dossier_deletion_request', {
     p_request_id: requestId,
     p_approve: approve,
+  });
+  if (error) throw error;
+}
+
+/**
+ * Demandes d'équipement manuel absent de la base (item 1, onglet "Demandes"),
+ * plus ancienne d'abord — même RLS/garde-fou que `listDeletionRequests` :
+ * réservé aux admins, échoue silencieusement (zéro ligne) pour un non-admin
+ * plutôt que de fuiter les demandes des autres. Le nom du dossier vient d'un
+ * embed direct (FK réelle `dossier_id → dossiers`) ; le nom du demandeur
+ * vient d'une requête best-effort séparée sur `profiles`, exactement comme
+ * `listDeletionRequests` (pas de FK directe `requested_by → profiles`).
+ */
+export async function listPendingEquipmentRequests(): Promise<EquipmentRequest[]> {
+  const { data, error } = await supabase
+    .from('dossier_equipment_requests')
+    .select(
+      'id, dossier_id, requested_by, marque, modele, commentaire, specialty_id, status, created_at, resolved_by, resolved_at, resolved_product_id, dossiers(nom_client)'
+    )
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+
+  type Row = {
+    id: string;
+    dossier_id: string;
+    requested_by: string | null;
+    marque: string;
+    modele: string | null;
+    commentaire: string | null;
+    specialty_id: string | null;
+    status: EquipmentRequestStatus;
+    created_at: string;
+    resolved_by: string | null;
+    resolved_at: string | null;
+    resolved_product_id: string | null;
+    dossiers: { nom_client: string } | { nom_client: string }[] | null;
+  };
+  const rows = (data ?? []) as unknown as Row[];
+  if (rows.length === 0) return [];
+
+  const namesByUserId = new Map<string, string | null>();
+  try {
+    const { data: profiles, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in(
+        'id',
+        rows.map((r) => r.requested_by).filter((id): id is string => id !== null),
+      );
+    if (profilesError) throw profilesError;
+    for (const p of (profiles ?? []) as { id: string; full_name: string | null }[]) {
+      namesByUserId.set(p.id, p.full_name);
+    }
+  } catch {
+    // Best-effort — voir le commentaire de listDeletionRequests.
+  }
+
+  return rows.map((r) => {
+    const rel = Array.isArray(r.dossiers) ? r.dossiers[0] : r.dossiers;
+    return {
+      id: r.id,
+      dossier_id: r.dossier_id,
+      requested_by: r.requested_by,
+      marque: r.marque,
+      modele: r.modele,
+      commentaire: r.commentaire,
+      specialty_id: r.specialty_id,
+      status: r.status,
+      created_at: r.created_at,
+      resolved_by: r.resolved_by,
+      resolved_at: r.resolved_at,
+      resolved_product_id: r.resolved_product_id,
+      nom_client: rel?.nom_client ?? r.dossier_id,
+      requested_by_nom: r.requested_by ? namesByUserId.get(r.requested_by) ?? null : null,
+    };
+  });
+}
+
+/**
+ * Approuve ou rejette une demande via la RPC
+ * `resolve_dossier_equipment_request` — crée ou réutilise le produit et le
+ * rattache au dossier si approuvé, atomiquement côté base (réservé aux
+ * admins, `is_vault_admin`). Message d'erreur de la RPC remonté tel quel
+ * (l'UI l'affichera), pas de reformulation ici.
+ */
+export async function resolveEquipmentRequest(
+  requestId: string,
+  opts: { approve: boolean; specialtyId?: string }
+): Promise<void> {
+  const { error } = await supabase.rpc('resolve_dossier_equipment_request', {
+    p_request_id: requestId,
+    p_specialty_id: opts.specialtyId ?? null,
+    p_approve: opts.approve,
   });
   if (error) throw error;
 }

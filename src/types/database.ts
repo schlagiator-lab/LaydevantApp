@@ -147,6 +147,34 @@ export interface DossierDocumentComplet {
   product_label: string | null;
   origine: DossierDocumentOrigine;
 }
+
+export type EquipmentRequestStatus = 'pending' | 'approved' | 'rejected';
+
+/**
+ * Demande d'équipement manuel absent de la base (item 1) —
+ * `dossier_equipment_requests`, schéma créé hors dépôt (comme
+ * `dossier_deletion_requests`). `nom_client` et `requested_by_nom` ne sont
+ * peuplés que par `listPendingEquipmentRequests` (vaultAdmin.ts) : le premier
+ * via un embed direct (FK réelle `dossier_id → dossiers`), le second via une
+ * requête best-effort séparée sur `profiles` (pas de FK `requested_by →
+ * profiles`, même limitation que `dossier_deletion_requests`).
+ */
+export interface EquipmentRequest {
+  id: string;
+  dossier_id: string;
+  requested_by: string | null;
+  marque: string;
+  modele: string | null;
+  commentaire: string | null;
+  specialty_id: string | null;
+  status: EquipmentRequestStatus;
+  created_at: string;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  resolved_product_id: string | null;
+  nom_client?: string;
+  requested_by_nom?: string | null;
+}
 // Carnet public par dossier (notes + photos), tables possédées par cette app.
 // Lues via les vues qui joignent profiles pour exposer le nom de l'auteur.
 
