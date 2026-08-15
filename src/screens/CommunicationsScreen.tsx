@@ -88,6 +88,9 @@ export function CommunicationsScreen() {
   };
 
   useEffect(() => {
+    // Chargement initial de la liste au montage ; setState après résolution
+    // async, pattern fetch-on-mount voulu.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, []);
 
@@ -113,6 +116,10 @@ export function CommunicationsScreen() {
   // placeholder immédiat plutôt qu'un fetch voué à l'échec.
   useEffect(() => {
     let cancelled = false;
+    // Reset volontaire de l'aperçu à chaque changement de featured/isOnline
+    // avant de recharger ; restructurer introduirait un flash de l'aperçu
+    // précédent.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFeaturedBlob(null);
     if (!featured || !isOnline) return;
     setFeaturedLoading(true);
@@ -129,7 +136,7 @@ export function CommunicationsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [featured?.id, isOnline]);
+  }, [featured, isOnline]);
 
   const handleFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);

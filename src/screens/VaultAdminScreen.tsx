@@ -1045,6 +1045,9 @@ function DeletionRequestsSection() {
   }, []);
 
   useEffect(() => {
+    // Chargement au montage via callback mémoïsée ; setState après await,
+    // pattern voulu.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadRequests();
   }, [loadRequests]);
 
@@ -1164,6 +1167,9 @@ function EquipmentRequestsSection() {
   }, []);
 
   useEffect(() => {
+    // Chargement au montage via callback mémoïsée ; setState après await,
+    // pattern voulu.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadRequests();
   }, [loadRequests]);
 
