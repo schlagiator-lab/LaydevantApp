@@ -8,6 +8,7 @@ import {
   updateDossierPhotoTitre,
   uploadDossierPhoto,
 } from '../lib/dossiers';
+import { loadImage, renderAnnotatedImage } from '../lib/photoAnnotations';
 import type { DossierNoteView, DossierPhotoView } from '../types/database';
 import { AnnotationOverlay } from './AnnotationOverlay';
 import { SectionHeader } from './SectionHeader';
@@ -51,6 +52,7 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
   const [viewedPhoto, setViewedPhoto] = useState<DossierPhotoView | null>(null);
   const [annotating, setAnnotating] = useState(false);
+  const [exportingPhoto, setExportingPhoto] = useState(false);
   // Repli hors ligne pour dimensions L/H : uniquement les photos legacy sans
   // largeur/hauteur en base — lu sur l'<img> au chargement (onLoad).
   const [thumbNaturalSizes, setThumbNaturalSizes] = useState<Record<string, { w: number; h: number }>>({});
@@ -184,6 +186,40 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
       ? { w: viewedPhoto.largeur, h: viewedPhoto.hauteur }
       : viewerNaturalSize
     : null;
+
+  // Cuit la photo + son calque ENREGISTRÉ (viewedPhoto.annotations, pas un
+  // état d'édition en cours : on est dans le visualiseur, pas l'éditeur) en
+  // JPEG éphémère puis le partage/télécharge. N'écrit rien en base, n'uploade
+  // rien : aucun objet R2 créé.
+  const handleExportPhoto = async () => {
+    if (!viewedPhoto || !viewerOverlaySize || exportingPhoto) return;
+    const url = photoUrls[viewedPhoto.id];
+    if (!url) return;
+    setExportingPhoto(true);
+    try {
+      const img = await loadImage(url);
+      const blob = await renderAnnotatedImage(img, viewerOverlaySize.w, viewerOverlaySize.h, viewedPhoto.annotations);
+      const file = new File([blob], 'photo-annotee.jpg', { type: 'image/jpeg' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Photo annotée' });
+      } else {
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = 'photo-annotee.jpg';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (err) {
+      // Annulation volontaire du partage natif : comportement normal, pas une erreur.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      showToast(err instanceof Error ? err.message : 'Échec de l’export.');
+    } finally {
+      setExportingPhoto(false);
+    }
+  };
 
   return (
     <section>
@@ -379,11 +415,23 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
                 <AnnotationOverlay annotations={viewedPhoto.annotations} width={viewerOverlaySize.w} height={viewerOverlaySize.h} />
               )}
             </div>
-            {isOnline && session?.user.id && (
-              <button type="button" onClick={() => setAnnotating(true)} style={annotateButtonStyle}>
-                Annoter
-              </button>
-            )}
+            <div style={{ display: 'flex', gap: 10 }}>
+              {isOnline && session?.user.id && (
+                <button type="button" onClick={() => setAnnotating(true)} style={annotateButtonStyle}>
+                  Annoter
+                </button>
+              )}
+              {photoUrls[viewedPhoto.id] && (
+                <button
+                  type="button"
+                  onClick={() => void handleExportPhoto()}
+                  disabled={exportingPhoto}
+                  style={{ ...exportButtonStyle, opacity: exportingPhoto ? 0.5 : 1 }}
+                >
+                  {exportingPhoto ? 'Export…' : 'Exporter'}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -562,6 +610,17 @@ const annotateButtonStyle: React.CSSProperties = {
   borderRadius: 100,
   background: colors.accent,
   color: '#132146',
+  fontSize: 13.5,
+  fontWeight: 700,
+  padding: '10px 22px',
+  cursor: 'pointer',
+};
+
+const exportButtonStyle: React.CSSProperties = {
+  border: `1px solid ${colors.accent}`,
+  borderRadius: 100,
+  background: 'transparent',
+  color: colors.accent,
   fontSize: 13.5,
   fontWeight: 700,
   padding: '10px 22px',

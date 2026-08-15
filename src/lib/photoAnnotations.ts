@@ -205,6 +205,16 @@ function drawAnnotationObject(ctx: CanvasRenderingContext2D, obj: AnnotationObje
   }
 }
 
+/** Charge un HTMLImageElement frais depuis un object URL local (blob same-origin, jamais réseau) et attend son onload — le CanvasImageSource requis par renderAnnotatedImage. */
+export function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Chargement de la photo échoué.'));
+    img.src = src;
+  });
+}
+
 /**
  * Cuit la photo + le calque en un JPEG (ou autre mimeType), aux dimensions
  * NATIVES de l'image (`width`/`height` — jamais la taille d'affichage), pour

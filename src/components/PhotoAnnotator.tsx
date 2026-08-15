@@ -11,7 +11,6 @@ import {
   makeId,
   normPoint,
   pointsToSvgD,
-  renderAnnotatedImage,
 } from '../lib/photoAnnotations';
 import type { AnnotationObject } from '../lib/photoAnnotations';
 import { useToast } from '../lib/useToast';
@@ -71,16 +70,6 @@ function translateObject(obj: AnnotationObject, dx: number, dy: number): Annotat
   }
 }
 
-/** Charge un HTMLImageElement frais depuis un object URL local (blob same-origin, jamais réseau) et attend son onload — nécessaire à l'export canvas, l'<image> SVG affiché ne suffit pas (pas de HTMLImageElement). */
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Chargement de la photo échoué.'));
-    img.src = src;
-  });
-}
-
 function maxPixelExtent(points: [number, number][], w: number, h: number): number {
   if (points.length === 0) return 0;
   const [x0, y0] = denormPoint(points[0], w, h);
@@ -130,7 +119,6 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   const [pendingText, setPendingText] = useState<PendingText | null>(null);
   const [textDraft, setTextDraft] = useState('');
   const [saving, setSaving] = useState(false);
-  const [exporting, setExporting] = useState(false);
 
   // Object URL de la photo — chargée ici (pas par le parent) car c'est cet
   // écran qui a besoin du blob pour le fond du <svg>, révoquée au démontage.
@@ -388,42 +376,6 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
     }
   };
 
-  // Cuit l'état COURANT à l'écran (même non enregistré) en JPEG éphémère puis
-  // le partage/télécharge. N'écrit rien en base, n'uploade rien : aucun objet
-  // R2 créé, le calque en cours d'édition n'est pas touché.
-  const handleExport = async () => {
-    if (!ready || !imgSize || !objectUrl || exporting) return;
-    setExporting(true);
-    try {
-      const img = await loadImage(objectUrl);
-      const blob = await renderAnnotatedImage(
-        img,
-        imgSize.w,
-        imgSize.h,
-        objects.length > 0 ? { v: 1, objects } : null
-      );
-      const file = new File([blob], 'photo-annotee.jpg', { type: 'image/jpeg' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: 'Photo annotée' });
-      } else {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'photo-annotee.jpg';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      }
-    } catch (err) {
-      // Annulation volontaire du partage natif : comportement normal, pas une erreur.
-      if (err instanceof Error && err.name === 'AbortError') return;
-      showToast(err instanceof Error ? err.message : 'Échec de l’export.');
-    } finally {
-      setExporting(false);
-    }
-  };
-
   const selectedObject = objects.find((o) => o.id === selectedId) ?? null;
 
   // Rendu d'un objet du calque : délègue entièrement à renderAnnotationObject
@@ -595,14 +547,6 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
           </button>
           <button type="button" onClick={handleClear} disabled={objects.length === 0} style={{ ...textButtonStyle, opacity: objects.length ? 1 : 0.4 }}>
             Tout effacer
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleExport()}
-            disabled={!ready || exporting}
-            style={{ ...textButtonStyle, opacity: !ready || exporting ? 0.4 : 1 }}
-          >
-            {exporting ? 'Export…' : 'Exporter'}
           </button>
         </div>
       </div>
