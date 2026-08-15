@@ -487,25 +487,27 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
 
       <div style={toolbarStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-          <div style={toolToggleStyle}>
-            <button type="button" onClick={() => setTool('select')} style={{ ...toolButtonStyle, ...(tool === 'select' ? toolButtonActiveStyle : {}) }}>
-              Sélection
-            </button>
-            <button type="button" onClick={() => setTool('path')} style={{ ...toolButtonStyle, ...(tool === 'path' ? toolButtonActiveStyle : {}) }}>
-              Trait
-            </button>
-            <button type="button" onClick={() => setTool('text')} style={{ ...toolButtonStyle, ...(tool === 'text' ? toolButtonActiveStyle : {}) }}>
-              Texte
-            </button>
-            <button type="button" onClick={() => setTool('arrow')} style={{ ...toolButtonStyle, ...(tool === 'arrow' ? toolButtonActiveStyle : {}) }}>
-              Flèche
-            </button>
-            <button type="button" onClick={() => setTool('rect')} style={{ ...toolButtonStyle, ...(tool === 'rect' ? toolButtonActiveStyle : {}) }}>
-              Rect.
-            </button>
-            <button type="button" onClick={() => setTool('ellipse')} style={{ ...toolButtonStyle, ...(tool === 'ellipse' ? toolButtonActiveStyle : {}) }}>
-              Ellipse
-            </button>
+          <div style={toolToggleFrameStyle}>
+            <div style={toolToggleScrollStyle}>
+              <button type="button" onClick={() => setTool('select')} style={{ ...toolButtonStyle, ...(tool === 'select' ? toolButtonActiveStyle : {}) }}>
+                Sélection
+              </button>
+              <button type="button" onClick={() => setTool('path')} style={{ ...toolButtonStyle, ...(tool === 'path' ? toolButtonActiveStyle : {}) }}>
+                Trait
+              </button>
+              <button type="button" onClick={() => setTool('text')} style={{ ...toolButtonStyle, ...(tool === 'text' ? toolButtonActiveStyle : {}) }}>
+                Texte
+              </button>
+              <button type="button" onClick={() => setTool('arrow')} style={{ ...toolButtonStyle, ...(tool === 'arrow' ? toolButtonActiveStyle : {}) }}>
+                Flèche
+              </button>
+              <button type="button" onClick={() => setTool('rect')} style={{ ...toolButtonStyle, ...(tool === 'rect' ? toolButtonActiveStyle : {}) }}>
+                Rect.
+              </button>
+              <button type="button" onClick={() => setTool('ellipse')} style={{ ...toolButtonStyle, ...(tool === 'ellipse' ? toolButtonActiveStyle : {}) }}>
+                Ellipse
+              </button>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             {PALETTE.map((c) => (
@@ -610,18 +612,25 @@ const toolbarStyle: React.CSSProperties = {
   flexWrap: 'wrap',
 };
 
-// 6 outils ne tiennent plus sur une seule pilule sans déborder sur mobile ;
-// min-width:0 laisse le groupe se réduire dans la rangée flex (sinon il
-// pousse et décale le reste de la barre), et overflowX:auto fait défiler la
-// pilule au lieu de la tronquer (l'ancien overflow:hidden coupait "Ellipse").
-const toolToggleStyle: React.CSSProperties = {
-  display: 'flex',
+// 6 outils ne tiennent plus sur une seule pilule sans déborder sur mobile.
+// Le cadre (bordure + coins arrondis + overflow:hidden, un seul axe "hidden",
+// jamais scrollable lui-même) est séparé de la rangée qui défile à
+// l'intérieur : mélanger overflow-x:auto/overflow-y:hidden SUR le même
+// élément bordé/arrondi rendait le clip aux coins arrondis incohérent sur
+// Android (bord "Sélection" tronqué), alors que Safari iOS l'acceptait sans
+// broncher. Un cadre non-scrollable qui clippe + un contenu scrollable non
+// arrondi à l'intérieur est le patron robuste, indépendant du moteur.
+const toolToggleFrameStyle: React.CSSProperties = {
   border: `1px solid rgba(255,255,255,0.25)`,
   borderRadius: 8,
-  overflowX: 'auto',
-  overflowY: 'hidden',
+  overflow: 'hidden',
   minWidth: 0,
   maxWidth: '100%',
+};
+
+const toolToggleScrollStyle: React.CSSProperties = {
+  display: 'flex',
+  overflowX: 'auto',
   WebkitOverflowScrolling: 'touch',
 };
 
