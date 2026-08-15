@@ -74,6 +74,9 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragStateRef = useRef<{ id: string; startXNorm: number; startYNorm: number; original: AnnotationObject } | null>(null);
   const textStartRef = useRef<{ x: number; y: number } | null>(null);
+  // Garde-fou contre le blur natif retardé/dupliqué (voir commitText/cancelText) :
+  // true = aucune session de saisie en cours, ou déjà résolue une fois.
+  const textResolvedRef = useRef(true);
 
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(
@@ -149,10 +152,17 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
     return { left: screen.x, top: screen.y };
   }
 
-  // --- Dessin (outils Trait / Texte), gestes sur le fond du <svg> ---
+  // --- Dessin (outils Trait / Texte) + désélection, gestes sur la surface
+  // d'interaction du fond (le <rect> transparent, jamais l'<image> : voir
+  // rendu plus bas — un menu contextuel natif se déclenche sur une <image>
+  // au doigt long, jamais sur une forme vectorielle sans contenu image). ---
 
-  const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (tool === 'select' || !imgSize) return;
+  const handleBackgroundPointerDown = (e: React.PointerEvent<SVGRectElement>) => {
+    if (tool === 'select') {
+      setSelectedId(null);
+      return;
+    }
+    if (!imgSize) return;
     const p = getSvgPoint(e);
     if (!p) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -163,7 +173,7 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
     }
   };
 
-  const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleBackgroundPointerMove = (e: React.PointerEvent<SVGRectElement>) => {
     if (tool !== 'path' || !draftPoints || !imgSize) return;
     const p = getSvgPoint(e);
     if (!p) return;
@@ -179,29 +189,26 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
     setObjects((prev) => [...prev, newPath]);
   };
 
-  const finishTextTap = (e: React.PointerEvent<SVGSVGElement>) => {
+  const finishTextTap = (e: React.PointerEvent<SVGRectElement>) => {
     const start = textStartRef.current;
     textStartRef.current = null;
     if (!start || !imgSize) return;
     const p = getSvgPoint(e);
     if (!p || Math.hypot(p.x - start.x, p.y - start.y) > TAP_THRESHOLD_PX) return;
     const [xNorm, yNorm] = normPoint(start.x, start.y, imgSize.w, imgSize.h);
+    textResolvedRef.current = false;
     setPendingText({ xNorm, yNorm, screenLeft: e.clientX, screenTop: e.clientY });
     setTextDraft('');
   };
 
-  const handleSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+  const handleBackgroundPointerUp = (e: React.PointerEvent<SVGRectElement>) => {
     if (tool === 'path') finishDraftPath();
     else if (tool === 'text') finishTextTap(e);
   };
 
-  const handleSvgPointerCancel = () => {
+  const handleBackgroundPointerCancel = () => {
     setDraftPoints(null);
     textStartRef.current = null;
-  };
-
-  const handleBackgroundPointerDown = () => {
-    if (tool === 'select') setSelectedId(null);
   };
 
   // --- Sélection / déplacement (outil Sélection), gestes par objet ---
@@ -233,7 +240,17 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
 
   // --- Champ de saisie inline (création ou édition de texte) ---
 
+  // Démonter l'<input> (pointe déjà résolue) déclenche un blur natif qui
+  // rejoue onBlur={commitText} avec la fermeture FIGÉE de ce render — donc
+  // avec le même pendingText/textDraft qu'à l'instant du premier appel. Sans
+  // garde, ce second appel fantôme duplique l'objet (ou, s'il arrive après
+  // l'ouverture d'une session suivante, écrase son pendingText en cours). Le
+  // ref est lu à jour même par cette fermeture obsolète : une seule
+  // résolution (commit XOR annulation) par session, quel que soit l'ordre
+  // d'arrivée des événements.
   const commitText = () => {
+    if (textResolvedRef.current) return;
+    textResolvedRef.current = true;
     const value = textDraft.trim();
     if (value && pendingText) {
       if (pendingText.editingId) {
@@ -258,6 +275,8 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   };
 
   const cancelText = () => {
+    if (textResolvedRef.current) return;
+    textResolvedRef.current = true;
     setPendingText(null);
     setTextDraft('');
   };
@@ -267,6 +286,7 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
     if (!obj || obj.type !== 'text' || !imgSize) return;
     const screen = svgToScreen(obj.x * imgSize.w, obj.y * imgSize.h);
     if (!screen) return;
+    textResolvedRef.current = false;
     setPendingText({ xNorm: obj.x, yNorm: obj.y, screenLeft: screen.left, screenTop: screen.top, editingId: obj.id });
     setTextDraft(obj.text);
   };
@@ -440,7 +460,7 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   }
 
   return (
-    <div style={overlayStyle}>
+    <div style={overlayStyle} onContextMenu={(e) => e.preventDefault()}>
       <div style={headerStyle}>
         <button type="button" onClick={onClose} disabled={saving} style={textButtonStyle}>
           Fermer
@@ -462,11 +482,8 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
           <svg
             ref={svgRef}
             viewBox={`0 0 ${imgSize.w} ${imgSize.h}`}
-            style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', touchAction: 'none', borderRadius: 8 }}
-            onPointerDown={handleSvgPointerDown}
-            onPointerMove={handleSvgPointerMove}
-            onPointerUp={handleSvgPointerUp}
-            onPointerCancel={handleSvgPointerCancel}
+            style={svgStyle}
+            onContextMenu={(e) => e.preventDefault()}
           >
             <image
               href={objectUrl ?? undefined}
@@ -474,8 +491,22 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
               y={0}
               width={imgSize.w}
               height={imgSize.h}
+              style={{ pointerEvents: 'none' }}
+            />
+            {/* Surface d'interaction du fond : un <rect> transparent, jamais l'<image>
+                elle-même (une <image> déclenche le menu contextuel natif Android au
+                doigt long ; une forme vectorielle sans contenu image ne le fait pas). */}
+            <rect
+              x={0}
+              y={0}
+              width={imgSize.w}
+              height={imgSize.h}
+              fill="transparent"
+              style={{ pointerEvents: 'all', touchAction: 'none', cursor: tool === 'select' ? 'default' : 'crosshair' }}
               onPointerDown={handleBackgroundPointerDown}
-              style={{ cursor: tool === 'select' ? 'default' : 'crosshair' }}
+              onPointerMove={handleBackgroundPointerMove}
+              onPointerUp={handleBackgroundPointerUp}
+              onPointerCancel={handleBackgroundPointerCancel}
             />
             {objects.map((obj) => renderObject(obj, imgSize.w, imgSize.h))}
             {draftPoints && draftPoints.length > 0 && (
@@ -566,6 +597,16 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   );
 }
 
+// Coupe la sélection de texte et le callout iOS/Android ("copier / partager
+// l'image") sur un appui long — le conteneur racine ET le <svg> le portent,
+// en complément du <rect> d'interaction (pointer-events) et de
+// onContextMenu (menu contextuel classique, clic droit/long-press desktop).
+const noCalloutStyle: React.CSSProperties = {
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
+  WebkitTouchCallout: 'none',
+};
+
 const overlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
@@ -573,6 +614,17 @@ const overlayStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   zIndex: 1500,
+  ...noCalloutStyle,
+};
+
+const svgStyle: React.CSSProperties = {
+  maxWidth: '100%',
+  maxHeight: '100%',
+  width: 'auto',
+  height: 'auto',
+  touchAction: 'none',
+  borderRadius: 8,
+  ...noCalloutStyle,
 };
 
 const headerStyle: React.CSSProperties = {
