@@ -74,7 +74,10 @@ sont gérées en dehors de ce dépôt (workflow n8n, admin Supabase direct) ; se
 `web_search_log`, `onboarding_invitations` et l'ajout `dossier_photos.titre`
 ont leurs migrations versionnées ici, dans `supabase/migrations/`. Les tables
 `dossier_notes`/`dossier_photos` (carnet, §10) ont elles aussi été créées hors
-dépôt — seule leur évolution ultérieure (`titre`) est versionnée.
+dépôt — seule leur évolution ultérieure (`titre`) est versionnée. Même chose
+pour `dossier_equipment_requests` (§10/§11), `communications` (§17) et
+`game_scores`/`game_leaderboard` (§18) : créées directement côté Supabase,
+aucune migration versionnée ici pour elles non plus.
 
 ### Bibliothèque de documents
 
@@ -109,6 +112,19 @@ dossier toutes les notices `documents` rattachées à son `product_id`. Un
 document peut aussi être rattaché directement (`dossier_documents`), sans
 passer par un équipement — les deux voies sont dédupliquées et distinguées par
 le champ `origine` (`'equipement' | 'direct'`) de la RPC ci-dessous.
+
+```
+dossier_equipment_requests  id, dossier_id, requested_by, marque, modele,
+                            commentaire, specialty_id, status, created_at,
+                            resolved_by, resolved_at, resolved_product_id
+```
+
+Demande d'équipement manuel absent de la base (§10/§11) : un monteur qui ne
+trouve pas son produit dans le picker `dossier_produits` décrit marque
+(obligatoire) + modèle + commentaire au lieu de bloquer sur le terrain.
+`status` ∈ `pending`/`approved`/`rejected`. Résolue par un admin via la RPC
+`resolve_dossier_equipment_request` (section RPC plus bas), jamais par
+écriture directe sur `products`.
 
 ### Carnet public du dossier (notes + photos)
 
@@ -154,6 +170,29 @@ Liste blanche d'emails autorisés à créer un compte applicatif. RLS
 admin-only ; consultée uniquement par l'Edge Function `enroll` en
 service_role. Voir §7.
 
+### Communications d'entreprise
+
+```
+communications  id, titre, storage_provider, storage_key, mime, taille,
+                auteur, deleted_at, deleted_by, created_at
+```
+
+Espace global, sans `dossier_id` — voir §17. Lue via la vue
+`communications_view` (`security_invoker`, joint `profiles` pour
+`auteur_nom`, même convention que les vues du carnet §3/§10).
+`profiles.is_comms_publisher` (booléen) porte le droit de publier, en plus du
+rôle `admin`.
+
+### Mini-jeu (PdfTetris) et classement
+
+```
+game_scores  user_id, best_score, best_lines, updated_at
+```
+
+Une ligne par utilisateur (`user_id` PK), ne garde que le meilleur score —
+voir §18. Lu via la vue `game_leaderboard` (déjà triée), qui expose `joueur`
+(nom joint depuis `profiles`).
+
 ### RPC
 
 **`search_documents(q, p_department_slug, p_specialty_slug, p_limit)`** —
@@ -175,6 +214,11 @@ product_label, extrait, rank`.
 - `extrait` est du **HTML** contenant des balises `<b>` autour des termes
   trouvés. Voir §12 pour le traitement obligatoire.
 - La fonction exige une requête. Elle ne sert pas au mode parcours (§8).
+- Matche `title`/`content` mais aussi marque/modèle (`products.brand`,
+  `products.model`) — et par **préfixe** sur chaque terme (CTE `pq`,
+  `regexp_split_to_table` + `:*` côté `tsquery`), pas seulement par mot
+  entier : une requête partielle sur un modèle en cours de frappe remonte
+  déjà des résultats.
 
 **`search_dossiers(q)`** — liste/filtre les dossiers clients par nom ou
 adresse ; `q` vide renvoie tous les dossiers.
@@ -196,6 +240,38 @@ Retourne : `id, title, doc_type, file_path, specialty_name, product_label,
 origine`. Même convention de nommage que `search_documents` (même schéma
 sous-jacent).
 
+**`resolve_dossier_equipment_request(request_id, specialty_id, approve)`** —
+approuve ou rejette une demande d'équipement manuel (§3/§10/§11). `SECURITY
+DEFINER`, admin-only (`is_vault_admin`, même prédicat que le reste des
+actions admin du coffre, pas une notion propre aux communications). Si
+`approve`, crée ou réutilise le produit (recherche insensible à la casse sur
+marque/modèle) et le rattache au dossier de la demande, atomiquement.
+
+```ts
+supabase.rpc('resolve_dossier_equipment_request', {
+  p_request_id: requestId,
+  p_specialty_id: specialtyId,  // requis si approve
+  p_approve: true,
+});
+```
+
+**`soft_delete_communication(p_id)`** — supprime (soft) une communication.
+`SECURITY DEFINER`, admin/publisher (revérifié en interne). Existe
+spécifiquement pour contourner un piège RETURNING/RLS documenté juste après
+la section RLS ci-dessous — jamais un `.update()` direct sur `communications`.
+
+```ts
+supabase.rpc('soft_delete_communication', { p_id: id });
+```
+
+**`set_comms_publisher(p_user_id, p_enabled)`** — active/révoque le droit de
+publier une communication pour un monteur. `SECURITY DEFINER`, admin-only.
+Voir §17 pour le trigger anti-auto-octroi côté `profiles`.
+
+```ts
+supabase.rpc('set_comms_publisher', { p_user_id: userId, p_enabled: true });
+```
+
 ### RLS
 
 - Bibliothèque : tout utilisateur authentifié **lit** ; seuls les `admin`
@@ -210,12 +286,44 @@ sous-jacent).
 - `onboarding_invitations` : admin-only (lecture et écriture). L'anon n'a
   aucune policy — le front n'y accède jamais, seule l'Edge Function `enroll`
   la consulte en service_role (§7).
+- `dossier_equipment_requests` : `select` tout utilisateur authentifié
+  (nécessaire à `listPendingEquipmentRequests`, garde-fou admin côté requête
+  plutôt que RLS — §11), `insert` réservé à sa propre ligne
+  (`requested_by = auth.uid()`). Résolution (`status`, `resolved_*`)
+  exclusivement via la RPC `resolve_dossier_equipment_request` (admin-only,
+  `SECURITY DEFINER`) — jamais d'`update` direct côté client.
+- `communications` : `select` tout utilisateur authentifié avec
+  `deleted_at IS NULL` ; `insert` admin/publisher, sur sa propre ligne
+  (`auteur = auth.uid()`) ; `update` admin/publisher, sur toute ligne. Voir
+  le piège RETURNING ci-dessous — la suppression passe par une RPC, jamais
+  par un `update` direct malgré la policy `UPDATE` existante.
+- `game_scores`/`game_leaderboard` : chacun écrit/lit sa propre ligne de
+  score ; le classement (vue) est lisible par tout utilisateur authentifié.
 
 L'application n'a donc jamais besoin d'écrire ailleurs que dans
 `pinned_documents`, `web_search_log`, `dossiers`, `dossier_produits`,
-`dossier_documents`, `dossier_notes` et `dossier_photos` — jamais dans
+`dossier_documents`, `dossier_notes`, `dossier_photos`,
+`dossier_equipment_requests` et `game_scores` — jamais dans
 `documents`/`products` directement (ça reste le rôle du pipeline d'ingestion
-n8n, y compris pour la capture web, §9).
+n8n, y compris pour la capture web, §9), ni dans `communications` en écriture
+de suppression (RPC, cf. piège ci-dessous).
+
+**Piège — soft-delete et policy SELECT restrictive.** Un `UPDATE` posant
+`deleted_at` via PostgREST échoue en `42501` (« new row violates row-level
+security policy ») dès que la policy `SELECT` de la table filtre
+`deleted_at IS NULL` — confirmé dans les logs Postgres : PostgREST génère un
+`RETURNING` implicite sur l'`UPDATE` **même en `Prefer: return=minimal`** (qui
+ne contrôle que la sérialisation de la réponse, pas la présence du
+`RETURNING` côté SQL), et Postgres re-vérifie la ligne modifiée contre la
+policy `SELECT` à cause de ce `RETURNING` — même `RETURNING 1`, une
+constante. L'`UPDATE` réussit pourtant en SQL direct (sans `RETURNING`), ce
+qui peut faire croire à tort à un problème de rôle/JWT. Indépendant du
+SDK/fetch manuel/header `Prefer` : aucun contournement côté client ne
+fonctionne. **Fix** : RPC `SECURITY DEFINER` qui fait l'`UPDATE` hors RLS en
+revérifiant les droits en interne (`soft_delete_communication`, ci-dessus).
+Les tables à policy `SELECT` `using(true)` (`dossier_plans`/`dossier_notes`/
+`dossier_photos`) y échappent structurellement — pas de conflit possible.
+`dossier_equipment_requests` n'a pas été vérifiée pour ce piège précis.
 
 ### Stockage
 
@@ -439,7 +547,11 @@ persistant : le nombre de documents épinglés reste petit, reconstruire à
 chaque recherche est plus simple qu'un maintien incrémental). Il produit des
 extraits surlignés en repassant par la **même fonction** `sanitizeHeadline`
 que le moteur en ligne (§12) : les deux moteurs sont donc garantis visuellement
-identiques par construction, pas par coïncidence.
+identiques par construction, pas par coïncidence. L'index indexe aussi
+`productLabel` (marque + modèle, dénormalisé au moment de l'épinglage, §5) en
+plus de `title`/`content`, avec un boost supérieur (`3`, contre `2` pour
+`title`) : la marque/le modèle est le signal d'identité le plus fort pour un
+technicien qui tape ce qu'il a sous les yeux sur l'équipement.
 
 L'écran de recherche bascule automatiquement en mode « épinglés uniquement »
 dès que l'appareil est hors ligne (ou si l'utilisateur active le filtre
@@ -473,6 +585,12 @@ Les cartes sont alors compactes, sans extrait (`DocumentCard` avec
    fabricant (le fabricant n'étant connu que via le mode parcours,
    `products.brand` — les résultats de `search_documents` et les documents
    épinglés ne portent qu'un `product_label` combiné, pas la marque séparée).
+   Dès qu'une requête texte est saisie, la portée département/spécialité est
+   forcée à `null` (`effectiveDepartmentId`/`effectiveSpecialtyId`, chokepoint
+   unique dans `SearchScreen`) : chercher un texte cherche **toujours** sur
+   toute la bibliothèque, même si l'utilisateur a navigué jusqu'ici via un
+   département précis — seul le parcours sans saisie (drill-down par tuiles)
+   reste scopé à la sélection courante.
 4. **Fiche document** — visualiseur PDF in-app (pdf.js, lazy-loadé) avec un
    raccourci « Voir en plein écran » (le même blob rouvert via
    `window.open`/blob URL, pour le lecteur PDF natif d'Android), lien
@@ -574,6 +692,12 @@ données sensibles — §11, `Feature coffre données sensibles.md`). Code dans
   équipement affiche « Via équipement » et ne peut être retiré qu'en retirant
   l'équipement ; un document rattaché directement affiche « Retirer du
   dossier ».
+- **Équipement absent du picker** — un monteur qui ne trouve pas son produit
+  décrit marque/modèle/commentaire (`createEquipmentRequest`,
+  `dossier_equipment_requests`, §3) au lieu de bloquer sur le chantier ; la
+  section liste ses demandes `pending` en attente
+  (`listDossierEquipmentRequests`). Résolution admin-only, dans l'onglet
+  "Demandes" de `VaultAdminScreen` (§11) — jamais dans cet écran.
 - Ouvrir un document depuis une fiche dossier respecte les mêmes règles
   d'accès que la bibliothèque : si le document est épinglé, il s'ouvre même
   hors ligne ; sinon, réseau requis.
@@ -635,7 +759,11 @@ Fichiers clés :
   `src/lib/useVaultSession.ts`, `src/components/VaultSheet.tsx` — ouverture,
   verrouillage, édition du contenu (notes multiples) depuis la fiche dossier.
 - `src/lib/vaultAdmin.ts`, `src/screens/VaultAdminScreen.tsx` — panneau admin
-  (comptes, activer/réparer l'accès, révoquer).
+  (comptes, activer/réparer l'accès, révoquer). Héberge aussi, au-delà du
+  coffre : le toggle "peut publier" (`is_comms_publisher`, lignes monteur
+  uniquement, §17) dans l'onglet "Comptes", et l'onglet "Demandes"
+  (approbation/rejet des demandes d'équipement manuel, §10, via
+  `listPendingEquipmentRequests`/`resolveEquipmentRequest`).
 - `src/lib/vaultRotation.ts`, `src/components/VaultRotationSheet.tsx` —
   rotation de clé, déclenchée depuis l'onglet "Rotation" du panneau admin.
 - `supabase/migrations/20260728190000_vault_user_keys.sql`,
@@ -668,6 +796,16 @@ ce sera une colonne `dossier_photos.annotation_de` à ajouter, pas un
 changement de comportement à la suppression (déjà volontairement
 indépendant). Pas de mode hors ligne, cohérent avec le reste de l'étape A
 (§5, §10).
+
+**Demande d'équipement manuel : TERMINÉ.** Table, RPC `SECURITY DEFINER`,
+couche data et UI (monteur + admin) en place — détail en §3/§10 et dans
+l'onglet "Demandes" ci-dessus. `dossier_equipment_requests` n'a pas été
+vérifiée pour le piège RETURNING/policy SELECT documenté en §3 — à faire si
+un futur soft-delete est ajouté sur cette table.
+
+**Communications d'entreprise : TERMINÉ.** Détail complet en §17.
+
+**Mini-jeu (PdfTetris) et classement : TERMINÉ.** Détail complet en §18.
 
 ---
 
@@ -720,18 +858,18 @@ espacement disloque le mot.
   (lecture/écriture pour tout utilisateur authentifié, §3), pas un
   relâchement supplémentaire, mais à garder en tête si ce modèle de
   permission évolue un jour.
-- **Dette de sécurité, priorité relevée** : la lecture (`GET`) du Worker est
-  volontairement préfixe-agnostique (elle sert aussi bien `documents/` que
-  les autres préfixes du bucket) et l'upload (`POST`) reste borné par
-  l'allowlist `GENERIC_PREFIX_RE` (`galerie|plans` — les PDF, eux, sont
-  écrits en R2 par n8n, jamais par le Worker, §9). Mais **`DELETE` n'a
-  aucune restriction de préfixe** : tout utilisateur authentifié peut
-  supprimer n'importe quel objet R2, y compris un PDF de bibliothèque sous
-  `documents/`. C'était tolérable tant que Supabase Storage servait de
-  filet ; maintenant que R2 est la **source unique** des PDF (bucket
-  Supabase `documents` vidé, §3), une suppression malveillante ou
-  accidentelle y est irréversible sans re-ingestion n8n. À durcir en
-  admin-only avant tout usage plus large de l'app.
+- La lecture (`GET`) du Worker est volontairement préfixe-agnostique (elle
+  sert aussi bien `documents/` que les autres préfixes du bucket) et
+  l'upload (`POST`) reste borné par deux allowlists : `GENERIC_PREFIX_RE`
+  (préfixes à segment d'entité, `galerie|plans` — les PDF, eux, sont écrits
+  en R2 par n8n, jamais par le Worker, §9) et `GLOBAL_PREFIXES` (préfixes
+  globaux à segment unique, sans entité rattachée — `communications`, §17).
+  **`DELETE` est admin-only** (`checkIsAdmin`, rejoue le JWT de l'appelant
+  sur la RPC `is_vault_admin` — même rôle admin que le reste de l'app, pas
+  une notion propre au coffre) : tolérable tant que Supabase Storage servait
+  de filet pour les PDF, ce n'est plus le cas depuis que R2 en est la
+  **source unique** (bucket Supabase `documents` vidé, §3) — une suppression
+  malveillante ou accidentelle y serait irréversible sans re-ingestion n8n.
 - Les URL signées Supabase Storage (repli `storage_provider = 'supabase'`,
   §3) expirent (1 h) : ne pas les stocker, les régénérer à la demande. Une
   fois le PDF téléchargé dans le Cache API, il est servi localement et
@@ -834,3 +972,68 @@ Ne pas implémenter, même partiellement, sans spécification dédiée au préal
 - interface générique d'ajout/édition de documents dans le front (l'ingestion
   reste déléguée au workflow n8n existant, y compris pour la capture web,
   qui n'est qu'une nouvelle porte d'entrée vers ce même pipeline).
+
+---
+
+## 17. Communications d'entreprise
+
+Espace global (pas de `dossier_id`) pour diffuser des PDF à toute l'équipe —
+notes de service, procédures internes. Schéma en §3. Écran
+`CommunicationsScreen` (`src/lib/communications.ts`, cran de nav
+`communications`, `nav.goCommunications`).
+
+- **Lecture** — la dernière communication publiée s'affiche en vignette avec
+  aperçu `PdfViewer` in-app (lazy-loadé, comme la bibliothèque §8), gaté sur
+  `isOnline` (aucun fetch tenté hors ligne, `PdfPlaceholder` affiché à la
+  place — en ligne uniquement, comme les dossiers §10, pas de repli hors
+  ligne §5). Les communications plus anciennes s'affichent en liste, ouvertes
+  au clic dans le lecteur PDF natif (`window.open`, même motif que le
+  raccourci plein écran de la bibliothèque, §8). Libellé affiché : `titre` si
+  renseigné, sinon dérivé du nom de fichier déposé (`deriveLabel`, retire le
+  préfixe UUID généré à l'upload).
+- **Publication** — réservée aux `admin` et aux monteurs avec
+  `profiles.is_comms_publisher = true`. `titre` de la ligne = `file.name` du
+  fichier déposé au moment de l'upload (pas de saisie manuelle côté
+  formulaire) ; `deriveLabel` n'est qu'un filet d'affichage pour les lignes
+  plus anciennes sans `titre` propre.
+- **Droit de publier** — toggle "peut publier" dans l'onglet "Comptes" du
+  panneau admin (`VaultAdminScreen`, §11), lignes monteur uniquement (un
+  admin peut déjà tout publier via son rôle). RPC `set_comms_publisher`
+  (§3), admin-only. Un trigger `profiles_guard` sur `profiles` empêche
+  l'auto-octroi : ni `is_comms_publisher` ni `role` ne peuvent être modifiés
+  par l'utilisateur sur sa propre ligne, seule la RPC (`SECURITY DEFINER`)
+  ou un admin via les canaux prévus le peuvent.
+- **Suppression** — RPC `soft_delete_communication` (§3), **jamais** un
+  `.update()` direct : voir le piège RETURNING/policy SELECT documenté en
+  §3, propre à `communications` (`deleted_at IS NULL` en `SELECT`).
+- **Worker** — préfixe `communications` autorisé côté `POST`/`GET` via
+  `GLOBAL_PREFIXES` (§2/§13) : égalité stricte sur une allowlist fermée,
+  pas de regex à trou, puisqu'un préfixe global n'a par construction aucun
+  segment d'entité à valider après la tête (contrairement à `galerie`/`plans`
+  qui exigent un slug, §13).
+
+---
+
+## 18. Mini-jeu (PdfTetris) et classement
+
+Mini-jeu autonome (`PdfTetris`, thème « range la bibliothèque »), accessible
+depuis le petit bouton "Jeu" de l'accueil (`nav.goGame`) — a pris
+l'emplacement historique du bouton "Diagnostic stockage", déplacé dans le
+sous-menu "Outils". Sans rapport avec la recherche web ou la bibliothèque
+documentaire ; sert à patienter.
+
+- **`GameScreen`** — menu local (état `'menu' | 'play'`, pas de cran de
+  navigation dédié pour cette bascule) avec deux boutons, "Jouer" et
+  "Classement". Le classement, lui, est un cran de navigation séparé
+  (`nav.goGameLeaderboard`, `GameLeaderboardScreen`) pour que le retour
+  Android y ramène au menu du jeu plutôt qu'à l'accueil.
+- **Score** — `submitScore` (`src/lib/gameScores.ts`) upsert sur
+  `game_scores`, ne garde que le meilleur score connu
+  (`greatest(existant, nouveau)` recalculé côté client, l'upsert PostgREST ne
+  sachant pas exprimer une clause de conflit dépendante de la ligne
+  existante) ; `best_lines`, lui, suit toujours la dernière partie, sans
+  `greatest`. Pas de RPC `submit_game_score` : envisagée puis abandonnée au
+  profit d'un upsert direct depuis `gameScores.ts`, RLS suffisant (chacun
+  n'écrit que sa propre ligne, §3).
+- **Classement** — `getLeaderboard` lit la vue `game_leaderboard` (déjà
+  triée), rendue par le composant partagé `Leaderboard.tsx`.
