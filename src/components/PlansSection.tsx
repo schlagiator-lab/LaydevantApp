@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useToast } from '../lib/useToast';
-import { deleteDossierPlan, getPhotoObjectUrl, updateDossierPlanTitre } from '../lib/dossiers';
+import { deleteDossierPlan, getDossierPlanBlob, getPhotoObjectUrl, updateDossierPlanTitre } from '../lib/dossiers';
 import { formatBytes } from '../lib/storagePersistence';
 import type { DossierPlanView } from '../types/database';
 import { ConfirmSheet } from './ConfirmSheet';
-import { colors, radius, textA } from '../styles/tokens';
+import { colors, fonts, radius, textA } from '../styles/tokens';
+
+// pdf.js (~1 MB with its worker) is only needed once a PDF plan is actually
+// opened — code-split out, same pattern as DocumentScreen/CommunicationsScreen.
+const PdfViewer = lazy(() => import('./PdfViewer').then((m) => ({ default: m.PdfViewer })));
 
 export interface PlansSectionProps {
   isOnline: boolean;
@@ -51,6 +55,14 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
   const [pendingDelete, setPendingDelete] = useState<DossierPlanView | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // Viewer plein écran in-app pour un plan PDF — remplace window.open('blob:…'),
+  // bloqué par Safari iOS quand il suit un await (même pattern que
+  // CommunicationsScreen/DocumentScreen).
+  const [openedPlan, setOpenedPlan] = useState<DossierPlanView | null>(null);
+  const [openedBlob, setOpenedBlob] = useState<Blob | null>(null);
+  const [openedLoading, setOpenedLoading] = useState(false);
+  const [openedError, setOpenedError] = useState<string | null>(null);
+
   // Vignettes uniquement pour les plans image — jamais de fetch pour
   // pdf/dwg/file avant un clic explicite (pas de preview pour ces types,
   // poids potentiellement lourd).
@@ -81,6 +93,32 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
       Object.values(urls).forEach((url) => URL.revokeObjectURL(url));
     };
   }, [plans]);
+
+  // Fetch du Blob du plan PDF ouvert en plein écran — déclenché à l'ouverture
+  // plutôt qu'au montage. Reset au démontage/à la fermeture pour ne pas garder
+  // un gros Blob PDF en mémoire une fois le viewer fermé.
+  useEffect(() => {
+    let cancelled = false;
+    // Reset volontaire à chaque changement de plan ouvert, avant de recharger.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOpenedBlob(null);
+    setOpenedError(null);
+    if (!openedPlan) return;
+    setOpenedLoading(true);
+    void (async () => {
+      try {
+        const blob = await getDossierPlanBlob(openedPlan.storage_key);
+        if (!cancelled) setOpenedBlob(blob);
+      } catch (err) {
+        if (!cancelled) setOpenedError(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
+      } finally {
+        if (!cancelled) setOpenedLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openedPlan]);
 
   const startEditTitle = (plan: DossierPlanView) => {
     setEditingTitleId(plan.id);
@@ -116,19 +154,13 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
     }
   };
 
-  /** PDF : le même blob rouvert via window.open, pour le lecteur PDF natif
-   * d'Android (pattern déjà utilisé par DocumentScreen). */
-  const handleOpenPdf = async (plan: DossierPlanView) => {
-    if (busyId) return;
-    setBusyId(plan.id);
-    try {
-      const url = await getPhotoObjectUrl(plan.storage_key);
-      window.open(url, '_blank', 'noopener');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
-    } finally {
-      setBusyId(null);
-    }
+  /** PDF : ouverture in-app via PdfViewer (plein écran) — window.open('blob:…')
+   * échoue sur iOS quand il suit un await (Safari bloque hors du geste
+   * synchrone). Ouverture instantanée, le viewer affiche son propre spinner
+   * pendant le fetch du Blob. */
+  const handleOpenPdf = (plan: DossierPlanView) => {
+    if (!isOnline) return;
+    setOpenedPlan(plan);
   };
 
   /** DWG / fichier générique : pas de preview possible dans un navigateur — téléchargement direct. */
@@ -153,7 +185,7 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
 
   const handlePrimaryAction = (plan: DossierPlanView, kind: PlanKind) => {
     if (kind === 'image') setViewedPlan(plan);
-    else if (kind === 'pdf') void handleOpenPdf(plan);
+    else if (kind === 'pdf') handleOpenPdf(plan);
     else void handleDownload(plan);
   };
 
@@ -194,11 +226,7 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
                     <span style={{ minWidth: 0, textAlign: 'left' }}>
                       <span style={titleTextStyle}>{label}</span>
                       <span style={metaTextStyle}>
-                        {isBusy
-                          ? kind === 'pdf'
-                            ? 'Ouverture…'
-                            : 'Téléchargement…'
-                          : `${KIND_TEXT[kind]} · ${formatBytes(plan.taille)}`}
+                        {isBusy ? 'Téléchargement…' : `${KIND_TEXT[kind]} · ${formatBytes(plan.taille)}`}
                       </span>
                     </span>
                   )}
@@ -317,6 +345,85 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
             >
               Supprimer ce plan
             </button>
+          </div>
+        </div>
+      )}
+
+      {openedPlan && (
+        <div style={pdfViewerOverlayStyle}>
+          <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <button
+              type="button"
+              onClick={() => setOpenedPlan(null)}
+              aria-label="Fermer"
+              style={{
+                flex: 'none',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: textA(0.1),
+                border: 'none',
+                color: colors.text,
+                fontSize: 17,
+                cursor: 'pointer',
+              }}
+            >
+              ‹
+            </button>
+            <span
+              style={{
+                flex: 1,
+                fontSize: 16,
+                fontWeight: 700,
+                color: colors.text,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {planLabel(openedPlan)}
+            </span>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              borderRadius: 14,
+              background: colors.bgDark,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              overflow: 'hidden',
+            }}
+          >
+            {openedError ? (
+              <span
+                style={{
+                  fontFamily: fonts.mono,
+                  fontSize: 13,
+                  color: textA(0.55),
+                  padding: 16,
+                  textAlign: 'center',
+                  lineHeight: 1.6,
+                }}
+              >
+                Aperçu impossible : {openedError}
+              </span>
+            ) : openedLoading || !openedBlob ? (
+              <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
+                Chargement de l'aperçu…
+              </span>
+            ) : (
+              <Suspense
+                fallback={
+                  <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
+                    Chargement de l'aperçu…
+                  </span>
+                }
+              >
+                <PdfViewer blob={openedBlob} />
+              </Suspense>
+            )}
           </div>
         </div>
       )}
@@ -470,6 +577,21 @@ const viewerOverlayStyle: React.CSSProperties = {
   padding: 24,
   boxSizing: 'border-box',
   zIndex: 1400,
+};
+
+// Viewer plein écran in-app pour un plan PDF — remplace window.open() sur une
+// URL blob:, bloqué par Safari iOS quand il suit un await. Même patron que
+// CommunicationsScreen (commViewerOverlayStyle).
+const pdfViewerOverlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: colors.bg,
+  color: colors.text,
+  zIndex: 1400,
+  display: 'flex',
+  flexDirection: 'column',
+  padding: 16,
+  boxSizing: 'border-box',
 };
 
 const viewerCloseButtonStyle: React.CSSProperties = {

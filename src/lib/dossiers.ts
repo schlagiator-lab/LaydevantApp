@@ -461,6 +461,24 @@ export function sanitizeFilename(name: string): string {
   return (cleaned || 'fichier').slice(0, 120);
 }
 
+/**
+ * Même fetch authentifié que getPhotoObjectUrl, mais renvoie le Blob brut
+ * (re-typé application/pdf, comme getCommunicationBlob côté communications)
+ * plutôt qu'une object URL — nécessaire pour PdfViewer, qui prend un Blob en
+ * prop, pas une URL. window.open('blob:…') sur iOS échoue quand il suit un
+ * await (Safari bloque tout window.open hors du geste synchrone) — d'où le
+ * viewer PdfViewer in-app dans PlansSection plutôt que window.open.
+ */
+export async function getDossierPlanBlob(storageKey: string): Promise<Blob> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/photos/${storageKey}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Chargement du PDF échoué (HTTP ${res.status})`);
+  const blob = await res.blob();
+  return new Blob([blob], { type: 'application/pdf' });
+}
+
 export async function listDossierPlans(dossierId: string): Promise<DossierPlanView[]> {
   const { data, error } = await supabase
     .from('dossier_plans_view')
