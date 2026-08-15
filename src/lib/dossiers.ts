@@ -8,6 +8,7 @@ import type {
   DossierPlanView,
   EquipmentRequest,
 } from '../types/database';
+import type { PhotoAnnotations } from './photoAnnotations';
 
 /**
  * Dossier list/filter (brief dossiers clients, "LISTE DES DOSSIERS"). An
@@ -394,6 +395,14 @@ export async function getPhotoObjectUrl(storageKey: string): Promise<string> {
 
 export async function updateDossierPhotoTitre(photoId: string, titre: string | null): Promise<void> {
   const { error } = await supabase.from('dossier_photos').update({ titre }).eq('id', photoId);
+  if (error) throw error;
+}
+
+export async function updateDossierPhotoAnnotations(
+  photoId: string,
+  annotations: PhotoAnnotations | null
+): Promise<void> {
+  const { error } = await supabase.from('dossier_photos').update({ annotations }).eq('id', photoId);
   if (error) throw error;
 }
 

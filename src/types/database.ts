@@ -2,6 +2,8 @@
 // The schema is not owned by this app (managed by the n8n ingestion workflow)
 // and must never be altered from here.
 
+import type { PhotoAnnotations } from '../lib/photoAnnotations';
+
 export type DocType =
   | 'notice_installation'
   | 'manuel_programmation'
@@ -206,6 +208,7 @@ export interface DossierPhotoView {
   auteur_nom: string | null;
   created_at: string;
   titre: string | null;
+  annotations: PhotoAnnotations | null;
 }
 
 export interface DossierPlanView {
