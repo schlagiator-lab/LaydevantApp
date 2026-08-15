@@ -76,14 +76,20 @@ export async function getCommunicationBlob(storageKey: string): Promise<Blob> {
   return new Blob([blob], { type: 'application/pdf' });
 }
 
-/** Soft delete uniquement — l'octet R2 reste récupérable, jamais de
- * suppression d'objet ici (même logique que deleteDossierPlan/Photo). */
+/**
+ * Soft delete uniquement — l'octet R2 reste récupérable, jamais de
+ * suppression d'objet ici (même logique que deleteDossierPlan/Photo).
+ *
+ * Passe par une RPC SECURITY DEFINER plutôt que .update() : la policy SELECT
+ * de `communications` est `deleted_at IS NULL`, et PostgREST 14.5 génère un
+ * RETURNING implicite sur l'UPDATE même en return=minimal, qui repasse la
+ * ligne soft-deletée par cette policy → 42501 systématique, quel que soit le
+ * rôle de l'appelant. La RPC fait l'UPDATE hors RLS et revérifie les droits
+ * (is_admin()/is_comms_publisher()) en interne — même pattern que
+ * destroy_dossier_vault/set_comms_publisher.
+ */
 export async function softDeleteCommunication(id: string): Promise<void> {
-  const { data: userData } = await supabase.auth.getUser();
-  const { error } = await supabase
-    .from('communications')
-    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
-    .eq('id', id);
+  const { error } = await supabase.rpc('soft_delete_communication', { p_id: id });
   if (error) throw error;
 }
 
