@@ -1,4 +1,4 @@
-import { denormScalar, pointsToSvgD } from '../lib/photoAnnotations';
+import { arrowHeadLength, arrowHeadPoints, denormScalar, pointsToSvgD } from '../lib/photoAnnotations';
 import type { AnnotationObject, PhotoAnnotations } from '../lib/photoAnnotations';
 
 /** Largeur minimale du jumeau invisible de sélection, pour capter un doigt sur un trait fin. */
@@ -106,12 +106,8 @@ export function renderAnnotationObject(
       const y2 = obj.y2 * H;
       const strokeW = denormScalar(obj.width, L, H);
       const angle = Math.atan2(y2 - y1, x2 - x1);
-      const headLen = Math.max(strokeW * 4, denormScalar(0.02, L, H));
-      const headAngle = Math.PI / 7;
-      const hx1 = x2 - headLen * Math.cos(angle - headAngle);
-      const hy1 = y2 - headLen * Math.sin(angle - headAngle);
-      const hx2 = x2 - headLen * Math.cos(angle + headAngle);
-      const hy2 = y2 - headLen * Math.sin(angle + headAngle);
+      const headLen = arrowHeadLength(strokeW, L, H);
+      const { hx1, hy1, hx2, hy2 } = arrowHeadPoints(x2, y2, angle, headLen);
       return (
         <g key={obj.id} style={{ pointerEvents: 'none' }}>
           {selected && (
