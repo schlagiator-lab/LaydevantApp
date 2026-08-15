@@ -349,11 +349,9 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
         </div>
       )}
 
-      {annotating && viewedPhoto && photoUrls[viewedPhoto.id] && session?.user.id && (
+      {annotating && viewedPhoto && (
         <PhotoAnnotator
-          photoUrl={photoUrls[viewedPhoto.id]}
-          dossierId={dossierId}
-          auteur={session.user.id}
+          photo={viewedPhoto}
           onClose={() => setAnnotating(false)}
           onSaved={() => {
             setAnnotating(false);

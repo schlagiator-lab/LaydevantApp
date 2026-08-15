@@ -1,210 +1,305 @@
 import { useEffect, useRef, useState } from 'react';
-import { uploadDossierPhoto } from '../lib/dossiers';
+import { getPhotoObjectUrl, updateDossierPhotoAnnotations } from '../lib/dossiers';
+import {
+  DEFAULT_COLOR,
+  DEFAULT_STROKE_WIDTH,
+  DEFAULT_TEXT_SIZE,
+  PALETTE,
+  denormPoint,
+  denormScalar,
+  makeId,
+  normPoint,
+  pointsToSvgD,
+} from '../lib/photoAnnotations';
+import type { AnnotationObject } from '../lib/photoAnnotations';
 import { useToast } from '../lib/useToast';
-import { colors, fonts, textA } from '../styles/tokens';
+import { colors, textA } from '../styles/tokens';
+import type { DossierPhotoView } from '../types/database';
 
-interface Point {
-  x: number;
-  y: number;
+type Tool = 'select' | 'path' | 'text';
+
+/** En pixels image (espace du viewBox, pas écran) : distingue un tap d'un glissé. */
+const TAP_THRESHOLD_PX = 4;
+/** Largeur minimale du jumeau invisible de sélection, pour capter un doigt sur un trait fin. */
+const MIN_HIT_STROKE_PX = 24;
+
+type PendingText = {
+  xNorm: number;
+  yNorm: number;
+  screenLeft: number;
+  screenTop: number;
+  editingId?: string;
+};
+
+function translateObject(obj: AnnotationObject, dx: number, dy: number): AnnotationObject {
+  switch (obj.type) {
+    case 'path':
+      return { ...obj, points: obj.points.map(([x, y]) => [x + dx, y + dy] as [number, number]) };
+    case 'text':
+      return { ...obj, x: obj.x + dx, y: obj.y + dy };
+    case 'arrow':
+      return { ...obj, x1: obj.x1 + dx, y1: obj.y1 + dy, x2: obj.x2 + dx, y2: obj.y2 + dy };
+    case 'shape':
+      return { ...obj, x: obj.x + dx, y: obj.y + dy };
+  }
 }
 
-type Action =
-  | { kind: 'stroke'; color: string; points: Point[] }
-  | { kind: 'text'; color: string; x: number; y: number; text: string; fontSize: number };
-
-type Tool = 'draw' | 'text';
-
-const PALETTE = ['#E8433A', '#F2E9A8', '#3AA6E8'] as const;
-
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let current = '';
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (current && ctx.measureText(candidate).width > maxWidth) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = candidate;
-    }
+function maxPixelExtent(points: [number, number][], w: number, h: number): number {
+  if (points.length === 0) return 0;
+  const [x0, y0] = denormPoint(points[0], w, h);
+  let max = 0;
+  for (const p of points) {
+    const [x, y] = denormPoint(p, w, h);
+    const d = Math.hypot(x - x0, y - y0);
+    if (d > max) max = d;
   }
-  if (current) lines.push(current);
-  return lines.length ? lines : [''];
+  return max;
 }
 
 export interface PhotoAnnotatorProps {
-  photoUrl: string;
-  dossierId: string;
-  auteur: string;
+  photo: DossierPhotoView;
   onClose: () => void;
   onSaved: () => void;
 }
 
 /**
- * Dessin libre et texte par-dessus une photo existante (fléchage/repérage +
- * légende explicative sur chantier). N'écrase jamais l'original : l'aplat
- * est toujours envoyé comme une NOUVELLE photo du dossier, via le même
- * pipeline d'upload que la prise de vue directe.
+ * Calque d'annotations vectoriel par-dessus une photo existante — fléchage,
+ * repérage, légende. NON DESTRUCTIF : la photo originale sur R2 n'est jamais
+ * réécrite ni aplatie, seul le JSON de `dossier_photos.annotations` change.
+ * Toute conversion normalisé<->pixel passe par src/lib/photoAnnotations.ts,
+ * contrat partagé avec le futur rendu-lecture et l'export.
  */
-export function PhotoAnnotator({ photoUrl, dossierId, auteur, onClose, onSaved }: PhotoAnnotatorProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const imageRef = useRef<HTMLImageElement | null>(null);
-  const actionsRef = useRef<Action[]>([]);
-  const drawingRef = useRef<Extract<Action, { kind: 'stroke' }> | null>(null);
-  const [tool, setTool] = useState<Tool>('draw');
-  const [color, setColor] = useState<string>(PALETTE[0]);
-  const [ready, setReady] = useState(false);
-  const [hasActions, setHasActions] = useState(false);
-  const [saving, setSaving] = useState(false);
-  // Texte en cours de saisie : position canvas (où il sera dessiné) + position
-  // écran (où flotte le champ de saisie, en coordonnées viewport — plus simple
-  // et plus fiable que de reconvertir depuis l'espace canvas mis à l'échelle).
-  const [pendingCanvasPos, setPendingCanvasPos] = useState<Point | null>(null);
-  const [pendingScreenPos, setPendingScreenPos] = useState<{ left: number; top: number } | null>(null);
-  const [textDraft, setTextDraft] = useState('');
+export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps) {
   const { showToast } = useToast();
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragStateRef = useRef<{ id: string; startXNorm: number; startYNorm: number; original: AnnotationObject } | null>(null);
+  const textStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  const fontSizeFor = (canvasWidth: number) => Math.max(24, canvasWidth / 32);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(
+    photo.largeur && photo.hauteur ? { w: photo.largeur, h: photo.hauteur } : null
+  );
+  const [objects, setObjects] = useState<AnnotationObject[]>(() =>
+    (photo.annotations?.objects ?? []).map((o) => (o.id ? o : { ...o, id: makeId() }))
+  );
+  const [tool, setTool] = useState<Tool>('path');
+  const [color, setColor] = useState<string>(DEFAULT_COLOR);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draftPoints, setDraftPoints] = useState<[number, number][] | null>(null);
+  const [pendingText, setPendingText] = useState<PendingText | null>(null);
+  const [textDraft, setTextDraft] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const redraw = () => {
-    const canvas = canvasRef.current;
-    const img = imageRef.current;
-    if (!canvas || !img) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const lineWidth = Math.max(4, canvas.width / 180);
-    const allActions = drawingRef.current ? [...actionsRef.current, drawingRef.current] : actionsRef.current;
-    for (const action of allActions) {
-      if (action.kind === 'stroke') {
-        if (action.points.length === 0) continue;
-        ctx.strokeStyle = action.color;
-        ctx.lineWidth = lineWidth;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(action.points[0].x, action.points[0].y);
-        for (const point of action.points.slice(1)) {
-          ctx.lineTo(point.x, point.y);
-        }
-        // Point isolé (tap sans glisser) : dessine un petit point visible.
-        if (action.points.length === 1) {
-          ctx.lineTo(action.points[0].x + 0.01, action.points[0].y + 0.01);
-        }
-        ctx.stroke();
-      } else {
-        ctx.font = `700 ${action.fontSize}px ${fonts.sans}`;
-        ctx.textBaseline = 'top';
-        const lines = wrapText(ctx, action.text, canvas.width * 0.6);
-        const lineHeight = action.fontSize * 1.3;
-        ctx.lineWidth = action.fontSize / 6;
-        ctx.lineJoin = 'round';
-        lines.forEach((line, i) => {
-          const y = action.y + i * lineHeight;
-          // Contour sombre pour rester lisible quel que soit le fond de la
-          // photo, quelle que soit la couleur de texte choisie.
-          ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
-          ctx.strokeText(line, action.x, y);
-          ctx.fillStyle = action.color;
-          ctx.fillText(line, action.x, y);
-        });
-      }
-    }
-  };
-
+  // Object URL de la photo — chargée ici (pas par le parent) car c'est cet
+  // écran qui a besoin du blob pour le fond du <svg>, révoquée au démontage.
   useEffect(() => {
-    const img = new Image();
-    img.onload = () => {
-      imageRef.current = img;
-      const canvas = canvasRef.current;
-      if (canvas) {
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        redraw();
+    let cancelled = false;
+    let url: string | null = null;
+    void (async () => {
+      try {
+        const u = await getPhotoObjectUrl(photo.storage_key);
+        if (cancelled) {
+          URL.revokeObjectURL(u);
+          return;
+        }
+        url = u;
+        setObjectUrl(u);
+      } catch (err) {
+        if (!cancelled) showToast(err instanceof Error ? err.message : 'Échec du chargement de la photo.');
       }
-      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
     };
-    img.src = photoUrl;
-  }, [photoUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photo.storage_key]);
 
-  const pointFromEvent = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
-  };
+  // Repli legacy : dimensions absentes en base, on les lit sur l'image chargée.
+  useEffect(() => {
+    if (imgSize || !objectUrl) return;
+    const img = new Image();
+    img.onload = () => setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
+    img.src = objectUrl;
+  }, [objectUrl, imgSize]);
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!ready || pendingCanvasPos) return;
-    if (tool === 'text') {
-      setPendingCanvasPos(pointFromEvent(e));
-      setPendingScreenPos({ left: e.clientX, top: e.clientY });
-      setTextDraft('');
-      return;
-    }
+  const ready = objectUrl !== null && imgSize !== null;
+
+  function getSvgPoint(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const loc = pt.matrixTransform(ctm.inverse());
+    return { x: loc.x, y: loc.y };
+  }
+
+  function svgToScreen(px: number, py: number): { left: number; top: number } | null {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = px;
+    pt.y = py;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const screen = pt.matrixTransform(ctm);
+    return { left: screen.x, top: screen.y };
+  }
+
+  // --- Dessin (outils Trait / Texte), gestes sur le fond du <svg> ---
+
+  const handleSvgPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (tool === 'select' || !imgSize) return;
+    const p = getSvgPoint(e);
+    if (!p) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    drawingRef.current = { kind: 'stroke', color, points: [pointFromEvent(e)] };
-    redraw();
+    if (tool === 'path') {
+      setDraftPoints([normPoint(p.x, p.y, imgSize.w, imgSize.h)]);
+    } else if (tool === 'text') {
+      textStartRef.current = p;
+    }
   };
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawingRef.current) return;
-    drawingRef.current.points.push(pointFromEvent(e));
-    redraw();
+  const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (tool !== 'path' || !draftPoints || !imgSize) return;
+    const p = getSvgPoint(e);
+    if (!p) return;
+    setDraftPoints((prev) => (prev ? [...prev, normPoint(p.x, p.y, imgSize.w, imgSize.h)] : prev));
   };
 
-  const finishStroke = () => {
-    if (!drawingRef.current) return;
-    actionsRef.current = [...actionsRef.current, drawingRef.current];
-    drawingRef.current = null;
-    setHasActions(actionsRef.current.length > 0);
-    redraw();
+  const finishDraftPath = () => {
+    const pts = draftPoints;
+    setDraftPoints(null);
+    if (!pts || !imgSize || pts.length < 2) return;
+    if (maxPixelExtent(pts, imgSize.w, imgSize.h) < TAP_THRESHOLD_PX) return;
+    const newPath: AnnotationObject = { type: 'path', id: makeId(), color, width: DEFAULT_STROKE_WIDTH, points: pts };
+    setObjects((prev) => [...prev, newPath]);
   };
+
+  const finishTextTap = (e: React.PointerEvent<SVGSVGElement>) => {
+    const start = textStartRef.current;
+    textStartRef.current = null;
+    if (!start || !imgSize) return;
+    const p = getSvgPoint(e);
+    if (!p || Math.hypot(p.x - start.x, p.y - start.y) > TAP_THRESHOLD_PX) return;
+    const [xNorm, yNorm] = normPoint(start.x, start.y, imgSize.w, imgSize.h);
+    setPendingText({ xNorm, yNorm, screenLeft: e.clientX, screenTop: e.clientY });
+    setTextDraft('');
+  };
+
+  const handleSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (tool === 'path') finishDraftPath();
+    else if (tool === 'text') finishTextTap(e);
+  };
+
+  const handleSvgPointerCancel = () => {
+    setDraftPoints(null);
+    textStartRef.current = null;
+  };
+
+  const handleBackgroundPointerDown = () => {
+    if (tool === 'select') setSelectedId(null);
+  };
+
+  // --- Sélection / déplacement (outil Sélection), gestes par objet ---
+
+  const handleObjectPointerDown = (e: React.PointerEvent, obj: AnnotationObject) => {
+    if (tool !== 'select' || !imgSize || !obj.id) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = getSvgPoint(e);
+    if (!p) return;
+    const [xNorm, yNorm] = normPoint(p.x, p.y, imgSize.w, imgSize.h);
+    dragStateRef.current = { id: obj.id, startXNorm: xNorm, startYNorm: yNorm, original: obj };
+    setSelectedId(obj.id);
+  };
+
+  const handleObjectPointerMove = (e: React.PointerEvent) => {
+    const drag = dragStateRef.current;
+    if (!drag || !imgSize) return;
+    const p = getSvgPoint(e);
+    if (!p) return;
+    const [xNorm, yNorm] = normPoint(p.x, p.y, imgSize.w, imgSize.h);
+    const dx = xNorm - drag.startXNorm;
+    const dy = yNorm - drag.startYNorm;
+    setObjects((prev) => prev.map((o) => (o.id === drag.id ? translateObject(drag.original, dx, dy) : o)));
+  };
+
+  const handleObjectPointerUp = () => {
+    dragStateRef.current = null;
+  };
+
+  // --- Champ de saisie inline (création ou édition de texte) ---
 
   const commitText = () => {
     const value = textDraft.trim();
-    if (value && pendingCanvasPos) {
-      const fontSize = canvasRef.current ? fontSizeFor(canvasRef.current.width) : 32;
-      actionsRef.current = [...actionsRef.current, { kind: 'text', color, x: pendingCanvasPos.x, y: pendingCanvasPos.y, text: value, fontSize }];
-      setHasActions(true);
+    if (value && pendingText) {
+      if (pendingText.editingId) {
+        const id = pendingText.editingId;
+        setObjects((prev) => prev.map((o) => (o.id === id && o.type === 'text' ? { ...o, text: value } : o)));
+      } else {
+        const newText: AnnotationObject = {
+          type: 'text',
+          id: makeId(),
+          color,
+          size: DEFAULT_TEXT_SIZE,
+          x: pendingText.xNorm,
+          y: pendingText.yNorm,
+          text: value,
+          anchor: 'start',
+        };
+        setObjects((prev) => [...prev, newText]);
+      }
     }
-    setPendingCanvasPos(null);
-    setPendingScreenPos(null);
+    setPendingText(null);
     setTextDraft('');
-    redraw();
   };
 
   const cancelText = () => {
-    setPendingCanvasPos(null);
-    setPendingScreenPos(null);
+    setPendingText(null);
     setTextDraft('');
   };
 
+  const openTextEditor = () => {
+    const obj = objects.find((o) => o.id === selectedId);
+    if (!obj || obj.type !== 'text' || !imgSize) return;
+    const screen = svgToScreen(obj.x * imgSize.w, obj.y * imgSize.h);
+    if (!screen) return;
+    setPendingText({ xNorm: obj.x, yNorm: obj.y, screenLeft: screen.left, screenTop: screen.top, editingId: obj.id });
+    setTextDraft(obj.text);
+  };
+
+  // --- Actions globales ---
+
+  const handleColorPick = (c: string) => {
+    setColor(c);
+    if (selectedId) {
+      setObjects((prev) => prev.map((o) => (o.id === selectedId ? { ...o, color: c } : o)));
+    }
+  };
+
   const handleUndo = () => {
-    actionsRef.current = actionsRef.current.slice(0, -1);
-    setHasActions(actionsRef.current.length > 0);
-    redraw();
+    setObjects((prev) => prev.slice(0, -1));
+    setSelectedId((prev) => (objects.length > 0 && objects[objects.length - 1].id === prev ? null : prev));
   };
 
   const handleClear = () => {
-    actionsRef.current = [];
-    setHasActions(false);
-    redraw();
+    setObjects([]);
+    setSelectedId(null);
+  };
+
+  const handleDeleteSelected = () => {
+    setObjects((prev) => prev.filter((o) => o.id !== selectedId));
+    setSelectedId(null);
   };
 
   const handleSave = async () => {
-    const canvas = canvasRef.current;
-    if (!canvas || saving) return;
+    if (saving) return;
     setSaving(true);
     try {
-      const blob: Blob = await new Promise((resolve, reject) => {
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Rendu échoué'))), 'image/jpeg', 0.9);
-      });
-      const file = new File([blob], 'annotation.jpg', { type: 'image/jpeg' });
-      await uploadDossierPhoto(dossierId, file, auteur);
+      await updateDossierPhotoAnnotations(photo.id, objects.length > 0 ? { v: 1, objects } : null);
       onSaved();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Échec de l’enregistrement.');
@@ -213,35 +308,192 @@ export function PhotoAnnotator({ photoUrl, dossierId, auteur, onClose, onSaved }
     }
   };
 
+  const selectedObject = objects.find((o) => o.id === selectedId) ?? null;
+
+  // --- Rendu d'un objet du calque, switch exhaustif sur les 4 types ---
+
+  function renderObject(obj: AnnotationObject, L: number, H: number) {
+    const selected = selectedId === obj.id;
+    const haloWidthBoost = denormScalar(0.006, L, H);
+
+    switch (obj.type) {
+      case 'path': {
+        const d = pointsToSvgD(obj.points, L, H);
+        const strokeW = denormScalar(obj.width, L, H);
+        return (
+          <g key={obj.id}>
+            {selected && (
+              <path d={d} stroke={colors.accent} strokeWidth={strokeW + haloWidthBoost} fill="none"
+                strokeLinecap="round" strokeLinejoin="round" opacity={0.45} style={{ pointerEvents: 'none' }} />
+            )}
+            <path d={d} stroke={obj.color} strokeWidth={strokeW} fill="none"
+              strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: 'none' }} />
+            {tool === 'select' && (
+              <path d={d} stroke="transparent" strokeWidth={Math.max(strokeW, MIN_HIT_STROKE_PX)} fill="none"
+                strokeLinecap="round" strokeLinejoin="round"
+                style={{ pointerEvents: 'stroke', cursor: 'pointer', touchAction: 'none' }}
+                onPointerDown={(e) => handleObjectPointerDown(e, obj)}
+                onPointerMove={handleObjectPointerMove}
+                onPointerUp={handleObjectPointerUp}
+                onPointerCancel={handleObjectPointerUp}
+              />
+            )}
+          </g>
+        );
+      }
+      case 'text': {
+        const x = obj.x * L;
+        const y = obj.y * H;
+        const fontSize = denormScalar(obj.size, L, H);
+        return (
+          <text
+            key={obj.id}
+            x={x}
+            y={y}
+            fill={obj.color}
+            fontSize={fontSize}
+            textAnchor={obj.anchor || 'start'}
+            dominantBaseline="middle"
+            fontFamily="system-ui, -apple-system, Arial, sans-serif"
+            stroke={selected ? colors.accent : 'none'}
+            strokeWidth={selected ? Math.max(fontSize * 0.06, 1.5) : 0}
+            paintOrder="stroke"
+            style={{
+              pointerEvents: tool === 'select' ? 'auto' : 'none',
+              cursor: tool === 'select' ? 'pointer' : 'default',
+              userSelect: 'none',
+              touchAction: 'none',
+            }}
+            onPointerDown={tool === 'select' ? (e) => handleObjectPointerDown(e, obj) : undefined}
+            onPointerMove={tool === 'select' ? handleObjectPointerMove : undefined}
+            onPointerUp={tool === 'select' ? handleObjectPointerUp : undefined}
+            onPointerCancel={tool === 'select' ? handleObjectPointerUp : undefined}
+          >
+            {obj.text}
+          </text>
+        );
+      }
+      case 'arrow': {
+        const x1 = obj.x1 * L;
+        const y1 = obj.y1 * H;
+        const x2 = obj.x2 * L;
+        const y2 = obj.y2 * H;
+        const strokeW = denormScalar(obj.width, L, H);
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const headLen = Math.max(strokeW * 4, denormScalar(0.02, L, H));
+        const headAngle = Math.PI / 7;
+        const hx1 = x2 - headLen * Math.cos(angle - headAngle);
+        const hy1 = y2 - headLen * Math.sin(angle - headAngle);
+        const hx2 = x2 - headLen * Math.cos(angle + headAngle);
+        const hy2 = y2 - headLen * Math.sin(angle + headAngle);
+        return (
+          <g key={obj.id} style={{ pointerEvents: 'none' }}>
+            {selected && (
+              <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={colors.accent}
+                strokeWidth={strokeW + haloWidthBoost} strokeLinecap="round" opacity={0.45} />
+            )}
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
+            <line x1={x2} y1={y2} x2={hx1} y2={hy1} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
+            <line x1={x2} y1={y2} x2={hx2} y2={hy2} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
+            {tool === 'select' && (
+              <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={Math.max(strokeW, MIN_HIT_STROKE_PX)}
+                strokeLinecap="round" style={{ pointerEvents: 'stroke', cursor: 'pointer', touchAction: 'none' }}
+                onPointerDown={(e) => handleObjectPointerDown(e, obj)}
+                onPointerMove={handleObjectPointerMove}
+                onPointerUp={handleObjectPointerUp}
+                onPointerCancel={handleObjectPointerUp}
+              />
+            )}
+          </g>
+        );
+      }
+      case 'shape': {
+        const x = obj.x * L;
+        const y = obj.y * H;
+        const w = obj.w * L;
+        const h = obj.h * H;
+        const strokeW = denormScalar(obj.width, L, H);
+        const geom =
+          obj.shape === 'rect'
+            ? { x, y, width: w, height: h }
+            : { cx: x + w / 2, cy: y + h / 2, rx: Math.abs(w) / 2, ry: Math.abs(h) / 2 };
+        const Tag = obj.shape === 'rect' ? 'rect' : 'ellipse';
+        return (
+          <g key={obj.id} style={{ pointerEvents: 'none' }}>
+            {selected && (
+              <Tag {...geom} stroke={colors.accent} strokeWidth={strokeW + haloWidthBoost} fill="none" opacity={0.45} />
+            )}
+            <Tag {...geom} stroke={obj.color} strokeWidth={strokeW} fill="none" />
+            {tool === 'select' && (
+              <Tag {...geom} stroke="transparent" strokeWidth={Math.max(strokeW, MIN_HIT_STROKE_PX)} fill="none"
+                style={{ pointerEvents: 'stroke', cursor: 'pointer', touchAction: 'none' }}
+                onPointerDown={(e) => handleObjectPointerDown(e, obj)}
+                onPointerMove={handleObjectPointerMove}
+                onPointerUp={handleObjectPointerUp}
+                onPointerCancel={handleObjectPointerUp}
+              />
+            )}
+          </g>
+        );
+      }
+    }
+  }
+
   return (
     <div style={overlayStyle}>
       <div style={headerStyle}>
         <button type="button" onClick={onClose} disabled={saving} style={textButtonStyle}>
-          Annuler
+          Fermer
         </button>
         <span style={{ fontSize: 14, fontWeight: 700, color: textA(0.85) }}>Annoter la photo</span>
         <button
           type="button"
           onClick={() => void handleSave()}
-          disabled={!ready || !hasActions || saving}
-          style={{ ...saveButtonStyle, opacity: !ready || !hasActions || saving ? 0.4 : 1 }}
+          disabled={!ready || saving}
+          style={{ ...saveButtonStyle, opacity: !ready || saving ? 0.4 : 1 }}
         >
-          {saving ? 'Envoi…' : 'Enregistrer'}
+          {saving ? 'Enregistrement…' : 'Enregistrer'}
         </button>
       </div>
 
-      <div style={canvasWrapStyle}>
-        <canvas
-          ref={canvasRef}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={finishStroke}
-          onPointerCancel={finishStroke}
-          style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', touchAction: 'none', borderRadius: 8 }}
-        />
+      <div style={svgWrapStyle}>
+        {!ready && <span style={{ fontSize: 13, color: textA(0.6) }}>Chargement…</span>}
+        {ready && imgSize && (
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${imgSize.w} ${imgSize.h}`}
+            style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', touchAction: 'none', borderRadius: 8 }}
+            onPointerDown={handleSvgPointerDown}
+            onPointerMove={handleSvgPointerMove}
+            onPointerUp={handleSvgPointerUp}
+            onPointerCancel={handleSvgPointerCancel}
+          >
+            <image
+              href={objectUrl ?? undefined}
+              x={0}
+              y={0}
+              width={imgSize.w}
+              height={imgSize.h}
+              onPointerDown={handleBackgroundPointerDown}
+              style={{ cursor: tool === 'select' ? 'default' : 'crosshair' }}
+            />
+            {objects.map((obj) => renderObject(obj, imgSize.w, imgSize.h))}
+            {draftPoints && draftPoints.length > 0 && (
+              <path
+                d={pointsToSvgD(draftPoints, imgSize.w, imgSize.h)}
+                stroke={color}
+                strokeWidth={denormScalar(DEFAULT_STROKE_WIDTH, imgSize.w, imgSize.h)}
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ pointerEvents: 'none' }}
+              />
+            )}
+          </svg>
+        )}
       </div>
 
-      {pendingScreenPos && (
+      {pendingText && (
         <input
           autoFocus
           value={textDraft}
@@ -252,30 +504,20 @@ export function PhotoAnnotator({ photoUrl, dossierId, auteur, onClose, onSaved }
             if (e.key === 'Escape') cancelText();
           }}
           placeholder="Texte…"
-          style={{
-            ...pendingTextInputStyle,
-            left: pendingScreenPos.left,
-            top: pendingScreenPos.top,
-            color,
-          }}
+          style={{ ...pendingTextInputStyle, left: pendingText.screenLeft, top: pendingText.screenTop, color }}
         />
       )}
 
       <div style={toolbarStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <div style={toolToggleStyle}>
-            <button
-              type="button"
-              onClick={() => setTool('draw')}
-              style={{ ...toolButtonStyle, ...(tool === 'draw' ? toolButtonActiveStyle : {}) }}
-            >
-              Dessin
+            <button type="button" onClick={() => setTool('select')} style={{ ...toolButtonStyle, ...(tool === 'select' ? toolButtonActiveStyle : {}) }}>
+              Sélection
             </button>
-            <button
-              type="button"
-              onClick={() => setTool('text')}
-              style={{ ...toolButtonStyle, ...(tool === 'text' ? toolButtonActiveStyle : {}) }}
-            >
+            <button type="button" onClick={() => setTool('path')} style={{ ...toolButtonStyle, ...(tool === 'path' ? toolButtonActiveStyle : {}) }}>
+              Trait
+            </button>
+            <button type="button" onClick={() => setTool('text')} style={{ ...toolButtonStyle, ...(tool === 'text' ? toolButtonActiveStyle : {}) }}>
               Texte
             </button>
           </div>
@@ -284,7 +526,7 @@ export function PhotoAnnotator({ photoUrl, dossierId, auteur, onClose, onSaved }
               <button
                 key={c}
                 type="button"
-                onClick={() => setColor(c)}
+                onClick={() => handleColorPick(c)}
                 aria-label={`Couleur ${c}`}
                 style={{
                   width: 26,
@@ -301,11 +543,21 @@ export function PhotoAnnotator({ photoUrl, dossierId, auteur, onClose, onSaved }
             ))}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 14 }}>
-          <button type="button" onClick={handleUndo} disabled={!hasActions} style={{ ...textButtonStyle, opacity: hasActions ? 1 : 0.4 }}>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+          {selectedObject && selectedObject.type === 'text' && (
+            <button type="button" onClick={openTextEditor} style={textButtonStyle}>
+              Éditer le texte
+            </button>
+          )}
+          {selectedObject && (
+            <button type="button" onClick={handleDeleteSelected} style={textButtonStyle}>
+              Supprimer
+            </button>
+          )}
+          <button type="button" onClick={handleUndo} disabled={objects.length === 0} style={{ ...textButtonStyle, opacity: objects.length ? 1 : 0.4 }}>
             Annuler
           </button>
-          <button type="button" onClick={handleClear} disabled={!hasActions} style={{ ...textButtonStyle, opacity: hasActions ? 1 : 0.4 }}>
+          <button type="button" onClick={handleClear} disabled={objects.length === 0} style={{ ...textButtonStyle, opacity: objects.length ? 1 : 0.4 }}>
             Tout effacer
           </button>
         </div>
@@ -331,7 +583,7 @@ const headerStyle: React.CSSProperties = {
   padding: '14px 16px',
 };
 
-const canvasWrapStyle: React.CSSProperties = {
+const svgWrapStyle: React.CSSProperties = {
   flex: 1,
   minHeight: 0,
   display: 'flex',
