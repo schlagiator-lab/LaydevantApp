@@ -9,6 +9,7 @@ import {
   uploadDossierPhoto,
 } from '../lib/dossiers';
 import type { DossierNoteView, DossierPhotoView } from '../types/database';
+import { AnnotationOverlay } from './AnnotationOverlay';
 import { SectionHeader } from './SectionHeader';
 import { NoteFormSheet } from './NoteFormSheet';
 import { ConfirmSheet } from './ConfirmSheet';
@@ -50,6 +51,10 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
   const [viewedPhoto, setViewedPhoto] = useState<DossierPhotoView | null>(null);
   const [annotating, setAnnotating] = useState(false);
+  // Repli hors ligne pour dimensions L/H : uniquement les photos legacy sans
+  // largeur/hauteur en base — lu sur l'<img> au chargement (onLoad).
+  const [thumbNaturalSizes, setThumbNaturalSizes] = useState<Record<string, { w: number; h: number }>>({});
+  const [viewerNaturalSize, setViewerNaturalSize] = useState<{ w: number; h: number } | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [savingTitle, setSavingTitle] = useState(false);
@@ -110,8 +115,23 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
 
   const openPhotoViewer = (photo: DossierPhotoView) => {
     setViewedPhoto(photo);
+    setViewerNaturalSize(null);
     setEditingTitle(false);
     setTitleDraft(photo.titre ?? '');
+  };
+
+  const handleThumbImgLoad = (photo: DossierPhotoView, e: React.SyntheticEvent<HTMLImageElement>) => {
+    if (photo.largeur && photo.hauteur) return;
+    const img = e.currentTarget;
+    setThumbNaturalSizes((prev) =>
+      prev[photo.id] ? prev : { ...prev, [photo.id]: { w: img.naturalWidth, h: img.naturalHeight } }
+    );
+  };
+
+  const handleViewerImgLoad = (photo: DossierPhotoView, e: React.SyntheticEvent<HTMLImageElement>) => {
+    if (photo.largeur && photo.hauteur) return;
+    const img = e.currentTarget;
+    setViewerNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
   };
 
   const handleSaveTitle = async () => {
@@ -158,6 +178,12 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
       );
     }
   };
+
+  const viewerOverlaySize = viewedPhoto
+    ? viewedPhoto.largeur && viewedPhoto.hauteur
+      ? { w: viewedPhoto.largeur, h: viewedPhoto.hauteur }
+      : viewerNaturalSize
+    : null;
 
   return (
     <section>
@@ -228,7 +254,9 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
         <p style={{ fontSize: 14, color: textA(0.55) }}>Aucune photo pour ce dossier.</p>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 8 }}>
-          {photos.map((photo) => (
+          {photos.map((photo) => {
+            const thumbSize = photo.largeur && photo.hauteur ? { w: photo.largeur, h: photo.hauteur } : thumbNaturalSizes[photo.id];
+            return (
             <div key={photo.id} style={{ position: 'relative', aspectRatio: '1', borderRadius: 10, overflow: 'hidden', background: textA(0.08) }}>
               {photoUrls[photo.id] && (
                 <button
@@ -240,8 +268,12 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
                   <img
                     src={photoUrls[photo.id]}
                     alt=""
+                    onLoad={(e) => handleThumbImgLoad(photo, e)}
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                   />
+                  {thumbSize && (
+                    <AnnotationOverlay annotations={photo.annotations} width={thumbSize.w} height={thumbSize.h} />
+                  )}
                   {photo.titre && (
                     <span style={photoCaptionStyle}>{photo.titre}</span>
                   )}
@@ -257,7 +289,8 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
                 ×
               </button>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -335,11 +368,17 @@ export function CarnetSection({ dossierId, isOnline, notes, photos, onNotesChang
                 </button>
               )}
             </div>
-            <img
-              src={photoUrls[viewedPhoto.id]}
-              alt=""
-              style={{ maxWidth: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 8 }}
-            />
+            <div style={photoViewerImageWrapStyle}>
+              <img
+                src={photoUrls[viewedPhoto.id]}
+                alt=""
+                onLoad={(e) => handleViewerImgLoad(viewedPhoto, e)}
+                style={{ maxWidth: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 8, display: 'block' }}
+              />
+              {viewerOverlaySize && (
+                <AnnotationOverlay annotations={viewedPhoto.annotations} width={viewerOverlaySize.w} height={viewerOverlaySize.h} />
+              )}
+            </div>
             {isOnline && session?.user.id && (
               <button type="button" onClick={() => setAnnotating(true)} style={annotateButtonStyle}>
                 Annoter
@@ -456,6 +495,17 @@ const photoViewerContentStyle: React.CSSProperties = {
   gap: 12,
   maxWidth: '100%',
   maxHeight: '100%',
+};
+
+// Épouse exactement la boîte rendue de l'<img> (contraint par maxWidth/
+// maxHeight/objectFit) : position:relative + inline-block sans dimension
+// propre se dimensionne sur son contenu, donnant à l'overlay `inset:0` la
+// même taille que la photo affichée, quelle que soit l'échelle.
+const photoViewerImageWrapStyle: React.CSSProperties = {
+  position: 'relative',
+  display: 'inline-block',
+  maxWidth: '100%',
+  maxHeight: '65vh',
 };
 
 const photoTitleBarStyle: React.CSSProperties = {

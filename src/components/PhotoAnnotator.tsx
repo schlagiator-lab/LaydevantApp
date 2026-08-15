@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { renderAnnotationObject } from './AnnotationOverlay';
 import { getPhotoObjectUrl, updateDossierPhotoAnnotations } from '../lib/dossiers';
 import {
   DEFAULT_COLOR,
@@ -20,8 +21,6 @@ type Tool = 'select' | 'path' | 'text';
 
 /** En pixels image (espace du viewBox, pas écran) : distingue un tap d'un glissé. */
 const TAP_THRESHOLD_PX = 4;
-/** Largeur minimale du jumeau invisible de sélection, pour capter un doigt sur un trait fin. */
-const MIN_HIT_STROKE_PX = 24;
 
 type PendingText = {
   xNorm: number;
@@ -330,133 +329,19 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
 
   const selectedObject = objects.find((o) => o.id === selectedId) ?? null;
 
-  // --- Rendu d'un objet du calque, switch exhaustif sur les 4 types ---
-
+  // Rendu d'un objet du calque : délègue entièrement à renderAnnotationObject
+  // (AnnotationOverlay.tsx), seule implémentation de cette géométrie dans
+  // l'app — l'éditeur ne fait qu'ajouter le halo de sélection et les
+  // jumeaux de capture tactile par-dessus, via les options interactives.
   function renderObject(obj: AnnotationObject, L: number, H: number) {
-    const selected = selectedId === obj.id;
-    const haloWidthBoost = denormScalar(0.006, L, H);
-
-    switch (obj.type) {
-      case 'path': {
-        const d = pointsToSvgD(obj.points, L, H);
-        const strokeW = denormScalar(obj.width, L, H);
-        return (
-          <g key={obj.id}>
-            {selected && (
-              <path d={d} stroke={colors.accent} strokeWidth={strokeW + haloWidthBoost} fill="none"
-                strokeLinecap="round" strokeLinejoin="round" opacity={0.45} style={{ pointerEvents: 'none' }} />
-            )}
-            <path d={d} stroke={obj.color} strokeWidth={strokeW} fill="none"
-              strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: 'none' }} />
-            {tool === 'select' && (
-              <path d={d} stroke="transparent" strokeWidth={Math.max(strokeW, MIN_HIT_STROKE_PX)} fill="none"
-                strokeLinecap="round" strokeLinejoin="round"
-                style={{ pointerEvents: 'stroke', cursor: 'pointer', touchAction: 'none' }}
-                onPointerDown={(e) => handleObjectPointerDown(e, obj)}
-                onPointerMove={handleObjectPointerMove}
-                onPointerUp={handleObjectPointerUp}
-                onPointerCancel={handleObjectPointerUp}
-              />
-            )}
-          </g>
-        );
-      }
-      case 'text': {
-        const x = obj.x * L;
-        const y = obj.y * H;
-        const fontSize = denormScalar(obj.size, L, H);
-        return (
-          <text
-            key={obj.id}
-            x={x}
-            y={y}
-            fill={obj.color}
-            fontSize={fontSize}
-            textAnchor={obj.anchor || 'start'}
-            dominantBaseline="middle"
-            fontFamily="system-ui, -apple-system, Arial, sans-serif"
-            stroke={selected ? colors.accent : 'none'}
-            strokeWidth={selected ? Math.max(fontSize * 0.06, 1.5) : 0}
-            paintOrder="stroke"
-            style={{
-              pointerEvents: tool === 'select' ? 'auto' : 'none',
-              cursor: tool === 'select' ? 'pointer' : 'default',
-              userSelect: 'none',
-              touchAction: 'none',
-            }}
-            onPointerDown={tool === 'select' ? (e) => handleObjectPointerDown(e, obj) : undefined}
-            onPointerMove={tool === 'select' ? handleObjectPointerMove : undefined}
-            onPointerUp={tool === 'select' ? handleObjectPointerUp : undefined}
-            onPointerCancel={tool === 'select' ? handleObjectPointerUp : undefined}
-          >
-            {obj.text}
-          </text>
-        );
-      }
-      case 'arrow': {
-        const x1 = obj.x1 * L;
-        const y1 = obj.y1 * H;
-        const x2 = obj.x2 * L;
-        const y2 = obj.y2 * H;
-        const strokeW = denormScalar(obj.width, L, H);
-        const angle = Math.atan2(y2 - y1, x2 - x1);
-        const headLen = Math.max(strokeW * 4, denormScalar(0.02, L, H));
-        const headAngle = Math.PI / 7;
-        const hx1 = x2 - headLen * Math.cos(angle - headAngle);
-        const hy1 = y2 - headLen * Math.sin(angle - headAngle);
-        const hx2 = x2 - headLen * Math.cos(angle + headAngle);
-        const hy2 = y2 - headLen * Math.sin(angle + headAngle);
-        return (
-          <g key={obj.id} style={{ pointerEvents: 'none' }}>
-            {selected && (
-              <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={colors.accent}
-                strokeWidth={strokeW + haloWidthBoost} strokeLinecap="round" opacity={0.45} />
-            )}
-            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
-            <line x1={x2} y1={y2} x2={hx1} y2={hy1} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
-            <line x1={x2} y1={y2} x2={hx2} y2={hy2} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
-            {tool === 'select' && (
-              <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={Math.max(strokeW, MIN_HIT_STROKE_PX)}
-                strokeLinecap="round" style={{ pointerEvents: 'stroke', cursor: 'pointer', touchAction: 'none' }}
-                onPointerDown={(e) => handleObjectPointerDown(e, obj)}
-                onPointerMove={handleObjectPointerMove}
-                onPointerUp={handleObjectPointerUp}
-                onPointerCancel={handleObjectPointerUp}
-              />
-            )}
-          </g>
-        );
-      }
-      case 'shape': {
-        const x = obj.x * L;
-        const y = obj.y * H;
-        const w = obj.w * L;
-        const h = obj.h * H;
-        const strokeW = denormScalar(obj.width, L, H);
-        const geom =
-          obj.shape === 'rect'
-            ? { x, y, width: w, height: h }
-            : { cx: x + w / 2, cy: y + h / 2, rx: Math.abs(w) / 2, ry: Math.abs(h) / 2 };
-        const Tag = obj.shape === 'rect' ? 'rect' : 'ellipse';
-        return (
-          <g key={obj.id} style={{ pointerEvents: 'none' }}>
-            {selected && (
-              <Tag {...geom} stroke={colors.accent} strokeWidth={strokeW + haloWidthBoost} fill="none" opacity={0.45} />
-            )}
-            <Tag {...geom} stroke={obj.color} strokeWidth={strokeW} fill="none" />
-            {tool === 'select' && (
-              <Tag {...geom} stroke="transparent" strokeWidth={Math.max(strokeW, MIN_HIT_STROKE_PX)} fill="none"
-                style={{ pointerEvents: 'stroke', cursor: 'pointer', touchAction: 'none' }}
-                onPointerDown={(e) => handleObjectPointerDown(e, obj)}
-                onPointerMove={handleObjectPointerMove}
-                onPointerUp={handleObjectPointerUp}
-                onPointerCancel={handleObjectPointerUp}
-              />
-            )}
-          </g>
-        );
-      }
-    }
+    return renderAnnotationObject(obj, L, H, {
+      selected: selectedId === obj.id,
+      interactive: tool === 'select',
+      onPointerDown: (e) => handleObjectPointerDown(e, obj),
+      onPointerMove: handleObjectPointerMove,
+      onPointerUp: handleObjectPointerUp,
+      onPointerCancel: handleObjectPointerUp,
+    });
   }
 
   return (
@@ -508,6 +393,13 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
               onPointerUp={handleBackgroundPointerUp}
               onPointerCancel={handleBackgroundPointerCancel}
             />
+            {/* renderObject ne fait que CONSTRUIRE des props JSX (onPointerDown/...) via
+                renderAnnotationObject (module externe) ; il n'invoque jamais ces handlers
+                pendant le rendu — dragStateRef n'est écrit que dans handleObjectPointerDown
+                lui-même, appelé uniquement comme gestionnaire d'événement pointer. Faux
+                positif de react-hooks/refs : la règle ne suit pas cette indirection au
+                travers d'un appel de fonction importée. */}
+            {/* eslint-disable-next-line react-hooks/refs */}
             {objects.map((obj) => renderObject(obj, imgSize.w, imgSize.h))}
             {draftPoints && draftPoints.length > 0 && (
               <path
