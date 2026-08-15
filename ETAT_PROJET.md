@@ -364,8 +364,8 @@ par URL, affiche.
   qui trace le pourquoi, jamais une restructuration qui risque un flash visuel.
 - **Secrets** : Publishable/anon = OK en clair ; Secret/tokens = jamais dans
   code/Git/chat.
-- **Le travail n'existe que poussé** : commit + push depuis le terminal ; voir le
-  diff avant commit ; ne pas déléguer le push à Claude Code. (Refuser le « auto
+- **Le travail n'existe que poussé** : commit + push depuis le terminal sur demande; voir le
+  diff avant commit; déléguer le push à Claude Code après validation. (Refuser le « auto
   mode » de Claude Code — il dissout ces garde-fous.)
 
 ---
