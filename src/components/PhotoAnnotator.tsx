@@ -17,7 +17,8 @@ import { useToast } from '../lib/useToast';
 import { colors, textA } from '../styles/tokens';
 import type { DossierPhotoView } from '../types/database';
 
-type Tool = 'select' | 'path' | 'text';
+type Tool = 'select' | 'path' | 'text' | 'arrow' | 'rect' | 'ellipse';
+type ShapeToolKind = 'arrow' | 'rect' | 'ellipse';
 
 /** En pixels image (espace du viewBox, pas écran) : distingue un tap d'un glissé. */
 const TAP_THRESHOLD_PX = 4;
@@ -29,6 +30,32 @@ type PendingText = {
   screenTop: number;
   editingId?: string;
 };
+
+/** Geste « poser-étirer-relâcher » commun aux outils Flèche/Rectangle/Ellipse : point de départ (x0,y0) fixe, point courant (x1,y1) suivi au pointermove. */
+type ShapeDraft = { x0: number; y0: number; x1: number; y1: number };
+
+function buildShapeObject(kind: ShapeToolKind, draft: ShapeDraft, color: string, id: string): AnnotationObject {
+  if (kind === 'arrow') {
+    return { type: 'arrow', id, color, width: DEFAULT_STROKE_WIDTH, x1: draft.x0, y1: draft.y0, x2: draft.x1, y2: draft.y1 };
+  }
+  return {
+    type: 'shape',
+    id,
+    shape: kind,
+    color,
+    width: DEFAULT_STROKE_WIDTH,
+    x: Math.min(draft.x0, draft.x1),
+    y: Math.min(draft.y0, draft.y1),
+    w: Math.abs(draft.x1 - draft.x0),
+    h: Math.abs(draft.y1 - draft.y0),
+  };
+}
+
+function shapeDraftPixelDistance(draft: ShapeDraft, w: number, h: number): number {
+  const [px0, py0] = denormPoint([draft.x0, draft.y0], w, h);
+  const [px1, py1] = denormPoint([draft.x1, draft.y1], w, h);
+  return Math.hypot(px1 - px0, py1 - py0);
+}
 
 function translateObject(obj: AnnotationObject, dx: number, dy: number): AnnotationObject {
   switch (obj.type) {
@@ -88,6 +115,7 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   const [color, setColor] = useState<string>(DEFAULT_COLOR);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftPoints, setDraftPoints] = useState<[number, number][] | null>(null);
+  const [shapeDraft, setShapeDraft] = useState<ShapeDraft | null>(null);
   const [pendingText, setPendingText] = useState<PendingText | null>(null);
   const [textDraft, setTextDraft] = useState('');
   const [saving, setSaving] = useState(false);
@@ -169,14 +197,24 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
       setDraftPoints([normPoint(p.x, p.y, imgSize.w, imgSize.h)]);
     } else if (tool === 'text') {
       textStartRef.current = p;
+    } else {
+      const [x0, y0] = normPoint(p.x, p.y, imgSize.w, imgSize.h);
+      setShapeDraft({ x0, y0, x1: x0, y1: y0 });
     }
   };
 
   const handleBackgroundPointerMove = (e: React.PointerEvent<SVGRectElement>) => {
-    if (tool !== 'path' || !draftPoints || !imgSize) return;
-    const p = getSvgPoint(e);
-    if (!p) return;
-    setDraftPoints((prev) => (prev ? [...prev, normPoint(p.x, p.y, imgSize.w, imgSize.h)] : prev));
+    if (!imgSize) return;
+    if (tool === 'path' && draftPoints) {
+      const p = getSvgPoint(e);
+      if (!p) return;
+      setDraftPoints((prev) => (prev ? [...prev, normPoint(p.x, p.y, imgSize.w, imgSize.h)] : prev));
+    } else if (shapeDraft) {
+      const p = getSvgPoint(e);
+      if (!p) return;
+      const [x1, y1] = normPoint(p.x, p.y, imgSize.w, imgSize.h);
+      setShapeDraft((prev) => (prev ? { ...prev, x1, y1 } : prev));
+    }
   };
 
   const finishDraftPath = () => {
@@ -186,6 +224,15 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
     if (maxPixelExtent(pts, imgSize.w, imgSize.h) < TAP_THRESHOLD_PX) return;
     const newPath: AnnotationObject = { type: 'path', id: makeId(), color, width: DEFAULT_STROKE_WIDTH, points: pts };
     setObjects((prev) => [...prev, newPath]);
+  };
+
+  const finishShapeDraft = (kind: ShapeToolKind) => {
+    const draft = shapeDraft;
+    setShapeDraft(null);
+    if (!draft || !imgSize) return;
+    if (shapeDraftPixelDistance(draft, imgSize.w, imgSize.h) < TAP_THRESHOLD_PX) return;
+    const obj = buildShapeObject(kind, draft, color, makeId());
+    setObjects((prev) => [...prev, obj]);
   };
 
   const finishTextTap = (e: React.PointerEvent<SVGRectElement>) => {
@@ -203,10 +250,12 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
   const handleBackgroundPointerUp = (e: React.PointerEvent<SVGRectElement>) => {
     if (tool === 'path') finishDraftPath();
     else if (tool === 'text') finishTextTap(e);
+    else if (tool === 'arrow' || tool === 'rect' || tool === 'ellipse') finishShapeDraft(tool);
   };
 
   const handleBackgroundPointerCancel = () => {
     setDraftPoints(null);
+    setShapeDraft(null);
     textStartRef.current = null;
   };
 
@@ -412,6 +461,11 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
                 style={{ pointerEvents: 'none' }}
               />
             )}
+            {/* Aperçu live des outils Flèche/Rectangle/Ellipse : même fonction de rendu
+                que les objets finalisés (renderAnnotationObject, décoratif par défaut),
+                id fixe non persisté — jamais ajouté à `objects`. */}
+            {shapeDraft && tool !== 'select' && tool !== 'path' && tool !== 'text' &&
+              renderAnnotationObject(buildShapeObject(tool, shapeDraft, color, '__preview__'), imgSize.w, imgSize.h)}
           </svg>
         )}
       </div>
@@ -442,6 +496,15 @@ export function PhotoAnnotator({ photo, onClose, onSaved }: PhotoAnnotatorProps)
             </button>
             <button type="button" onClick={() => setTool('text')} style={{ ...toolButtonStyle, ...(tool === 'text' ? toolButtonActiveStyle : {}) }}>
               Texte
+            </button>
+            <button type="button" onClick={() => setTool('arrow')} style={{ ...toolButtonStyle, ...(tool === 'arrow' ? toolButtonActiveStyle : {}) }}>
+              Flèche
+            </button>
+            <button type="button" onClick={() => setTool('rect')} style={{ ...toolButtonStyle, ...(tool === 'rect' ? toolButtonActiveStyle : {}) }}>
+              Rect.
+            </button>
+            <button type="button" onClick={() => setTool('ellipse')} style={{ ...toolButtonStyle, ...(tool === 'ellipse' ? toolButtonActiveStyle : {}) }}>
+              Ellipse
             </button>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
