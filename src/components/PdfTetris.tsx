@@ -38,6 +38,27 @@ const C = {
   shelf: '#ffd23f',
 };
 
+// Couche de capture plein écran — mode standalone (GameScreen) uniquement.
+// Fige l'écran entier pendant la partie (overscroll iOS compris) et reçoit
+// les gestes de jeu partout, bande morte du bas incluse — jamais utilisée
+// pour l'usage embarqué (WebSearchScreen), qui garde son scroll normal.
+const gameCaptureLayerStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  overflow: 'hidden',
+  touchAction: 'none',
+  overscrollBehavior: 'none',
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
+  WebkitTouchCallout: 'none',
+  background: C.bgDeep,
+  display: 'flex',
+  flexDirection: 'column',
+  padding: 16,
+  boxSizing: 'border-box',
+  zIndex: 1400,
+};
+
 // Couleurs des 7 pièces (palette "dossiers" chaleureuse + froide, lisible sur marine)
 const PIECE_COLORS = {
   I: '#4bc0d9', // cyan
@@ -556,42 +577,60 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKeyUp); };
   }, [move, rotatePiece, hardDrop]);
 
-  return (
-    <>
-      {standalone && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            maxWidth: 384,
-            margin: '0 auto',
-            padding: '0 4px 14px',
-            boxSizing: 'border-box',
-          }}
-        >
-          <button
-            type="button"
-            onClick={nav.goBack}
-            aria-label="Retour"
-            style={{
-              flex: 'none',
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              background: 'rgba(255,255,255,0.1)',
-              border: 'none',
-              color: C.text,
-              fontSize: 17,
-              cursor: 'pointer',
-            }}
-          >
-            ‹
-          </button>
-          <span style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Range la bibliothèque</span>
-        </div>
-      )}
-      <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
+  // Verrou anti-overscroll iOS — uniquement en mode standalone (partie plein
+  // écran, GameScreen), jamais quand PdfTetris est embarqué dans
+  // WebSearchScreen (où la page doit rester scrollable normalement). Le
+  // onTouchMove synthétique de React est passif par défaut → preventDefault y
+  // est ignoré ; d'où un listener natif { passive: false }. Restaure le body
+  // au démontage (retour au menu ou vers le classement).
+  useEffect(() => {
+    if (!standalone) return;
+    const preventOverscroll = (e: TouchEvent) => { e.preventDefault(); };
+    document.addEventListener('touchmove', preventOverscroll, { passive: false });
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('touchmove', preventOverscroll);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [standalone]);
+
+  const header = standalone ? (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        maxWidth: 384,
+        margin: '0 auto',
+        padding: '0 4px 14px',
+        boxSizing: 'border-box',
+      }}
+    >
+      <button
+        type="button"
+        onClick={nav.goBack}
+        aria-label="Retour"
+        style={{
+          flex: 'none',
+          width: 32,
+          height: 32,
+          borderRadius: '50%',
+          background: 'rgba(255,255,255,0.1)',
+          border: 'none',
+          color: C.text,
+          fontSize: 17,
+          cursor: 'pointer',
+        }}
+      >
+        ‹
+      </button>
+      <span style={{ fontSize: 18, fontWeight: 700, color: C.text }}>Range la bibliothèque</span>
+    </div>
+  ) : null;
+
+  const gameArea = (
+    <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
       <div style={{ width: '100%', maxWidth: 384 }}>
         {/* ---- ENTÊTE JEU : OBJECTIF + SCORE ---- */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, padding: '0 4px' }}>
@@ -631,10 +670,15 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
             border: '1px solid rgba(164,198,57,0.22)',
             background: C.bg,
           }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onContextMenu={(e) => e.preventDefault()}
+          // En standalone, les gestes sont captés par gameCaptureLayerStyle
+          // (écran entier, bande morte du bas incluse) — les rattacher aussi
+          // ici doublerait chaque geste (bubbling). Usage embarqué
+          // (WebSearchScreen, non standalone) : inchangé, gestes sur le
+          // plateau uniquement.
+          onPointerDown={standalone ? undefined : onPointerDown}
+          onPointerMove={standalone ? undefined : onPointerMove}
+          onPointerUp={standalone ? undefined : onPointerUp}
+          onContextMenu={standalone ? undefined : (e) => e.preventDefault()}
         >
           <canvas ref={canvasRef} style={{ display: 'block' }} />
           {/* feedback "+bonus" quand une ligne cible est rangée */}
@@ -733,7 +777,21 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
         }
       `}</style>
       </div>
-    </>
+  );
+
+  return standalone ? (
+    <div
+      style={gameCaptureLayerStyle}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {header}
+      {gameArea}
+    </div>
+  ) : (
+    gameArea
   );
 }
 
