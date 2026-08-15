@@ -503,9 +503,11 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   // ---- gestes ----
   const touch = useRef({ x: 0, y: 0, lastColX: 0, moved: false, softOn: false, horiz: false });
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
     touch.current = { x: e.clientX, y: e.clientY, lastColX: e.clientX, moved: false, softOn: false, horiz: false };
   };
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
     const t = touch.current;
     const dx = e.clientX - t.lastColX;
     const dyTotal = e.clientY - t.y;
@@ -623,6 +625,8 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
             overflow: 'hidden',
             touchAction: 'none',
             userSelect: 'none',
+            WebkitUserSelect: 'none',
+            WebkitTouchCallout: 'none',
             height: 'min(460px, 56vh)',
             border: '1px solid rgba(164,198,57,0.22)',
             background: C.bg,
@@ -630,6 +634,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onContextMenu={(e) => e.preventDefault()}
         >
           <canvas ref={canvasRef} style={{ display: 'block' }} />
           {/* feedback "+bonus" quand une ligne cible est rangée */}
