@@ -63,7 +63,7 @@ export function emptyAnnotations(): PhotoAnnotations {
 }
 
 export const DEFAULT_COLOR = '#e11d1d';
-export const PALETTE = ['#e11d1d', '#111111', '#f5c400']; // rouge, noir, jaune
+export const PALETTE = ['#e11d1d', '#111111', '#f5c400', '#16a34a']; // rouge, noir, jaune, vert
 export const DEFAULT_STROKE_WIDTH = 0.006; // fraction de min(l,h)
 export const DEFAULT_TEXT_SIZE = 0.05;     // fraction de min(l,h)
 

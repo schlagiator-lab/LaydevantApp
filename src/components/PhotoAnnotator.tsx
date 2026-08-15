@@ -610,11 +610,19 @@ const toolbarStyle: React.CSSProperties = {
   flexWrap: 'wrap',
 };
 
+// 6 outils ne tiennent plus sur une seule pilule sans déborder sur mobile ;
+// min-width:0 laisse le groupe se réduire dans la rangée flex (sinon il
+// pousse et décale le reste de la barre), et overflowX:auto fait défiler la
+// pilule au lieu de la tronquer (l'ancien overflow:hidden coupait "Ellipse").
 const toolToggleStyle: React.CSSProperties = {
   display: 'flex',
   border: `1px solid rgba(255,255,255,0.25)`,
   borderRadius: 8,
-  overflow: 'hidden',
+  overflowX: 'auto',
+  overflowY: 'hidden',
+  minWidth: 0,
+  maxWidth: '100%',
+  WebkitOverflowScrolling: 'touch',
 };
 
 const toolButtonStyle: React.CSSProperties = {
@@ -625,6 +633,8 @@ const toolButtonStyle: React.CSSProperties = {
   fontWeight: 700,
   padding: '7px 12px',
   cursor: 'pointer',
+  flexShrink: 0,
+  whiteSpace: 'nowrap',
 };
 
 const toolButtonActiveStyle: React.CSSProperties = {

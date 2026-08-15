@@ -1,9 +1,15 @@
 import { denormScalar, pointsToSvgD } from '../lib/photoAnnotations';
 import type { AnnotationObject, PhotoAnnotations } from '../lib/photoAnnotations';
-import { colors } from '../styles/tokens';
 
 /** Largeur minimale du jumeau invisible de sélection, pour capter un doigt sur un trait fin. */
 export const MIN_HIT_STROKE_PX = 24;
+
+// Couleur dédiée à la sélection — n'appartient à AUCUNE couleur de PALETTE
+// (rouge/noir/jaune/vert), pour rester visuellement distincte quel que soit
+// l'objet sélectionné, plutôt que l'ancien halo orange (colors.accent) qui se
+// confondait avec le rouge/jaune. Traits pointillés en plus de la couleur :
+// se distingue même sur un fond photo qui matcherait accidentellement le bleu.
+const SELECTION_COLOR = '#29b6f6';
 
 export interface RenderAnnotationObjectOptions {
   /** Halo visuel de sélection (éditeur uniquement). */
@@ -33,7 +39,8 @@ export function renderAnnotationObject(
   opts: RenderAnnotationObjectOptions = {}
 ) {
   const { selected = false, interactive = false, onPointerDown, onPointerMove, onPointerUp, onPointerCancel } = opts;
-  const haloWidthBoost = denormScalar(0.006, L, H);
+  const haloWidthBoost = denormScalar(0.010, L, H);
+  const haloDash = `${denormScalar(0.014, L, H)} ${denormScalar(0.009, L, H)}`;
 
   switch (obj.type) {
     case 'path': {
@@ -42,8 +49,8 @@ export function renderAnnotationObject(
       return (
         <g key={obj.id}>
           {selected && (
-            <path d={d} stroke={colors.accent} strokeWidth={strokeW + haloWidthBoost} fill="none"
-              strokeLinecap="round" strokeLinejoin="round" opacity={0.45} style={{ pointerEvents: 'none' }} />
+            <path d={d} stroke={SELECTION_COLOR} strokeWidth={strokeW + haloWidthBoost} strokeDasharray={haloDash} fill="none"
+              strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: 'none' }} />
           )}
           <path d={d} stroke={obj.color} strokeWidth={strokeW} fill="none"
             strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: 'none' }} />
@@ -74,8 +81,8 @@ export function renderAnnotationObject(
           textAnchor={obj.anchor || 'start'}
           dominantBaseline="middle"
           fontFamily="system-ui, -apple-system, Arial, sans-serif"
-          stroke={selected ? colors.accent : 'none'}
-          strokeWidth={selected ? Math.max(fontSize * 0.06, 1.5) : 0}
+          stroke={selected ? SELECTION_COLOR : 'none'}
+          strokeWidth={selected ? Math.max(fontSize * 0.09, 2.5) : 0}
           paintOrder="stroke"
           style={{
             pointerEvents: interactive ? 'auto' : 'none',
@@ -108,8 +115,8 @@ export function renderAnnotationObject(
       return (
         <g key={obj.id} style={{ pointerEvents: 'none' }}>
           {selected && (
-            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={colors.accent}
-              strokeWidth={strokeW + haloWidthBoost} strokeLinecap="round" opacity={0.45} />
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={SELECTION_COLOR}
+              strokeWidth={strokeW + haloWidthBoost} strokeDasharray={haloDash} strokeLinecap="round" />
           )}
           <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
           <line x1={x2} y1={y2} x2={hx1} y2={hy1} stroke={obj.color} strokeWidth={strokeW} strokeLinecap="round" />
@@ -140,7 +147,7 @@ export function renderAnnotationObject(
       return (
         <g key={obj.id} style={{ pointerEvents: 'none' }}>
           {selected && (
-            <Tag {...geom} stroke={colors.accent} strokeWidth={strokeW + haloWidthBoost} fill="none" opacity={0.45} />
+            <Tag {...geom} stroke={SELECTION_COLOR} strokeWidth={strokeW + haloWidthBoost} strokeDasharray={haloDash} fill="none" />
           )}
           <Tag {...geom} stroke={obj.color} strokeWidth={strokeW} fill="none" />
           {interactive && (
