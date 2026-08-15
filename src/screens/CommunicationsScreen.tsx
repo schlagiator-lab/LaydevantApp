@@ -5,7 +5,6 @@ import { useToast } from '../lib/useToast';
 import {
   canPublishCommunications,
   getCommunicationBlob,
-  getCommunicationObjectUrl,
   listCommunications,
   softDeleteCommunication,
   uploadCommunication,
@@ -36,6 +35,22 @@ function deriveLabel(storageKey: string): string {
   const filename = slash === -1 ? storageKey : storageKey.slice(slash + 1);
   return filename.replace(UUID_PREFIX_RE, '');
 }
+
+// Viewer plein écran in-app pour une communication — remplace window.open()
+// sur une URL blob:, bloqué par Safari iOS en PWA standalone. zIndex aligné
+// sur les autres lightbox plein écran de l'app (GalerieScreen).
+const commViewerOverlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: colors.bg,
+  color: colors.text,
+  fontFamily: fonts.sans,
+  zIndex: 1400,
+  display: 'flex',
+  flexDirection: 'column',
+  padding: 16,
+  boxSizing: 'border-box',
+};
 
 function PdfPlaceholder({ label }: { label: string }) {
   return (
@@ -71,12 +86,18 @@ export function CommunicationsScreen() {
   const { session, isOnline } = useAuth();
   const { showToast } = useToast();
   const [items, setItems] = useState<Communication[] | null | undefined>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
   const [canPublish, setCanPublish] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Communication | null>(null);
   const [featuredBlob, setFeaturedBlob] = useState<Blob | null>(null);
   const [featuredLoading, setFeaturedLoading] = useState(false);
+
+  // Viewer plein écran in-app (calqué sur DocumentScreen) : remplace
+  // window.open('blob:…'), bloqué par Safari iOS en PWA standalone.
+  const [openedComm, setOpenedComm] = useState<Communication | null>(null);
+  const [openedBlob, setOpenedBlob] = useState<Blob | null>(null);
+  const [openedLoading, setOpenedLoading] = useState(false);
+  const [openedError, setOpenedError] = useState<string | null>(null);
 
   const reload = async () => {
     try {
@@ -138,6 +159,34 @@ export function CommunicationsScreen() {
     };
   }, [featured, isOnline]);
 
+  // Fetch du Blob de la communication ouverte en plein écran — même fetch
+  // authentifié que la vignette featured (getCommunicationBlob), déclenché à
+  // l'ouverture plutôt qu'au montage. Reset au démontage/à la fermeture pour
+  // ne pas garder un gros Blob PDF en mémoire une fois le viewer fermé.
+  useEffect(() => {
+    let cancelled = false;
+    // Reset volontaire à chaque changement de communication ouverte, avant
+    // de recharger — même pattern que l'effet de la vignette featured.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOpenedBlob(null);
+    setOpenedError(null);
+    if (!openedComm) return;
+    setOpenedLoading(true);
+    void (async () => {
+      try {
+        const blob = await getCommunicationBlob(openedComm.storage_key);
+        if (!cancelled) setOpenedBlob(blob);
+      } catch (err) {
+        if (!cancelled) setOpenedError(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
+      } finally {
+        if (!cancelled) setOpenedLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openedComm]);
+
   const handleFilesChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
@@ -163,17 +212,9 @@ export function CommunicationsScreen() {
     }
   };
 
-  const handleOpen = async (comm: Communication) => {
-    if (busyId) return;
-    setBusyId(comm.id);
-    try {
-      const url = await getCommunicationObjectUrl(comm.storage_key);
-      window.open(url, '_blank', 'noopener');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
-    } finally {
-      setBusyId(null);
-    }
+  const handleOpen = (comm: Communication) => {
+    if (!isOnline) return;
+    setOpenedComm(comm);
   };
 
   const confirmDelete = async () => {
@@ -314,8 +355,8 @@ export function CommunicationsScreen() {
 
                 <button
                   type="button"
-                  onClick={() => void handleOpen(featured)}
-                  disabled={busyId === featured.id}
+                  onClick={() => handleOpen(featured)}
+                  disabled={!isOnline}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -324,18 +365,16 @@ export function CommunicationsScreen() {
                     background: 'none',
                     border: 'none',
                     padding: 0,
-                    cursor: 'pointer',
+                    cursor: isOnline ? 'pointer' : 'default',
                     textAlign: 'left',
-                    opacity: busyId === featured.id ? 0.6 : 1,
+                    opacity: isOnline ? 1 : 0.6,
                   }}
                 >
                   <span style={{ fontSize: 16, fontWeight: 700, color: colors.text }}>
                     {featured.titre ?? deriveLabel(featured.storage_key)}
                   </span>
                   <span style={{ fontSize: 12.5, color: textA(0.55), fontWeight: 500 }}>
-                    {busyId === featured.id
-                      ? 'Ouverture…'
-                      : `publié par ${featured.auteur_nom ?? 'inconnu'} le ${formatDate(featured.created_at)}`}
+                    publié par {featured.auteur_nom ?? 'inconnu'} le {formatDate(featured.created_at)}
                   </span>
                 </button>
 
@@ -364,7 +403,6 @@ export function CommunicationsScreen() {
             {rest.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {rest.map((comm) => {
-                  const isBusy = busyId === comm.id;
                   return (
                     <div
                       key={comm.id}
@@ -379,8 +417,8 @@ export function CommunicationsScreen() {
                     >
                       <button
                         type="button"
-                        onClick={() => void handleOpen(comm)}
-                        disabled={isBusy}
+                        onClick={() => handleOpen(comm)}
+                        disabled={!isOnline}
                         style={{
                           flex: 1,
                           minWidth: 0,
@@ -391,18 +429,16 @@ export function CommunicationsScreen() {
                           background: 'none',
                           border: 'none',
                           padding: 0,
-                          cursor: 'pointer',
+                          cursor: isOnline ? 'pointer' : 'default',
                           textAlign: 'left',
-                          opacity: isBusy ? 0.6 : 1,
+                          opacity: isOnline ? 1 : 0.6,
                         }}
                       >
                         <span style={{ fontSize: 14.5, fontWeight: 700, color: colors.text }}>
                           {comm.titre ?? deriveLabel(comm.storage_key)}
                         </span>
                         <span style={{ fontSize: 12, color: textA(0.55), fontWeight: 500 }}>
-                          {isBusy
-                            ? 'Ouverture…'
-                            : `publié par ${comm.auteur_nom ?? 'inconnu'} le ${formatDate(comm.created_at)}`}
+                          publié par {comm.auteur_nom ?? 'inconnu'} le {formatDate(comm.created_at)}
                         </span>
                       </button>
                       {canPublish && (
@@ -441,6 +477,84 @@ export function CommunicationsScreen() {
           onCancel={() => setPendingDelete(null)}
           onConfirm={() => void confirmDelete()}
         />
+      )}
+
+      {openedComm && (
+        <div style={commViewerOverlayStyle}>
+          <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <button
+              type="button"
+              onClick={() => setOpenedComm(null)}
+              aria-label="Fermer"
+              style={{
+                flex: 'none',
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: textA(0.1),
+                border: 'none',
+                color: colors.text,
+                fontSize: 17,
+                cursor: 'pointer',
+              }}
+            >
+              ‹
+            </button>
+            <span
+              style={{
+                flex: 1,
+                fontSize: 16,
+                fontWeight: 700,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {openedComm.titre ?? deriveLabel(openedComm.storage_key)}
+            </span>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              borderRadius: 14,
+              background: colors.bgDark,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              overflow: 'hidden',
+            }}
+          >
+            {openedError ? (
+              <span
+                style={{
+                  fontFamily: fonts.mono,
+                  fontSize: 13,
+                  color: textA(0.55),
+                  padding: 16,
+                  textAlign: 'center',
+                  lineHeight: 1.6,
+                }}
+              >
+                Aperçu impossible : {openedError}
+              </span>
+            ) : openedLoading || !openedBlob ? (
+              <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
+                Chargement de l'aperçu…
+              </span>
+            ) : (
+              <Suspense
+                fallback={
+                  <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
+                    Chargement de l'aperçu…
+                  </span>
+                }
+              >
+                <PdfViewer blob={openedBlob} />
+              </Suspense>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
