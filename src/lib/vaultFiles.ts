@@ -158,6 +158,24 @@ export async function openVaultFile(row: VaultFileRow, dek: CryptoKey): Promise<
 }
 
 /**
+ * Renomme un fichier : déballe sa FEK, ré-chiffre `{name, mime}` sous CETTE
+ * MÊME FEK et écrase `meta_ciphertext`/`meta_iv`. Ne touche ni aux octets R2
+ * (`storage_key`), ni à `file_iv`, ni à l'emballage de la FEK
+ * (`wrapped_fek`/`fek_wrap_iv`), ni à `taille` — seul le JSON métadonnées
+ * change. `mime` est repris tel quel de l'appelant (déjà déchiffré via
+ * `listVaultFiles`) plutôt que re-déchiffré ici, un aller-retour crypto inutile.
+ */
+export async function renameVaultFile(row: VaultFileRow, dek: CryptoKey, newName: string, mime: string): Promise<void> {
+  const fek = await unwrapFekWithDek(row.wrapped_fek, row.fek_wrap_iv, dek);
+  const metaEncrypted = await encryptContent(fek, JSON.stringify({ name: newName, mime }));
+  const { error } = await supabase
+    .from('vault_files')
+    .update({ meta_ciphertext: metaEncrypted.ciphertext, meta_iv: metaEncrypted.content_iv })
+    .eq('id', row.id);
+  if (error) throw error;
+}
+
+/**
  * Supprime la ligne `vault_files` (SDK, RLS `has_dossier_vault_access OR
  * is_vault_admin`) PUIS l'octet R2 en best-effort. Hard delete — pas de
  * `deleted_at` sur cette table (décidé en amont) : un orphelin R2 après un

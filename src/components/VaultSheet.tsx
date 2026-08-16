@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useVaultSession } from '../lib/useVaultSession';
@@ -11,13 +11,25 @@ import {
   hasVaultAccess,
   bootstrapDossierVault,
 } from '../lib/vaultSecrets';
-import { uploadVaultFile, listVaultFiles, openVaultFile, deleteVaultFile, type VaultFileListItem } from '../lib/vaultFiles';
+import {
+  uploadVaultFile,
+  listVaultFiles,
+  openVaultFile,
+  deleteVaultFile,
+  renameVaultFile,
+  type VaultFileListItem,
+} from '../lib/vaultFiles';
 import { isVaultAdmin } from '../lib/vaultAdmin';
 import { unwrapDek, decryptContent, encryptContent } from '../lib/vault.js';
 import { formatBytes } from '../lib/storagePersistence';
+import { isIosDevice } from '../lib/pdfMeasure';
 import { ConfirmSheet } from './ConfirmSheet';
 import { CollapsibleSection } from './CollapsibleSection';
 import { colors, fonts, textA } from '../styles/tokens';
+
+// pdf.js (~1 Mo avec son worker) : lazy-loadé, seulement à l'ouverture d'un
+// fichier PDF du coffre — même motif que PlansSection/DocumentScreen.
+const PdfViewer = lazy(() => import('./PdfViewer').then((m) => ({ default: m.PdfViewer })));
 
 export interface VaultSheetProps {
   dossierId: string;
@@ -60,6 +72,12 @@ type NoteScreen =
   | { kind: 'add' }
   | { kind: 'view'; id: string }
   | { kind: 'edit'; id: string };
+
+/** Fichier ouvert en grand : image → object URL (révoquée à la fermeture),
+ * PDF → Blob passé tel quel à `<PdfViewer>` (pas d'object URL à sa charge). */
+type ViewedFile =
+  | { kind: 'image'; row: VaultFileListItem; url: string }
+  | { kind: 'pdf'; row: VaultFileListItem; blob: Blob };
 
 /**
  * Le blob déchiffré du coffre est aujourd'hui un JSON `VaultNote[]`. Un
@@ -130,8 +148,13 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [openingFileId, setOpeningFileId] = useState<string | null>(null);
+  const [sharingFileId, setSharingFileId] = useState<string | null>(null);
   const [pendingDeleteFileId, setPendingDeleteFileId] = useState<string | null>(null);
   const [deletingFile, setDeletingFile] = useState(false);
+  const [editingFileTitleId, setEditingFileTitleId] = useState<string | null>(null);
+  const [fileTitleDraft, setFileTitleDraft] = useState('');
+  const [savingFileTitle, setSavingFileTitle] = useState(false);
+  const [viewedFile, setViewedFile] = useState<ViewedFile | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Un monteur qui n'a jamais fait son propre enrôlement coffre (pas de
@@ -267,6 +290,12 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
       setFormTexte('');
       setPendingDeleteId(null);
       setSaveError(null);
+      // Le fichier ouvert en grand (image/PDF déchiffrés) ne doit pas non plus
+      // survivre à la clé privée — verrouillage ou changement de dossier.
+      setViewedFile((prev) => {
+        if (prev?.kind === 'image') URL.revokeObjectURL(prev.url);
+        return null;
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked, dossierId, userId]);
@@ -456,12 +485,51 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     setUploadProgress(null);
   }
 
-  /** Déchiffre les octets en mémoire, propose partage natif ou téléchargement
-   * (même pattern que CarnetSection/PlansSection), révoque l'object URL —
-   * jamais de clair persisté. */
+  /**
+   * Tap = ouvrir en grand, jamais le partage. Déchiffre les octets une seule
+   * fois puis bifurque selon le mime :
+   * - image/* -> visualiseur plein écran in-app (object URL révoquée à la fermeture) ;
+   * - PDF sur iOS -> <PdfViewer> in-app (window.open('blob:…') échoue sur iOS
+   *   après un await, même motif que PlansSection.handleOpenPdf) ;
+   * - PDF ailleurs (Android/desktop) -> lecteur natif, calqué EXACTEMENT sur
+   *   PlansSection.handleOpenPdfNative : pas de pré-ouverture synchrone, pas
+   *   de fallback download, window.open direct après l'await, revoke différé.
+   */
   async function handleOpenFile(row: VaultFileListItem) {
     if (content.kind !== 'ready' || openingFileId) return;
     setOpeningFileId(row.id);
+    touch();
+    try {
+      const blob = await openVaultFile(row, content.dek);
+      if (row.mime.startsWith('image/')) {
+        setViewedFile({ kind: 'image', row, url: URL.createObjectURL(blob) });
+      } else if (isIosDevice()) {
+        setViewedFile({ kind: 'pdf', row, blob });
+      } else {
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank', 'noopener');
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+    } catch (err) {
+      setFilesError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOpeningFileId(null);
+    }
+  }
+
+  function closeViewedFile() {
+    setViewedFile((prev) => {
+      if (prev?.kind === 'image') URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  }
+
+  /** Action secondaire (bouton "Partager" par fichier) — même pattern
+   * navigator.share/téléchargement que CarnetSection/PlansSection, séparé du
+   * tap qui ouvre désormais en grand. */
+  async function handleShareFile(row: VaultFileListItem) {
+    if (content.kind !== 'ready' || sharingFileId) return;
+    setSharingFileId(row.id);
     touch();
     try {
       const blob = await openVaultFile(row, content.dek);
@@ -483,7 +551,35 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
       if (err instanceof Error && err.name === 'AbortError') return;
       setFilesError(err instanceof Error ? err.message : String(err));
     } finally {
-      setOpeningFileId(null);
+      setSharingFileId(null);
+    }
+  }
+
+  function startEditFileTitle(row: VaultFileListItem) {
+    setEditingFileTitleId(row.id);
+    setFileTitleDraft(row.name);
+  }
+
+  /** Calqué sur CarnetSection.handleSaveTitle — hormis qu'un nom de fichier ne
+   * peut jamais être vidé (contrairement au titre optionnel d'une photo) :
+   * une saisie vide referme simplement l'édition sans écrire. */
+  async function handleSaveFileTitle(row: VaultFileListItem) {
+    if (content.kind !== 'ready') return;
+    const trimmed = fileTitleDraft.trim();
+    if (!trimmed) {
+      setEditingFileTitleId(null);
+      return;
+    }
+    setSavingFileTitle(true);
+    touch();
+    try {
+      await renameVaultFile(row, content.dek, trimmed, row.mime);
+      setFiles((prev) => prev.map((f) => (f.id === row.id ? { ...f, name: trimmed } : f)));
+      setEditingFileTitleId(null);
+    } catch (err) {
+      setFilesError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingFileTitle(false);
     }
   }
 
@@ -510,6 +606,7 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
   const viewedNote = screen.kind === 'view' || screen.kind === 'edit' ? notes.find((n) => n.id === screen.id) : undefined;
 
   return (
+    <>
     <div onClick={onClose} style={overlayStyle}>
       <div
         onClick={(e) => {
@@ -741,27 +838,64 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
             )}
             {files.map((f) => (
               <div key={f.id} style={fileRowStyle}>
-                <button
-                  type="button"
-                  onClick={() => void handleOpenFile(f)}
-                  disabled={openingFileId === f.id}
-                  style={fileOpenButtonStyle}
-                >
-                  <span style={fileIconWrapStyle}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenFile(f)}
+                    disabled={openingFileId === f.id}
+                    aria-label={`Ouvrir ${f.name}`}
+                    style={fileIconButtonStyle}
+                  >
                     <VaultFileIcon mime={f.mime} />
-                  </span>
-                  <span style={{ minWidth: 0, textAlign: 'left' }}>
-                    <span style={fileTitleStyle}>{f.name}</span>
+                  </button>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {editingFileTitleId === f.id ? (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          autoFocus
+                          value={fileTitleDraft}
+                          onChange={(e) => setFileTitleDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void handleSaveFileTitle(f);
+                            if (e.key === 'Escape') setEditingFileTitleId(null);
+                          }}
+                          disabled={savingFileTitle}
+                          style={fileTitleInputStyle}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveFileTitle(f)}
+                          disabled={savingFileTitle}
+                          style={fileTitleSaveButtonStyle}
+                        >
+                          {savingFileTitle ? '…' : 'OK'}
+                        </button>
+                      </div>
+                    ) : (
+                      <button type="button" onClick={() => startEditFileTitle(f)} style={fileTitleButtonStyle}>
+                        {f.name}
+                      </button>
+                    )}
                     <span style={fileMetaStyle}>
                       {openingFileId === f.id
                         ? 'Ouverture…'
                         : `${formatBytes(f.taille)} · ${new Date(f.created_at).toLocaleDateString('fr-CH')}`}
                     </span>
-                  </span>
-                </button>
-                <button type="button" onClick={() => setPendingDeleteFileId(f.id)} style={dangerLinkStyle}>
-                  Supprimer
-                </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 14, paddingLeft: 42 }}>
+                  <button
+                    type="button"
+                    onClick={() => void handleShareFile(f)}
+                    disabled={sharingFileId === f.id}
+                    style={switchModeLinkStyle}
+                  >
+                    {sharingFileId === f.id ? 'Partage…' : 'Partager'}
+                  </button>
+                  <button type="button" onClick={() => setPendingDeleteFileId(f.id)} style={dangerLinkStyle}>
+                    Supprimer
+                  </button>
+                </div>
               </div>
             ))}
             {filesError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{filesError}</span>}
@@ -884,6 +1018,37 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
         )}
       </div>
     </div>
+
+    {viewedFile && (
+      <div onClick={(e) => e.stopPropagation()} style={fileViewerOverlayStyle}>
+        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <button type="button" onClick={closeViewedFile} aria-label="Fermer" style={fileViewerCloseButtonStyle}>
+            ‹
+          </button>
+          <span style={fileViewerTitleStyle}>{viewedFile.row.name}</span>
+        </div>
+        <div style={fileViewerBodyStyle}>
+          {viewedFile.kind === 'image' ? (
+            <img
+              src={viewedFile.url}
+              alt=""
+              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' }}
+            />
+          ) : (
+            <Suspense
+              fallback={
+                <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
+                  Chargement de l'aperçu…
+                </span>
+              }
+            >
+              <PdfViewer blob={viewedFile.blob} />
+            </Suspense>
+          )}
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
@@ -1103,44 +1268,73 @@ const confirmBoxStyle: CSSProperties = {
 
 const fileRowStyle: CSSProperties = {
   display: 'flex',
-  alignItems: 'center',
-  gap: 8,
+  flexDirection: 'column',
+  gap: 6,
   background: textA(0.08),
   borderRadius: 12,
-  padding: '6px 10px 6px 6px',
+  padding: '8px 10px',
 };
 
-const fileOpenButtonStyle: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  background: 'none',
-  border: 'none',
-  padding: '6px 4px',
-  cursor: 'pointer',
-  textAlign: 'left',
-  color: colors.text,
-  fontFamily: fonts.sans,
-};
-
-const fileIconWrapStyle: CSSProperties = {
+const fileIconButtonStyle: CSSProperties = {
   flex: 'none',
   width: 32,
   height: 32,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  cursor: 'pointer',
 };
 
-const fileTitleStyle: CSSProperties = {
+/** Titre cliquable pour entrer en édition — même UX que
+ * CarnetSection.titleDisplayButtonStyle ("+ Ajouter un titre"), sans le cas
+ * vide : un nom de fichier n'est jamais optionnel. */
+const fileTitleButtonStyle: CSSProperties = {
   display: 'block',
+  width: '100%',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  margin: 0,
+  textAlign: 'left',
+  cursor: 'pointer',
+  color: colors.text,
+  fontFamily: fonts.sans,
   fontSize: 14.5,
   fontWeight: 600,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+};
+
+const fileTitleInputStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  height: 34,
+  background: textA(0.1),
+  border: 'none',
+  borderRadius: 8,
+  padding: '0 10px',
+  color: colors.text,
+  fontSize: 14,
+  fontFamily: fonts.sans,
+  outline: 'none',
+  boxSizing: 'border-box',
+};
+
+const fileTitleSaveButtonStyle: CSSProperties = {
+  flex: 'none',
+  height: 34,
+  padding: '0 14px',
+  borderRadius: 8,
+  border: 'none',
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 13,
+  fontWeight: 700,
+  cursor: 'pointer',
 };
 
 const fileMetaStyle: CSSProperties = {
@@ -1149,4 +1343,54 @@ const fileMetaStyle: CSSProperties = {
   color: textA(0.55),
   fontWeight: 500,
   marginTop: 2,
+};
+
+// Viewer plein écran in-app (image ou PDF) — même motif que
+// PlansSection.pdfViewerOverlayStyle (zIndex 1400, au-dessus du sheet coffre
+// à 1200) ; rendu en Fragment sibling de l'overlay du sheet, pas imbriqué
+// dedans, pour ne pas hériter du contexte d'empilement local créé par son
+// z-index.
+const fileViewerOverlayStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: colors.bg,
+  color: colors.text,
+  zIndex: 1400,
+  display: 'flex',
+  flexDirection: 'column',
+  padding: 16,
+  boxSizing: 'border-box',
+};
+
+const fileViewerCloseButtonStyle: CSSProperties = {
+  flex: 'none',
+  width: 32,
+  height: 32,
+  borderRadius: '50%',
+  background: textA(0.1),
+  border: 'none',
+  color: colors.text,
+  fontSize: 17,
+  cursor: 'pointer',
+};
+
+const fileViewerTitleStyle: CSSProperties = {
+  flex: 1,
+  fontSize: 16,
+  fontWeight: 700,
+  color: colors.text,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const fileViewerBodyStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  borderRadius: 14,
+  background: colors.bgDark,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  overflow: 'hidden',
 };
