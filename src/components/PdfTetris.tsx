@@ -158,6 +158,29 @@ function randomPiece(): Piece {
   return { key: k, shape: SHAPES[k], color: PIECE_COLORS[k], ext: PIECE_EXT[k], x: (CFG.cols >> 1) - 1, y: 0 };
 }
 
+// DEV brique 2 - mode duo (à venir) : injection de lignes de malus (garbage).
+// Gris distinct des 7 couleurs de pièce (PIECE_COLORS) pour rester
+// reconnaissable au premier coup d'œil.
+const GARBAGE_COLOR = '#5c6b85';
+
+// Pure : ne touche ni au ref de jeu, ni à la pièce active, ni au score.
+// Convention de grille reprise telle quelle (§0 de l'inspection) : rangée 0 =
+// HAUT, cellule vide = null, cellule pleine = { color, ext }.
+function applyGarbageLines(
+  grid: GridCell[][],
+  count: number,
+  holeColumn: number,
+): { grid: GridCell[][]; toppedOut: boolean } {
+  if (count <= 0) return { grid, toppedOut: false };
+  for (let r = 0; r < count; r++) {
+    if (grid[r].some((cell) => cell)) return { grid, toppedOut: true };
+  }
+  const garbageRow = (): GridCell[] =>
+    Array.from({ length: CFG.cols }, (_, c) => (c === holeColumn ? null : { color: GARBAGE_COLOR, ext: '' }));
+  const added: GridCell[][] = Array.from({ length: count }, garbageRow);
+  return { grid: [...grid.slice(count), ...added], toppedOut: false };
+}
+
 interface PdfTetrisProps {
   /** Lancé depuis l'accueil comme jeu autonome (pas pendant une recherche
    * web) : affiche un en-tête titre + retour au lieu de rien. */
@@ -222,6 +245,23 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     return false;
   }, []);
 
+  // DEV brique 2 - file d'attente de lignes de malus en attente d'application
+  // (mode duo à venir). Ref, pas state : évite les stale closures dans les
+  // callbacks impératifs (lockAndClear/applyClears), cohérent avec le fait
+  // que la grille elle-même est déjà en ref (§0 de l'inspection).
+  const pendingGarbageRef = useRef(0);
+
+  // Tire un holeColumn commun à toute la salve, applique le garbage à la
+  // grille du ref et vide la file. Ne fait rien si rien n'est en attente.
+  const flushPendingGarbage = useCallback((st: GameState): boolean => {
+    if (pendingGarbageRef.current <= 0) return false;
+    const holeColumn = Math.floor(Math.random() * CFG.cols);
+    const result = applyGarbageLines(st.grid, pendingGarbageRef.current, holeColumn);
+    st.grid = result.grid;
+    pendingGarbageRef.current = 0;
+    return result.toppedOut;
+  }, []);
+
   const lockAndClear = useCallback(() => {
     sfxRef.current?.play('lock');
     const st = g.current;
@@ -240,6 +280,14 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     if (full.length) {
       st.flash = full;
       st.flashUntil = performance.now() + 180;
+    } else {
+      // DEV brique 2 - lock SANS clear : applyClears ne sera pas appelée pour
+      // ce tour (gate st.flash.length côté boucle rAF), donc le garbage
+      // s'applique ici, immédiatement, avant le spawn. Le cas "lock AVEC
+      // clear" est géré en fin d'applyClears, où st.grid = keep s'est déjà
+      // résolu (§0 de l'inspection : le spawn ci-dessous est déjà antérieur
+      // à ce clear-là, timing existant non modifié).
+      if (flushPendingGarbage(st)) { st.over = true; setOver(true); return; }
     }
     // spawn suivant — on repart d'un rythme normal :
     st.piece = st.next;
@@ -249,7 +297,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     st.softConsumed = true; // bloque le réarmement tant que le doigt n'est pas relâché
     st.spawnLockUntil = performance.now() + (full.length ? 180 : 0) + CFG.spawnDelayMs; // petit répit, après le flash s'il y en a un
     if (collides(st.piece.shape, st.piece.x, st.piece.y)) { st.over = true; setOver(true); }
-  }, [collides]);
+  }, [collides, flushPendingGarbage]);
 
   const applyClears = useCallback(() => {
     const st = g.current;
@@ -287,7 +335,19 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
       setTarget(nt);
     }
     st.flash = [];
-  }, []);
+
+    // DEV brique 2 - lock AVEC clear : le clear vient de se résoudre
+    // (st.grid = keep ci-dessus) et ses SFX ont déjà joué ; le garbage ne
+    // monte que maintenant. La pièce suivante a déjà spawné dans
+    // lockAndClear (timing existant, non modifié, §0 de l'inspection) : on
+    // reteste sa collision contre la grille poussée avec la MÊME fonction
+    // que le check de spawn existant, plutôt qu'un nouveau mécanisme.
+    const topped = flushPendingGarbage(st);
+    if (topped || collides(st.piece.shape, st.piece.x, st.piece.y)) {
+      st.over = true;
+      setOver(true);
+    }
+  }, [collides, flushPendingGarbage]);
 
   const step = useCallback(() => {
     const st = g.current;
@@ -673,9 +733,31 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
               range un {target}
             </span>
           </div>
-          <div style={{ display: 'flex', gap: 12, fontSize: 12, fontFamily: 'monospace' }}>
+          <div style={{ display: 'flex', gap: 12, fontSize: 12, fontFamily: 'monospace', alignItems: 'center' }}>
             <span style={{ color: C.green }}>score&nbsp;{score}</span>
             <span style={{ color: C.textDim }}>niv.&nbsp;{level}</span>
+            {/* DEV brique 2 - bouton de test manuel du garbage (mode duo à
+                venir) ; à retirer/reconditionner en brique 3. stopPropagation
+                sur pointerDown/Up pour ne pas déclencher les gestes de jeu
+                (rotation au tap) captés par la couche plein écran standalone. */}
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={() => { pendingGarbageRef.current += 2; }}
+              style={{
+                fontSize: 10,
+                fontFamily: 'system-ui, sans-serif',
+                padding: '2px 6px',
+                borderRadius: 6,
+                border: '1px solid rgba(255,255,255,0.18)',
+                background: 'rgba(255,255,255,0.06)',
+                color: C.textDim,
+                cursor: 'pointer',
+              }}
+            >
+              ＋2 malus
+            </button>
           </div>
         </div>
 
