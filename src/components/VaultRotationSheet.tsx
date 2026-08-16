@@ -2,7 +2,17 @@ import { useState, type CSSProperties, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
 import { getOwnVaultKeyRecord, getVaultSecret, getOwnDossierAccess } from '../lib/vaultSecrets';
 import { getDossierAccessRows, getVaultUserKeyInfo, rotateVaultSecretRpc } from '../lib/vaultRotation';
-import { unlockWithPassword, unwrapDek, decryptContent, generateDek, encryptContent, wrapDekForUser } from '../lib/vault.js';
+import { listVaultFiles } from '../lib/vaultFiles';
+import {
+  unlockWithPassword,
+  unwrapDek,
+  decryptContent,
+  generateDek,
+  encryptContent,
+  wrapDekForUser,
+  unwrapFekWithDek,
+  wrapFekForDek,
+} from '../lib/vault.js';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface VaultRotationSheetProps {
@@ -115,6 +125,22 @@ export function VaultRotationSheet({ dossierId, dossierName, onClose }: VaultRot
 
       const newDekVersion = secret.dek_version + 1;
 
+      // --- 4g : fichiers du coffre — ré-emballe CHAQUE FEK sous la nouvelle
+      // DEK, sans jamais toucher aux octets R2 ni re-télécharger quoi que ce
+      // soit. oldDek (extractable) déballe, newDek ré-emballe. Lu dans la
+      // même passe que la préparation : si un fichier a été ajouté/supprimé
+      // entre-temps, la RPC (contrôle strict nb fourni == nb en base) rejette
+      // et son message remonte tel quel, plutôt que d'écrire sur une base
+      // périmée.
+      const currentFiles = await listVaultFiles(dossierId, oldDek);
+      const fileRows = await Promise.all(
+        currentFiles.map(async (file) => {
+          const fek = await unwrapFekWithDek(file.wrapped_fek, file.fek_wrap_iv, oldDek, true);
+          const { wrapped_fek, wrap_iv } = await wrapFekForDek(fek, newDek);
+          return { id: file.id, wrapped_fek, fek_wrap_iv: wrap_iv };
+        }),
+      );
+
       // --- 5 : écriture atomique (une seule transaction côté Postgres) ---
       await rotateVaultSecretRpc({
         dossierId,
@@ -123,6 +149,7 @@ export function VaultRotationSheet({ dossierId, dossierName, onClose }: VaultRot
         expectedDekVersion: secret.dek_version,
         newDekVersion,
         accessRows,
+        fileRows,
       });
 
       // --- 6 : vérification post-écriture, re-lu depuis la base ---

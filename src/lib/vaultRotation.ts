@@ -57,15 +57,21 @@ export interface RotateVaultSecretParams {
   expectedDekVersion: number;
   newDekVersion: number;
   accessRows: { user_id: string; wrapped_dek: string }[];
+  /** FEK de chaque fichier du coffre, ré-emballées sous la nouvelle DEK (préparé
+   * côté client, cf. VaultRotationSheet). [] pour un coffre sans fichier — la
+   * RPC vérifie strictement que ce compte égale le nombre de lignes vault_files
+   * du dossier, donc jamais omis. */
+  fileRows: { id: string; wrapped_fek: string; fek_wrap_iv: string }[];
 }
 
 /**
  * Appelle rotate_vault_secret (RPC, SECURITY DEFINER) : remplace les lignes
- * vault_dossier_access du dossier ET met à jour vault_secrets dans une seule
- * transaction Postgres. Si un seul destinataire manque, si le nombre de
- * lignes réellement mises à jour ne correspond pas, ou si dek_version a déjà
- * changé (rotation concurrente), la fonction lève une exception et annule
- * TOUT — jamais d'état à moitié écrit, par construction côté serveur.
+ * vault_dossier_access ET vault_files.wrapped_fek du dossier, et met à jour
+ * vault_secrets, dans une seule transaction Postgres. Si un seul destinataire
+ * ou un seul fichier manque, si le nombre de lignes réellement mises à jour
+ * ne correspond pas, ou si dek_version a déjà changé (rotation concurrente),
+ * la fonction lève une exception et annule TOUT — jamais d'état à moitié
+ * écrit, par construction côté serveur.
  */
 export async function rotateVaultSecretRpc(params: RotateVaultSecretParams): Promise<void> {
   const { error } = await supabase.rpc('rotate_vault_secret', {
@@ -75,6 +81,7 @@ export async function rotateVaultSecretRpc(params: RotateVaultSecretParams): Pro
     p_expected_dek_version: params.expectedDekVersion,
     p_new_dek_version: params.newDekVersion,
     p_access_rows: params.accessRows,
+    p_file_rows: params.fileRows,
   });
   if (error) throw error;
 }
