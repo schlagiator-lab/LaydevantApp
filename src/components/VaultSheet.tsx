@@ -839,15 +839,9 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
             {files.map((f) => (
               <div key={f.id} style={fileRowStyle}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenFile(f)}
-                    disabled={openingFileId === f.id}
-                    aria-label={`Ouvrir ${f.name}`}
-                    style={fileIconButtonStyle}
-                  >
+                  <span style={fileIconWrapStyle}>
                     <VaultFileIcon mime={f.mime} />
-                  </button>
+                  </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {editingFileTitleId === f.id ? (
                       <div style={{ display: 'flex', gap: 6 }}>
@@ -872,7 +866,12 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
                         </button>
                       </div>
                     ) : (
-                      <button type="button" onClick={() => startEditFileTitle(f)} style={fileTitleButtonStyle}>
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenFile(f)}
+                        disabled={openingFileId === f.id}
+                        style={{ ...fileTitleButtonStyle, opacity: openingFileId === f.id ? 0.5 : 1 }}
+                      >
                         {f.name}
                       </button>
                     )}
@@ -884,6 +883,9 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 14, paddingLeft: 42 }}>
+                  <button type="button" onClick={() => startEditFileTitle(f)} style={switchModeLinkStyle}>
+                    Renommer
+                  </button>
                   <button
                     type="button"
                     onClick={() => void handleShareFile(f)}
@@ -1275,17 +1277,13 @@ const fileRowStyle: CSSProperties = {
   padding: '8px 10px',
 };
 
-const fileIconButtonStyle: CSSProperties = {
+const fileIconWrapStyle: CSSProperties = {
   flex: 'none',
   width: 32,
   height: 32,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
 };
 
 /** Titre cliquable pour entrer en édition — même UX que
