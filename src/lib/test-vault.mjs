@@ -8,6 +8,7 @@ import {
   unlockWithPassword, unlockWithRecovery, resetPassword,
   generateDek, wrapDekForUser, unwrapDek,
   encryptContent, decryptContent,
+  generateFek, encryptBytes, decryptBytes, wrapFekForDek, unwrapFekWithDek,
 } from "./vault.js";
 
 let pass = 0, fail = 0;
@@ -122,6 +123,77 @@ const accessCarol = await wrapDekForUser(aliceDekExtractable, carol.public_key);
 const carolDek = await unwrapDek(accessCarol, carolPriv);
 ok("Carol, nouvellement autorisée, déchiffre le coffre roté via la DEK ré-emballée",
    (await decryptContent(carolDek, rotated.ciphertext, rotated.content_iv)) === plain);
+
+// 12) Fichiers chiffrés — enveloppe FEK : FEK par fichier, emballée en la
+//     CHIFFRANT (symétrique, pas wrapKey/RSA) sous la DEK du dossier ;
+//     octets et métadonnées (nom, type) chiffrés sous la FEK.
+console.log("\nFichiers chiffrés — enveloppe FEK");
+const sampleBytes = new TextEncoder().encode("octets binaires d'un fichier de test — %PDF-1.4 ...");
+const fileDek = await generateDek();
+const fileFek = await generateFek();
+
+const { ciphertext: fileCiphertext, iv: fileIv } = await encryptBytes(fileFek, sampleBytes);
+const decryptedBytes = await decryptBytes(fileFek, fileCiphertext, fileIv);
+ok("round-trip octets sous la FEK (comparaison octet à octet)",
+   Buffer.from(decryptedBytes).equals(Buffer.from(sampleBytes)));
+
+const metaPlain = JSON.stringify({ name: "notice-portail.pdf", mime: "application/pdf" });
+const metaEncrypted = await encryptContent(fileFek, metaPlain);
+const metaDecrypted = await decryptContent(fileFek, metaEncrypted.ciphertext, metaEncrypted.content_iv);
+ok("round-trip métadonnées (nom+type) sous la FEK", metaDecrypted === metaPlain);
+
+const { wrapped_fek: wrappedFek, wrap_iv: wrapIv } = await wrapFekForDek(fileFek, fileDek);
+const reopenedFek = await unwrapFekWithDek(wrappedFek, wrapIv, fileDek);
+const reopenedBytes = await decryptBytes(reopenedFek, fileCiphertext, fileIv);
+ok("FEK ré-ouverte via la DEK déchiffre bien les octets du fichier",
+   Buffer.from(reopenedBytes).equals(Buffer.from(sampleBytes)));
+
+const anotherDek = await generateDek();
+await throws("mauvaise DEK ne déballe pas la FEK d'un autre coffre",
+  () => unwrapFekWithDek(wrappedFek, wrapIv, anotherDek));
+
+const encA = await encryptBytes(fileFek, sampleBytes);
+const encB = await encryptBytes(fileFek, sampleBytes);
+ok("IV frais à chaque encryptBytes (ciphertext non déterministe)",
+   encA.iv !== encB.iv && !Buffer.from(encA.ciphertext).equals(Buffer.from(encB.ciphertext)));
+
+// 13) Rotation avec fichiers : la rotation ne re-chiffre QUE l'emballage de
+//     la FEK (sous la nouvelle DEK) — jamais les octets ni les métadonnées
+//     du fichier, qui restent chiffrés sous la MÊME FEK inchangée.
+console.log("\nRotation avec fichiers");
+const oldDek = await generateDek();
+const rotFek = await generateFek();
+const rotFileBytes = new TextEncoder().encode("octets du fichier avant rotation de clé");
+const rotFile = await encryptBytes(rotFek, rotFileBytes);
+const rotMeta = await encryptContent(rotFek, JSON.stringify({ name: "plan-etage.pdf", mime: "application/pdf" }));
+// Copies indépendantes prises AVANT rotation, pour prouver qu'elles ne sont
+// pas ré-écrites (pas de simple comparaison de référence).
+const rotFileCiphertextBefore = rotFile.ciphertext.slice();
+const rotFileIvBefore = rotFile.iv;
+const rotMetaBefore = { ...rotMeta };
+
+const wrappedOld = await wrapFekForDek(rotFek, oldDek);
+
+const newDek = await generateDek();
+const rotFekExtractable = await unwrapFekWithDek(wrappedOld.wrapped_fek, wrappedOld.wrap_iv, oldDek, true);
+const wrappedNew = await wrapFekForDek(rotFekExtractable, newDek);
+
+const fekAfterRotation = await unwrapFekWithDek(wrappedNew.wrapped_fek, wrappedNew.wrap_iv, newDek);
+const fileBytesAfterRotation = await decryptBytes(fekAfterRotation, rotFile.ciphertext, rotFile.iv);
+ok("fichier lisible sous la nouvelle DEK après rotation (via la FEK ré-emballée)",
+   Buffer.from(fileBytesAfterRotation).equals(Buffer.from(rotFileBytes)));
+
+await throws("ancien emballage FEK ne se déballe plus sous la nouvelle DEK",
+  () => unwrapFekWithDek(wrappedOld.wrapped_fek, wrappedOld.wrap_iv, newDek));
+
+ok("ciphertext des octets inchangé après rotation (seul l'emballage FEK a changé)",
+   Buffer.from(rotFile.ciphertext).equals(Buffer.from(rotFileCiphertextBefore)) && rotFile.iv === rotFileIvBefore);
+ok("ciphertext des métadonnées inchangé après rotation",
+   rotMeta.ciphertext === rotMetaBefore.ciphertext && rotMeta.content_iv === rotMetaBefore.content_iv);
+
+const rotFekReadOnly = await unwrapFekWithDek(wrappedNew.wrapped_fek, wrappedNew.wrap_iv, newDek); // extractable=false (défaut)
+await throws("FEK non-extractable ne peut pas être ré-emballée (export raw impossible)",
+  () => wrapFekForDek(rotFekReadOnly, newDek));
 
 console.log(`\n== ${pass} réussis, ${fail} échoués ==\n`);
 process.exit(fail === 0 ? 0 : 1);

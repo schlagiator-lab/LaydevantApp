@@ -270,3 +270,67 @@ export async function decryptContent(dek, ciphertextB64, ivB64) {
   );
   return dec.decode(pt);
 }
+
+// --------------------------------------------------- fichiers (enveloppe FEK)
+//
+// Modèle : chaque fichier a sa propre FEK (AES-256-GCM) ; la FEK est
+// "emballée" en la CHIFFRANT avec la DEK du dossier (symétrique, pas
+// wrapKey/RSA — la DEK de session n'a que ['encrypt','decrypt'], jamais de
+// droit ['wrapKey']) ; les octets du fichier et ses métadonnées (nom, type)
+// sont chiffrés sous la FEK, jamais sous la DEK directement.
+
+/** @returns {Promise<CryptoKey>} nouvelle FEK aléatoire (extractable, pour l'emballer sous la DEK) */
+export async function generateFek() {
+  return SUBTLE.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+}
+
+/**
+ * Chiffre des octets bruts (fichier). Ciphertext renvoyé en binaire, pas en
+ * base64 : destiné à un gros fichier envoyé tel quel vers R2, pas à
+ * transiter par du texte/JSON.
+ * @param {CryptoKey} key @param {ArrayBuffer|Uint8Array} bytes
+ * @returns {Promise<{ciphertext:Uint8Array, iv:string}>}
+ */
+export async function encryptBytes(key, bytes) {
+  const iv = randomBytes(IV_BYTES);
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const ct = await SUBTLE.encrypt({ name: "AES-GCM", iv }, key, data);
+  return { ciphertext: new Uint8Array(ct), iv: bufToB64(iv) };
+}
+
+/**
+ * Déchiffre des octets bruts (fichier).
+ * @param {CryptoKey} key @param {ArrayBuffer|Uint8Array} ciphertext @param {string} ivB64
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function decryptBytes(key, ciphertext, ivB64) {
+  const data = ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
+  return SUBTLE.decrypt({ name: "AES-GCM", iv: b64ToBuf(ivB64) }, key, data);
+}
+
+/**
+ * Emballe une FEK sous la DEK du dossier : exporte la FEK en raw (32 octets)
+ * et la chiffre avec encryptBytes(dek, ...) — chiffrement symétrique, pas
+ * wrapKey/RSA (la DEK n'a que ['encrypt','decrypt']).
+ * @param {CryptoKey} fek clé extractable (generateFek)
+ * @param {CryptoKey} dek
+ * @returns {Promise<{wrapped_fek:string, wrap_iv:string}>}
+ */
+export async function wrapFekForDek(fek, dek) {
+  const raw = await SUBTLE.exportKey("raw", fek);
+  const { ciphertext, iv } = await encryptBytes(dek, raw);
+  return { wrapped_fek: bufToB64(ciphertext), wrap_iv: iv };
+}
+
+/**
+ * Déballe une FEK emballée sous la DEK du dossier.
+ * @param {string} wrappedFekB64 @param {string} wrapIvB64 @param {CryptoKey} dek
+ * @param {boolean} [extractable=false] true seulement pour ré-emballer la FEK
+ *   vers une autre DEK (rotation) — wrapFekForDek exige une clé extractable
+ *   (export "raw"), même discipline que le paramètre extractable de unwrapDek.
+ * @returns {Promise<CryptoKey>}
+ */
+export async function unwrapFekWithDek(wrappedFekB64, wrapIvB64, dek, extractable = false) {
+  const raw = await decryptBytes(dek, b64ToBuf(wrappedFekB64), wrapIvB64);
+  return SUBTLE.importKey("raw", raw, { name: "AES-GCM", length: 256 }, extractable, ["encrypt", "decrypt"]);
+}
