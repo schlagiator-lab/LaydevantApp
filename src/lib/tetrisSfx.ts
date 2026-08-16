@@ -13,6 +13,7 @@ export const SFX_VOLUME = 0.5;
 export type SfxName =
   | 'rotate'
   | 'hardDrop'
+  | 'lock'
   | 'clearSingle'
   | 'clearDouble'
   | 'clearTriple'
@@ -22,6 +23,7 @@ export type SfxName =
 const SFX_FILES: Record<SfxName, string> = {
   rotate: '/SFX_PieceRotateLR.mp3',
   hardDrop: '/SFX_PieceHardDrop.mp3',
+  lock: '/SFX_SpecialLineBEndFallTouch.mp3',
   clearSingle: '/SFX_SpecialLineClearSingle.mp3',
   clearDouble: '/SFX_SpecialLineClearDouble.mp3',
   clearTriple: '/SFX_SpecialLineClearTriple.mp3',
@@ -30,10 +32,10 @@ const SFX_FILES: Record<SfxName, string> = {
 };
 
 // Sons déclenchés en rafale rapprochée (deux rotations/hard drops en
-// quelques dizaines de ms) : on joue un clone pour ne pas couper le son
-// précédent. Les sons ponctuels (clear, game over) n'ont pas ce problème —
-// un simple reset de currentTime suffit.
-const CLONE_ON_PLAY = new Set<SfxName>(['rotate', 'hardDrop']);
+// quelques dizaines de ms, ou plusieurs locks successifs) : on joue un clone
+// pour ne pas couper le son précédent. Les sons ponctuels (clear, game over)
+// n'ont pas ce problème — un simple reset de currentTime suffit.
+const CLONE_ON_PLAY = new Set<SfxName>(['rotate', 'hardDrop', 'lock']);
 
 export type TetrisSfx = {
   play: (name: SfxName) => void;

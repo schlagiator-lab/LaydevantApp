@@ -223,6 +223,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   }, []);
 
   const lockAndClear = useCallback(() => {
+    sfxRef.current?.play('lock');
     const st = g.current;
     const { shape, x, y, color, ext } = st.piece;
     for (let r = 0; r < shape.length; r++)
