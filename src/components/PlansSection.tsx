@@ -192,35 +192,21 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
     }
   };
 
-  /** Ouverture native (non-iOS) : la fenêtre est ouverte de façon SYNCHRONE
-   * dans le handler, avant le fetch, pour ne pas se faire bloquer comme
-   * popup non sollicitée (un window.open après un await peut ne plus être
-   * reconnu comme déclenché par un geste utilisateur) ; sa location est
-   * pointée vers l'object URL une fois le Blob récupéré. Si le bloqueur a
-   * quand même empêché l'ouverture (w === null), repli <a download> comme
-   * handleDownload. Revoke différé 60s, calqué sur
-   * DocumentScreen.handleOpenFullscreen — jamais de révocation immédiate,
+  /** Ouverture native (non-iOS) : pattern direct, identique à
+   * DocumentScreen.handleOpenFullscreen — window.open('_blank', 'noopener')
+   * renvoie TOUJOURS null quand 'noopener' est passé (par design, pas un
+   * signal de blocage popup), donc pas de pré-ouverture synchrone ni de
+   * branchement sur son retour ici. Revoke différé 60s, jamais immédiat,
    * sinon le lecteur natif n'a pas le temps de charger. */
   const handleOpenPdfNative = async (plan: DossierPlanView) => {
     if (busyId) return;
     setBusyId(plan.id);
-    const w = window.open('', '_blank', 'noopener');
     try {
       const blob = await getDossierPlanBlob(plan.storage_key);
       const url = URL.createObjectURL(blob);
-      if (w) {
-        w.location.href = url;
-      } else {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = planFileName(plan);
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      window.open(url, '_blank', 'noopener');
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (err) {
-      w?.close();
       showToast(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
     } finally {
       setBusyId(null);
