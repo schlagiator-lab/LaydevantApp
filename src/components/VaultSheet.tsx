@@ -17,6 +17,7 @@ import {
 import { isVaultAdmin } from '../lib/vaultAdmin';
 import { unwrapDek, decryptContent, generateDek, encryptContent, wrapDekForUser } from '../lib/vault.js';
 import { ConfirmSheet } from './ConfirmSheet';
+import { CollapsibleSection } from './CollapsibleSection';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface VaultSheetProps {
@@ -579,29 +580,33 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
               )}
             </div>
             {viewedNote && (
-              <button type="button" onClick={() => setPendingDeleteId(viewedNote.id)} style={dangerLinkStyle}>
-                Supprimer cette note
-              </button>
+              <div style={{ marginTop: 10, paddingTop: 14, borderTop: `1px solid ${textA(0.12)}` }}>
+                <button type="button" onClick={() => setPendingDeleteId(viewedNote.id)} style={dangerLinkStyle}>
+                  Supprimer cette note
+                </button>
+              </div>
             )}
           </div>
         )}
 
         {isOnline && isAdmin && (
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${textA(0.12)}` }}>
-            <p style={{ fontSize: 12, color: textA(0.5), lineHeight: 1.5, margin: '0 0 10px' }}>
-              Efface définitivement toutes les données sensibles de ce dossier. Irréversible.
-            </p>
-            {destroyError && (
-              <p style={{ fontSize: 13, color: colors.accent, fontWeight: 600, margin: '0 0 10px' }}>{destroyError}</p>
-            )}
-            <button
-              type="button"
-              onClick={() => setPendingDestroy(true)}
-              disabled={destroying}
-              style={{ ...destroyButtonStyle, opacity: destroying ? 0.5 : 1, cursor: destroying ? 'default' : 'pointer' }}
-            >
-              {destroying ? 'Destruction…' : 'Détruire le coffre de ce dossier'}
-            </button>
+            <CollapsibleSection title="Zone de danger">
+              <p style={{ fontSize: 12, color: textA(0.5), lineHeight: 1.5, margin: '0 0 10px' }}>
+                Efface définitivement toutes les données sensibles de ce dossier. Irréversible.
+              </p>
+              {destroyError && (
+                <p style={{ fontSize: 13, color: colors.accent, fontWeight: 600, margin: '0 0 10px' }}>{destroyError}</p>
+              )}
+              <button
+                type="button"
+                onClick={() => setPendingDestroy(true)}
+                disabled={destroying}
+                style={{ ...destroyButtonStyle, opacity: destroying ? 0.5 : 1, cursor: destroying ? 'default' : 'pointer' }}
+              >
+                {destroying ? 'Destruction…' : 'Détruire le coffre de ce dossier'}
+              </button>
+            </CollapsibleSection>
           </div>
         )}
 
