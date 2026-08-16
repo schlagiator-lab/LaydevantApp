@@ -5,17 +5,14 @@ import { useVaultSession } from '../lib/useVaultSession';
 import {
   getVaultSecret,
   getOwnDossierAccess,
-  getVaultPublicKeys,
   getOwnVaultKeyRecord,
-  insertVaultSecret,
   updateVaultSecret,
-  insertDossierAccessRows,
   destroyDossierVault,
   hasVaultAccess,
-  type VaultDossierAccessRow,
+  bootstrapDossierVault,
 } from '../lib/vaultSecrets';
 import { isVaultAdmin } from '../lib/vaultAdmin';
-import { unwrapDek, decryptContent, generateDek, encryptContent, wrapDekForUser } from '../lib/vault.js';
+import { unwrapDek, decryptContent, encryptContent } from '../lib/vault.js';
 import { ConfirmSheet } from './ConfirmSheet';
 import { CollapsibleSection } from './CollapsibleSection';
 import { colors, fonts, textA } from '../styles/tokens';
@@ -291,29 +288,7 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
         const encrypted = await encryptContent(content.dek, serialized);
         await updateVaultSecret(dossierId, encrypted);
       } else {
-        const dek = await generateDek();
-        const encrypted = await encryptContent(dek, serialized);
-        await insertVaultSecret(dossierId, encrypted);
-
-        const recipients = await getVaultPublicKeys();
-        const rows: VaultDossierAccessRow[] = await Promise.all(
-          recipients.map(async (r) => ({
-            dossier_id: dossierId,
-            user_id: r.user_id,
-            wrapped_dek: await wrapDekForUser(dek, r.public_key),
-            dek_version: 1,
-          })),
-        );
-        try {
-          await insertDossierAccessRows(rows);
-        } catch (accessErr) {
-          throw new Error(
-            `Le contenu a été enregistré mais l'octroi des accès a échoué (${
-              accessErr instanceof Error ? accessErr.message : String(accessErr)
-            }). Contacte un administrateur pour réparer les accès de ce dossier.`,
-            { cause: accessErr },
-          );
-        }
+        const dek = await bootstrapDossierVault(dossierId, serialized);
         setContent({ kind: 'ready', dek });
       }
       setNotes(nextNotes);

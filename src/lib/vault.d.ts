@@ -58,3 +58,36 @@ export function encryptContent(dek: CryptoKey, plaintext: string): Promise<Encry
 
 /** Déchiffre le contenu texte du coffre. */
 export function decryptContent(dek: CryptoKey, ciphertextB64: string, ivB64: string): Promise<string>;
+
+/** Octets chiffrés en binaire (pas base64) + IV en base64, pour un fichier. */
+export interface EncryptedBytes {
+  ciphertext: Uint8Array;
+  iv: string;
+}
+
+/** Emballage d'une FEK sous la DEK du dossier (chiffrement symétrique, pas wrapKey). */
+export interface WrappedFek {
+  wrapped_fek: string;
+  wrap_iv: string;
+}
+
+/** Nouvelle FEK aléatoire (extractable), une par fichier. */
+export function generateFek(): Promise<CryptoKey>;
+
+/** Chiffre des octets bruts (fichier) sous n'importe quelle clé AES-GCM. */
+export function encryptBytes(key: CryptoKey, bytes: ArrayBuffer | Uint8Array): Promise<EncryptedBytes>;
+
+/** Déchiffre des octets bruts (fichier). */
+export function decryptBytes(key: CryptoKey, ciphertext: ArrayBuffer | Uint8Array, ivB64: string): Promise<ArrayBuffer>;
+
+/** Emballe une FEK sous la DEK du dossier (export raw + encryptBytes). */
+export function wrapFekForDek(fek: CryptoKey, dek: CryptoKey): Promise<WrappedFek>;
+
+/** Déballe une FEK emballée sous la DEK du dossier.
+ *  extractable=true uniquement pour ré-emballer la FEK vers une autre DEK (rotation). */
+export function unwrapFekWithDek(
+  wrappedFekB64: string,
+  wrapIvB64: string,
+  dek: CryptoKey,
+  extractable?: boolean,
+): Promise<CryptoKey>;

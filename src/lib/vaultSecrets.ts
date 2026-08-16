@@ -4,6 +4,7 @@
 // et l'emballage de DEK, ce module ne fait que lire/poser des lignes déjà
 // chiffrées.
 import { supabase } from './supabase';
+import { generateDek, encryptContent, wrapDekForUser } from './vault.js';
 import type { UserKeyRecord, EncryptedContent } from './vault.js';
 
 export interface VaultUserKeyRow extends UserKeyRecord {
@@ -135,4 +136,45 @@ export async function insertDossierAccessRows(rows: VaultDossierAccessRow[]): Pr
 export async function upsertDossierAccessRow(row: VaultDossierAccessRow): Promise<void> {
   const { error } = await supabase.from('vault_dossier_access').upsert(row);
   if (error) throw error;
+}
+
+/**
+ * Amorce un coffre encore vide (aucune ligne `vault_secrets` pour ce
+ * dossier) : nouvelle DEK, chiffre `initialPlaintext` sous cette DEK, écrit
+ * `vault_secrets`, puis emballe la DEK vers tous les destinataires actuels
+ * (`getVaultPublicKeys`) et écrit `vault_dossier_access`. Extrait tel quel de
+ * la branche bootstrap de `VaultSheet.persistNotes` (notes) — seule source de
+ * cette séquence, aussi appelée par `uploadVaultFile` (fichiers) quand le
+ * premier fichier d'un dossier est déposé avant toute note. `initialPlaintext`
+ * laisse l'appelant choisir le contenu initial du blob notes (`'[]'` pour un
+ * bootstrap déclenché par un fichier, le JSON des notes en cours pour un
+ * bootstrap déclenché par la sauvegarde d'une note).
+ * @returns la DEK créée (extractable), pour que l'appelant l'utilise
+ *   immédiatement sans la redéballer.
+ */
+export async function bootstrapDossierVault(dossierId: string, initialPlaintext: string): Promise<CryptoKey> {
+  const dek = await generateDek();
+  const encrypted = await encryptContent(dek, initialPlaintext);
+  await insertVaultSecret(dossierId, encrypted);
+
+  const recipients = await getVaultPublicKeys();
+  const rows: VaultDossierAccessRow[] = await Promise.all(
+    recipients.map(async (r) => ({
+      dossier_id: dossierId,
+      user_id: r.user_id,
+      wrapped_dek: await wrapDekForUser(dek, r.public_key),
+      dek_version: 1,
+    })),
+  );
+  try {
+    await insertDossierAccessRows(rows);
+  } catch (accessErr) {
+    throw new Error(
+      `Le contenu a été enregistré mais l'octroi des accès a échoué (${
+        accessErr instanceof Error ? accessErr.message : String(accessErr)
+      }). Contacte un administrateur pour réparer les accès de ce dossier.`,
+      { cause: accessErr },
+    );
+  }
+  return dek;
 }
