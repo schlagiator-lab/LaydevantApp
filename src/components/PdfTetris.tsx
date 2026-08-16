@@ -493,7 +493,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     if (inSpawnWindow(st)) return;
     if (st.over || st.flash.length) return;
     while (!collides(st.piece.shape, st.piece.x, st.piece.y + 1)) st.piece.y += 1;
-    sfxRef.current?.play('hardDrop');
     lockAndClear();
   }, [collides, lockAndClear]);
 
