@@ -176,13 +176,55 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
     }
   };
 
-  /** PDF : ouverture in-app via PdfViewer (plein écran) — window.open('blob:…')
-   * échoue sur iOS quand il suit un await (Safari bloque hors du geste
-   * synchrone). Ouverture instantanée, le viewer affiche son propre spinner
-   * pendant le fetch du Blob. */
+  /** PDF : bifurcation par plateforme.
+   * - iOS : viewer in-app (PdfViewer) — window.open('blob:…') échoue sur iOS
+   *   quand il suit un await (Safari bloque hors du geste synchrone), d'où le
+   *   viewer plein écran in-app avec son propre garde-fou "trop détaillé".
+   * - Android/desktop : lecteur PDF natif, qui re-rastérise au zoom (net),
+   *   contrairement au canvas pdf.js à résolution fixe — restaure le
+   *   comportement d'avant le viewer in-app pour cette plateforme. */
   const handleOpenPdf = (plan: DossierPlanView) => {
     if (!isOnline) return;
-    setOpenedPlan(plan);
+    if (isIosDevice()) {
+      setOpenedPlan(plan);
+    } else {
+      void handleOpenPdfNative(plan);
+    }
+  };
+
+  /** Ouverture native (non-iOS) : la fenêtre est ouverte de façon SYNCHRONE
+   * dans le handler, avant le fetch, pour ne pas se faire bloquer comme
+   * popup non sollicitée (un window.open après un await peut ne plus être
+   * reconnu comme déclenché par un geste utilisateur) ; sa location est
+   * pointée vers l'object URL une fois le Blob récupéré. Si le bloqueur a
+   * quand même empêché l'ouverture (w === null), repli <a download> comme
+   * handleDownload. Revoke différé 60s, calqué sur
+   * DocumentScreen.handleOpenFullscreen — jamais de révocation immédiate,
+   * sinon le lecteur natif n'a pas le temps de charger. */
+  const handleOpenPdfNative = async (plan: DossierPlanView) => {
+    if (busyId) return;
+    setBusyId(plan.id);
+    const w = window.open('', '_blank', 'noopener');
+    try {
+      const blob = await getDossierPlanBlob(plan.storage_key);
+      const url = URL.createObjectURL(blob);
+      if (w) {
+        w.location.href = url;
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = planFileName(plan);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      w?.close();
+      showToast(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
+    } finally {
+      setBusyId(null);
+    }
   };
 
   /** DWG / fichier générique : pas de preview possible dans un navigateur — téléchargement direct. */
@@ -248,7 +290,11 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
                     <span style={{ minWidth: 0, textAlign: 'left' }}>
                       <span style={titleTextStyle}>{label}</span>
                       <span style={metaTextStyle}>
-                        {isBusy ? 'Téléchargement…' : `${KIND_TEXT[kind]} · ${formatBytes(plan.taille)}`}
+                        {isBusy
+                          ? kind === 'pdf'
+                            ? 'Ouverture…'
+                            : 'Téléchargement…'
+                          : `${KIND_TEXT[kind]} · ${formatBytes(plan.taille)}`}
                       </span>
                     </span>
                   )}
