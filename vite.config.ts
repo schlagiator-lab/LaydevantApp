@@ -38,7 +38,25 @@ export default defineConfig({
       workbox: {
         // Document PDFs are handled by our own Cache API logic (§4 of CLAUDE.md),
         // not by workbox — this only precaches the app shell.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2,mjs,jpg,jpeg,webp,avif,gif}'],
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2,mjs,jpg,jpeg,webp,avif,gif,mp3}'],
+        // tetris_audio.mp3 (~6.9 Mo) exceeds the 2 Mo default precache limit —
+        // excluded from precache (would otherwise be forced onto every install)
+        // and served instead via the runtimeCaching rule below (cached on first
+        // online playback, then available offline).
+        globIgnores: ['**/tetris_audio.mp3'],
+        runtimeCaching: [
+          {
+            urlPattern: /\/tetris_audio\.mp3$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'tetris-music',
+              expiration: {
+                maxEntries: 1,
+                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 jours
+              },
+            },
+          },
+        ],
       },
     }),
   ],

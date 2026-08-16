@@ -3,6 +3,7 @@ import { useNavigation } from '../lib/useNavigation';
 import { useAuth } from '../lib/useAuth';
 import { submitScore, getLeaderboard } from '../lib/gameScores';
 import { Leaderboard } from './Leaderboard';
+import { createTetrisSfx, type SfxName, type TetrisSfx } from '../lib/tetrisSfx';
 import type { GameLeaderboardEntry } from '../types/database';
 
 /**
@@ -262,6 +263,9 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     for (let r = 0; r < CFG.rows; r++)
       if (!st.flash.includes(r)) keep.push(st.grid[r]);
     const cleared = st.flash.length;
+    const clearSfx: Record<number, SfxName> = { 1: 'clearSingle', 2: 'clearDouble', 3: 'clearTriple', 4: 'tetris' };
+    const sfxName = clearSfx[cleared];
+    if (sfxName) sfxRef.current?.play(sfxName);
     while (keep.length < CFG.rows) keep.unshift(Array<GridCell>(CFG.cols).fill(null));
     st.grid = keep;
     st.lines += cleared;
@@ -448,6 +452,20 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     };
   }, []);
 
+  // Bruitages (rotation, hard drop, clears, game over) — préchargés une
+  // seule fois au montage, volume constant sous la musique. Ref (pas de
+  // state) : joués depuis des callbacks impératifs (loop rAF, handlers de
+  // geste), aucun besoin de re-render.
+  const sfxRef = useRef<TetrisSfx | null>(null);
+  useEffect(() => {
+    const sfx = createTetrisSfx();
+    sfxRef.current = sfx;
+    return () => {
+      sfx.dispose();
+      sfxRef.current = null;
+    };
+  }, []);
+
   // ---- actions ----
   const move = useCallback((dx: number) => {
     const st = g.current;
@@ -461,7 +479,11 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     const rs = rotate(st.piece.shape);
     // wall kicks simples
     for (const k of [0, -1, 1, -2, 2]) {
-      if (!collides(rs, st.piece.x + k, st.piece.y)) { st.piece.shape = rs; st.piece.x += k; return; }
+      if (!collides(rs, st.piece.x + k, st.piece.y)) {
+        st.piece.shape = rs; st.piece.x += k;
+        sfxRef.current?.play('rotate');
+        return;
+      }
     }
   }, [collides]);
 
@@ -470,6 +492,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     if (inSpawnWindow(st)) return;
     if (st.over || st.flash.length) return;
     while (!collides(st.piece.shape, st.piece.x, st.piece.y + 1)) st.piece.y += 1;
+    sfxRef.current?.play('hardDrop');
     lockAndClear();
   }, [collides, lockAndClear]);
 
@@ -494,6 +517,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   useEffect(() => {
     if (!over || submittedRef.current) return;
     submittedRef.current = true;
+    sfxRef.current?.play('gameOver');
 
     // si la toute dernière pièce complète aussi une ligne, laisse le flash
     // (180ms, cf. lockAndClear) se résoudre avant de lire le score définitif
