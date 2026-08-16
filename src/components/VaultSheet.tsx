@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useVaultSession } from '../lib/useVaultSession';
@@ -11,8 +11,10 @@ import {
   hasVaultAccess,
   bootstrapDossierVault,
 } from '../lib/vaultSecrets';
+import { uploadVaultFile, listVaultFiles, openVaultFile, deleteVaultFile, type VaultFileListItem } from '../lib/vaultFiles';
 import { isVaultAdmin } from '../lib/vaultAdmin';
 import { unwrapDek, decryptContent, encryptContent } from '../lib/vault.js';
+import { formatBytes } from '../lib/storagePersistence';
 import { ConfirmSheet } from './ConfirmSheet';
 import { CollapsibleSection } from './CollapsibleSection';
 import { colors, fonts, textA } from '../styles/tokens';
@@ -118,6 +120,19 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Bloc "Fichiers" (tranche 5) : état strictement local à ce composant, en
+  // miroir du bloc notes ci-dessus — même discipline zero-knowledge (rien de
+  // déchiffré ne survit hors de ce state, purgé quand `content` quitte 'ready').
+  const [files, setFiles] = useState<VaultFileListItem[]>([]);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [openingFileId, setOpeningFileId] = useState<string | null>(null);
+  const [pendingDeleteFileId, setPendingDeleteFileId] = useState<string | null>(null);
+  const [deletingFile, setDeletingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Un monteur qui n'a jamais fait son propre enrôlement coffre (pas de
   // ligne vault_user_keys) n'a par définition aucun mot de passe de coffre à
@@ -256,6 +271,51 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked, dossierId, userId]);
 
+  /** Déchiffre nom/type de chaque ligne `vault_files` via sa FEK — jamais les
+   * octets ici (liste seulement). Appelée à l'ouverture du coffre (effet
+   * ci-dessous) et explicitement après chaque upload/suppression, la DEK ne
+   * changeant pas d'identité entre deux fichiers d'une même session. */
+  async function reloadVaultFiles(dek: CryptoKey) {
+    try {
+      const rows = await listVaultFiles(dossierId, dek);
+      setFiles(rows);
+      setFilesError(null);
+    } catch (err) {
+      setFilesError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Se déclenche à l'ouverture du coffre ET juste après le bootstrap déclenché
+  // par le tout premier fichier d'un coffre vide (content.dek change alors
+  // d'identité, null -> CryptoKey) : pas de rechargement manuel nécessaire
+  // dans ce cas précis, seulement après les uploads/suppressions suivants
+  // (mêmes octets de DEK, l'effet ne se redéclenche pas tout seul).
+  useEffect(() => {
+    if (content.kind !== 'ready') return;
+    const dek = content.dek;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await listVaultFiles(dossierId, dek);
+        if (!cancelled) {
+          setFiles(rows);
+          setFilesError(null);
+        }
+      } catch (err) {
+        if (!cancelled) setFilesError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    // Cleanup, pas le corps de l'effet (même motif que l'effet de chargement
+    // des notes ci-dessus) : purge les fichiers déchiffrés dès que la DEK
+    // change d'identité (verrouillage, changement de dossier).
+    return () => {
+      cancelled = true;
+      setFiles([]);
+      setFilesError(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content.kind === 'ready' ? content.dek : null, dossierId]);
+
   async function handleUnlockSubmit(e: FormEvent) {
     e.preventDefault();
     if (unlocking) return;
@@ -347,6 +407,104 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     const ok = await persistNotes(nextNotes);
     setPendingDeleteId(null);
     if (ok) openList();
+  }
+
+  /**
+   * Chiffre et dépose 1..N fichiers, séquentiellement (jamais Promise.all —
+   * une connexion chantier ne supporte pas le parallèle, même motif que le
+   * carnet). `touch()` est appelé au tout début ET à chaque itération : un
+   * upload lent (gros PDF, réseau chantier) ne doit jamais être interrompu
+   * par l'auto-lock 15 min faute de clic pendant l'attente.
+   */
+  async function handleFilesUpload(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    if (!userId || uploading || (content.kind !== 'ready' && content.kind !== 'empty')) return;
+    const filesToUpload = Array.from(fileList);
+    setUploading(true);
+    setUploadError(null);
+    setUploadProgress({ done: 0, total: filesToUpload.length });
+    touch();
+
+    let activeDek: CryptoKey | null = content.kind === 'ready' ? content.dek : null;
+    const errors: string[] = [];
+    for (let i = 0; i < filesToUpload.length; i++) {
+      touch();
+      const file = filesToUpload[i];
+      try {
+        await uploadVaultFile(dossierId, activeDek, file);
+        if (!activeDek) {
+          // Ce premier upload vient d'amorcer le coffre (bootstrapDossierVault,
+          // côté uploadVaultFile) : on récupère notre propre ligne d'accès
+          // fraîchement écrite pour obtenir la DEK sans redéverrouiller, et on
+          // bascule 'empty' -> 'ready' pour que le reste du sheet (notes,
+          // fichiers suivants) en profite immédiatement.
+          const access = await getOwnDossierAccess(dossierId, userId);
+          if (access && privateKey) {
+            activeDek = await unwrapDek(access.wrapped_dek, privateKey);
+            setContent({ kind: 'ready', dek: activeDek });
+          }
+        }
+      } catch (err) {
+        errors.push(`${file.name} : ${err instanceof Error ? err.message : String(err)}`);
+      }
+      setUploadProgress({ done: i + 1, total: filesToUpload.length });
+    }
+
+    if (activeDek) await reloadVaultFiles(activeDek);
+    setUploadError(errors.length > 0 ? errors.join(' — ') : null);
+    setUploading(false);
+    setUploadProgress(null);
+  }
+
+  /** Déchiffre les octets en mémoire, propose partage natif ou téléchargement
+   * (même pattern que CarnetSection/PlansSection), révoque l'object URL —
+   * jamais de clair persisté. */
+  async function handleOpenFile(row: VaultFileListItem) {
+    if (content.kind !== 'ready' || openingFileId) return;
+    setOpeningFileId(row.id);
+    touch();
+    try {
+      const blob = await openVaultFile(row, content.dek);
+      const file = new File([blob], row.name, { type: row.mime });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: row.name });
+      } else {
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = row.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (err) {
+      // Annulation volontaire du partage natif : comportement normal, pas une erreur.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      setFilesError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOpeningFileId(null);
+    }
+  }
+
+  async function handleConfirmDeleteFile() {
+    if (!pendingDeleteFileId) return;
+    const row = files.find((f) => f.id === pendingDeleteFileId);
+    if (!row) {
+      setPendingDeleteFileId(null);
+      return;
+    }
+    setDeletingFile(true);
+    touch();
+    try {
+      await deleteVaultFile(row);
+      setFiles((prev) => prev.filter((f) => f.id !== row.id));
+      setPendingDeleteFileId(null);
+    } catch (err) {
+      setFilesError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingFile(false);
+    }
   }
 
   const viewedNote = screen.kind === 'view' || screen.kind === 'edit' ? notes.find((n) => n.id === screen.id) : undefined;
@@ -564,6 +722,76 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
           </div>
         )}
 
+        {isOnline && unlocked && (content.kind === 'empty' || content.kind === 'ready') && (
+          <div
+            style={{
+              marginTop: 20,
+              paddingTop: 16,
+              borderTop: `1px solid ${textA(0.12)}`,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            <span style={{ fontSize: 15, fontWeight: 700 }}>Fichiers</span>
+            {files.length === 0 && !uploading && (
+              <p style={{ fontSize: 13, color: textA(0.55), margin: 0 }}>
+                Aucun fichier — PDF ou photo de credentials.
+              </p>
+            )}
+            {files.map((f) => (
+              <div key={f.id} style={fileRowStyle}>
+                <button
+                  type="button"
+                  onClick={() => void handleOpenFile(f)}
+                  disabled={openingFileId === f.id}
+                  style={fileOpenButtonStyle}
+                >
+                  <span style={fileIconWrapStyle}>
+                    <VaultFileIcon mime={f.mime} />
+                  </span>
+                  <span style={{ minWidth: 0, textAlign: 'left' }}>
+                    <span style={fileTitleStyle}>{f.name}</span>
+                    <span style={fileMetaStyle}>
+                      {openingFileId === f.id
+                        ? 'Ouverture…'
+                        : `${formatBytes(f.taille)} · ${new Date(f.created_at).toLocaleDateString('fr-CH')}`}
+                    </span>
+                  </span>
+                </button>
+                <button type="button" onClick={() => setPendingDeleteFileId(f.id)} style={dangerLinkStyle}>
+                  Supprimer
+                </button>
+              </div>
+            ))}
+            {filesError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{filesError}</span>}
+            {uploadError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{uploadError}</span>}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,image/*"
+              multiple
+              onChange={(e) => {
+                void handleFilesUpload(e.target.files);
+                e.target.value = '';
+              }}
+              style={{ display: 'none' }}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              style={{ ...primaryButtonStyle, opacity: uploading ? 0.6 : 1 }}
+            >
+              {uploading
+                ? uploadProgress
+                  ? `Envoi… (${uploadProgress.done}/${uploadProgress.total})`
+                  : 'Envoi…'
+                : 'Ajouter un fichier'}
+            </button>
+          </div>
+        )}
+
         {isOnline && isAdmin && (
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${textA(0.12)}` }}>
             <CollapsibleSection title="Zone de danger">
@@ -626,8 +854,68 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
             </div>
           </div>
         )}
+
+        {pendingDeleteFileId && (
+          <div onClick={(e) => e.stopPropagation()} style={confirmOverlayStyle}>
+            <div style={confirmBoxStyle}>
+              <p style={{ fontSize: 14, lineHeight: 1.5, margin: '0 0 16px' }}>
+                Supprimer définitivement ce fichier du coffre ?
+              </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteFileId(null)}
+                  disabled={deletingFile}
+                  style={{ ...secondaryButtonStyle, flex: 1 }}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmDeleteFile()}
+                  disabled={deletingFile}
+                  style={{ ...primaryButtonStyle, flex: 1, opacity: deletingFile ? 0.6 : 1 }}
+                >
+                  {deletingFile ? 'Suppression…' : 'Supprimer'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+function VaultFileIcon({ mime }: { mime: string }) {
+  if (mime === 'application/pdf') {
+    return (
+      <svg width="22" height="22" viewBox="0 0 20 20" aria-hidden="true">
+        <path
+          d="M5 2.5h7l3 3v12a1 1 0 01-1 1H5a1 1 0 01-1-1v-14a1 1 0 011-1z"
+          fill="none"
+          stroke={colors.accent}
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <path d="M12 2.5v3h3" fill="none" stroke={colors.accent} strokeWidth="1.5" strokeLinejoin="round" />
+        <text x="10" y="14.5" textAnchor="middle" fontSize="5.5" fontWeight="700" fill={colors.accent}>
+          PDF
+        </text>
+      </svg>
+    );
+  }
+  return (
+    <svg width="22" height="22" viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M5 2.5h7l3 3v12a1 1 0 01-1 1H5a1 1 0 01-1-1v-14a1 1 0 011-1z"
+        fill="none"
+        stroke={textA(0.45)}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path d="M12 2.5v3h3" fill="none" stroke={textA(0.45)} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
   );
 }
 
@@ -811,4 +1099,54 @@ const confirmBoxStyle: CSSProperties = {
   boxSizing: 'border-box',
   fontFamily: fonts.sans,
   color: colors.text,
+};
+
+const fileRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  background: textA(0.08),
+  borderRadius: 12,
+  padding: '6px 10px 6px 6px',
+};
+
+const fileOpenButtonStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  background: 'none',
+  border: 'none',
+  padding: '6px 4px',
+  cursor: 'pointer',
+  textAlign: 'left',
+  color: colors.text,
+  fontFamily: fonts.sans,
+};
+
+const fileIconWrapStyle: CSSProperties = {
+  flex: 'none',
+  width: 32,
+  height: 32,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const fileTitleStyle: CSSProperties = {
+  display: 'block',
+  fontSize: 14.5,
+  fontWeight: 600,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const fileMetaStyle: CSSProperties = {
+  display: 'block',
+  fontSize: 12,
+  color: textA(0.55),
+  fontWeight: 500,
+  marginTop: 2,
 };
