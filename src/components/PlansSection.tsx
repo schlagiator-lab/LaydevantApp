@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useToast } from '../lib/useToast';
 import { deleteDossierPlan, getDossierPlanBlob, getPhotoObjectUrl, updateDossierPlanTitre } from '../lib/dossiers';
+import { isIosDevice, pdfImageMegapixels } from '../lib/pdfMeasure';
 import { formatBytes } from '../lib/storagePersistence';
 import type { DossierPlanView } from '../types/database';
 import { ConfirmSheet } from './ConfirmSheet';
@@ -9,6 +10,15 @@ import { colors, fonts, radius, textA } from '../styles/tokens';
 // pdf.js (~1 MB with its worker) is only needed once a PDF plan is actually
 // opened — code-split out, same pattern as DocumentScreen/CommunicationsScreen.
 const PdfViewer = lazy(() => import('./PdfViewer').then((m) => ({ default: m.PdfViewer })));
+
+// Certains plans sont des PDF-image (scan haute résolution, Adobe Image
+// Conversion) : une seule image JPEG de plusieurs centaines de mégapixels.
+// pdf.js doit la décoder en mémoire pour rendre le canvas — ce que le
+// process WebKit d'iOS (mémoire plafonnée) ne supporte pas, il est tué
+// ("un problème récurrent est survenu"). Android/desktop ouvrent l'original
+// sans problème : ce plafond ne s'applique que sur iOS (mesure décode-free,
+// pdfMeasure.ts). Ajustable au test.
+const IOS_MAX_PLAN_MEGAPIXELS = 30;
 
 export interface PlansSectionProps {
   isOnline: boolean;
@@ -62,6 +72,8 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
   const [openedBlob, setOpenedBlob] = useState<Blob | null>(null);
   const [openedLoading, setOpenedLoading] = useState(false);
   const [openedError, setOpenedError] = useState<string | null>(null);
+  // iOS uniquement : mesuré une fois le Blob obtenu, jamais sur Android/desktop.
+  const [tooDetailedForIos, setTooDetailedForIos] = useState(false);
 
   // Vignettes uniquement pour les plans image — jamais de fetch pour
   // pdf/dwg/file avant un clic explicite (pas de preview pour ces types,
@@ -103,12 +115,22 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOpenedBlob(null);
     setOpenedError(null);
+    setTooDetailedForIos(false);
     if (!openedPlan) return;
     setOpenedLoading(true);
     void (async () => {
       try {
         const blob = await getDossierPlanBlob(openedPlan.storage_key);
-        if (!cancelled) setOpenedBlob(blob);
+        if (cancelled) return;
+        // Mesure décode-free, iOS uniquement : ne jamais rendre un PDF-image
+        // monstre dans un canvas sur iOS (§IOS_MAX_PLAN_MEGAPIXELS). Aucune
+        // mesure sur Android/desktop — chemin inchangé.
+        if (isIosDevice()) {
+          const mpx = pdfImageMegapixels(await blob.arrayBuffer());
+          if (cancelled) return;
+          setTooDetailedForIos(mpx > IOS_MAX_PLAN_MEGAPIXELS);
+        }
+        setOpenedBlob(blob);
       } catch (err) {
         if (!cancelled) setOpenedError(err instanceof Error ? err.message : "Échec de l'ouverture du PDF.");
       } finally {
@@ -413,6 +435,8 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
               <span style={{ fontFamily: fonts.mono, fontSize: 13, color: textA(0.55) }}>
                 Chargement de l'aperçu…
               </span>
+            ) : tooDetailedForIos ? (
+              <PlanTooDetailedCard plan={openedPlan} blob={openedBlob} />
             ) : (
               <Suspense
                 fallback={
@@ -428,6 +452,64 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
         </div>
       )}
     </section>
+  );
+}
+
+/** Nom de fichier pour le partage/téléchargement de l'original — le libellé
+ * affiché du plan, complété en .pdf s'il ne l'a pas déjà (un titre saisi à la
+ * main n'a pas forcément l'extension). */
+function planFileName(plan: DossierPlanView): string {
+  const label = planLabel(plan);
+  return label.toLowerCase().endsWith('.pdf') ? label : `${label}.pdf`;
+}
+
+/**
+ * Repli iOS pour un plan PDF-image trop lourd (§IOS_MAX_PLAN_MEGAPIXELS) :
+ * décoder l'image pour le rendre tuerait le process WebKit, donc pas de
+ * rendu du tout — juste le partage/téléchargement de l'original, exactement
+ * le pattern navigator.share de CarnetSection.handleExportPhoto.
+ */
+function PlanTooDetailedCard({ plan, blob }: { plan: DossierPlanView; blob: Blob }) {
+  const { showToast } = useToast();
+  const [sharing, setSharing] = useState(false);
+
+  const handleShare = async () => {
+    if (sharing) return;
+    setSharing(true);
+    try {
+      const file = new File([blob], planFileName(plan), { type: 'application/pdf' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: planLabel(plan) });
+      } else {
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = planFileName(plan);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (err) {
+      // Annulation volontaire du partage natif : comportement normal, pas une erreur.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      showToast(err instanceof Error ? err.message : 'Échec du partage.');
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: 24, textAlign: 'center' }}>
+      <PlanKindIcon kind="pdf" />
+      <span style={{ fontSize: 16, fontWeight: 700, color: colors.text }}>Plan trop détaillé pour iPhone</span>
+      <span style={{ fontSize: 13.5, color: textA(0.6), lineHeight: 1.5, maxWidth: 260 }}>
+        Ce plan est consultable sur Android ou sur ordinateur.
+      </span>
+      <button type="button" onClick={() => void handleShare()} disabled={sharing} style={planShareButtonStyle}>
+        {sharing ? 'Partage…' : "Partager / enregistrer l'original"}
+      </button>
+    </div>
   );
 }
 
@@ -653,6 +735,17 @@ const viewerTitleInputStyle: React.CSSProperties = {
   fontWeight: 600,
   padding: '0 10px',
   boxSizing: 'border-box',
+};
+
+const planShareButtonStyle: React.CSSProperties = {
+  border: 'none',
+  borderRadius: radius.pill,
+  background: colors.accent,
+  color: '#132146',
+  fontSize: 14,
+  fontWeight: 700,
+  padding: '12px 20px',
+  cursor: 'pointer',
 };
 
 const viewerDeleteButtonStyle: React.CSSProperties = {
