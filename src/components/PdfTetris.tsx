@@ -96,7 +96,11 @@ const PIECE_EXT: Record<PieceKey, string> = {
   J: '.xlsx',
   L: '.csv',
 };
-const EXT_LIST = Object.values(PIECE_EXT);
+
+// Bounding box fixe de l'aperçu "prochaine pièce" (entête, JSX) : 4 col. max
+// (I, seule pièce sur 1 rangée) × 2 rangées max (toutes les autres).
+const NEXT_PREVIEW_COLS = 4;
+const NEXT_PREVIEW_ROWS = 2;
 
 const CFG = {
   cols: 10,
@@ -110,7 +114,6 @@ const CFG = {
   swipeThreshold: 90, // px verticaux pour déclencher un hard drop (peu sensible)
   softDropArm: 40, // px verticaux avant d'armer le soft drop
   colStep: 22, // px horizontaux par colonne déplacée
-  bonusPoints: 5, // points bonus si la ligne complétée contient l'extension cible
 };
 
 // barème Tetris classique : récompense les multi-lignes en un seul coup,
@@ -250,8 +253,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   const [level, setLevel] = useState(1);
   const [over, setOver] = useState(false);
   const [score, setScore] = useState(0);
-  const [target, setTarget] = useState(() => EXT_LIST[(Math.random() * EXT_LIST.length) | 0]);
-  const [bonusFx, setBonusFx] = useState(0); // horodatage pour animer le "+bonus"
 
   // Classement — bonus non bloquant : une panne réseau ne doit jamais
   // empêcher de voir/rejouer l'écran de fin de partie (CLAUDE.md, hors ligne
@@ -266,13 +267,12 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   // ni colonne dédiée.
   const lastKnownBestRef = useRef<number | null>(null);
 
-  // DEV brique 4 - calcule l'état initial via l'initialiseur PARESSEUX de
-  // useState (garanti par React de n'être appelé qu'UNE fois, jamais réévalué
-  // aux re-renders suivants — même pattern que `target` juste au-dessus),
-  // donc seedPieces()/randomPiece() n'y tirent bien qu'au montage, pas à
-  // chaque re-render. `g` reste un ref (mutation impérative partout ailleurs
-  // dans ce fichier) : on ne fait que lui passer cette valeur déjà calculée,
-  // sans jamais lire/écrire `.current` pendant le rendu lui-même.
+  // Calcule l'état initial via l'initialiseur PARESSEUX de useState (garanti
+  // par React de n'être appelé qu'UNE fois, jamais réévalué aux re-renders
+  // suivants), donc seedPieces()/randomPiece() n'y tirent bien qu'au montage,
+  // pas à chaque re-render. `g` reste un ref (mutation impérative partout
+  // ailleurs dans ce fichier) : on ne fait que lui passer cette valeur déjà
+  // calculée, sans jamais lire/écrire `.current` pendant le rendu lui-même.
   const [initialGameState] = useState<GameState>(() => {
     seedPieces(duoMatch ? duoMatch.seed : null);
     return {
@@ -292,7 +292,13 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     };
   });
   const g = useRef<GameState>(initialGameState);
-  const targetRef = useRef(target);
+  // Miroir React de st.next (shape/color seulement, pas l'ext) pour l'aperçu
+  // "prochaine pièce" — st.next lui-même reste dans le ref, mis à jour ici en
+  // parallèle à chaque fois qu'il change (lock, restart), jamais recalculé.
+  const [nextPreview, setNextPreview] = useState({
+    shape: initialGameState.next.shape,
+    color: initialGameState.next.color,
+  });
 
   const collides = useCallback((shape: Shape, px: number, py: number): boolean => {
     const st = g.current;
@@ -362,6 +368,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     // spawn suivant — on repart d'un rythme normal :
     st.piece = st.next;
     st.next = randomPiece();
+    setNextPreview({ shape: st.next.shape, color: st.next.color }); // miroir React pour l'aperçu (JSX, hors canvas)
     st.acc = 0; // vide le trop-plein de chute (sinon la pièce plonge)
     st.soft = false; // coupe le soft drop hérité du geste précédent
     st.softConsumed = true; // bloque le réarmement tant que le doigt n'est pas relâché
@@ -372,12 +379,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   const applyClears = useCallback(() => {
     const st = g.current;
     if (!st.flash.length) return;
-    // une ligne effacée "compte" pour la cible si elle contient au moins un
-    // bloc de l'extension recherchée
-    let bonusLines = 0;
-    for (const r of st.flash) {
-      if (st.grid[r].some((cell) => cell && cell.ext === targetRef.current)) bonusLines++;
-    }
     const keep: GridCell[][] = [];
     for (let r = 0; r < CFG.rows; r++)
       if (!st.flash.includes(r)) keep.push(st.grid[r]);
@@ -398,17 +399,9 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     const lvl = 1 + Math.floor(st.lines / CFG.speedupEvery);
     setLevel(lvl);
     st.dropMs = Math.max(CFG.minDropMs, CFG.startDropMs * Math.pow(CFG.speedupFactor, lvl - 1));
-    // score : barème multi-lignes (LINE_POINTS) × niveau courant + bonus cible
-    st.score += (LINE_POINTS[cleared] ?? 0) * lvl + bonusLines * CFG.bonusPoints;
+    // score : barème multi-lignes (LINE_POINTS) × niveau courant
+    st.score += (LINE_POINTS[cleared] ?? 0) * lvl;
     setScore(st.score);
-    if (bonusLines > 0) {
-      setBonusFx(performance.now()); // déclenche l'animation "+bonus"
-      // nouvelle cible différente de l'actuelle
-      let nt = targetRef.current;
-      while (nt === targetRef.current) nt = EXT_LIST[(Math.random() * EXT_LIST.length) | 0];
-      targetRef.current = nt;
-      setTarget(nt);
-    }
     st.flash = [];
 
     // DEV brique 2 - lock AVEC clear : le clear vient de se résoudre
@@ -458,35 +451,30 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     resize();
     window.addEventListener('resize', resize);
 
-    // cellSize/ox/oy optionnels : par défaut le plateau principal (cell/
-    // offX/offY ci-dessus) — l'aperçu "prochaine pièce" plus bas réutilise
-    // cette MÊME routine avec une échelle/position réduites, sans dupliquer
-    // le dessin.
-    const drawCell = (gx: number, gy: number, color: string | null, ghost = false, cellSize = cell, ox = offX, oy = offY) => {
-      const x = ox + gx * cellSize, y = oy + gy * cellSize;
+    const drawCell = (gx: number, gy: number, color: string | null, ghost = false) => {
+      const x = offX + gx * cell, y = offY + gy * cell;
       ctx.fillStyle = ghost ? 'rgba(255,255,255,0.10)' : (color as string);
-      roundRect(ctx, x + 1, y + 1, cellSize - 2, cellSize - 2, 3);
+      roundRect(ctx, x + 1, y + 1, cell - 2, cell - 2, 3);
       ctx.fill();
       if (!ghost) {
         ctx.fillStyle = 'rgba(255,255,255,0.22)';
-        ctx.fillRect(x + 3, y + 2, cellSize * 0.4, 2);
+        ctx.fillRect(x + 3, y + 2, cell * 0.4, 2);
       }
     };
 
-    // label d'extension centré sur une forme (une seule fois par pièce) —
-    // mêmes paramètres optionnels que drawCell ci-dessus, même raison.
-    const drawExtLabel = (shape: Shape, px: number, py: number, ext: string, alpha = 1, cellSize = cell, ox = offX, oy = offY) => {
+    // label d'extension centré sur une forme (une seule fois par pièce)
+    const drawExtLabel = (shape: Shape, px: number, py: number, ext: string, alpha = 1) => {
       // centre géométrique des cases pleines
       let sx = 0, sy = 0, n = 0;
       for (let r = 0; r < shape.length; r++)
         for (let c = 0; c < shape[r].length; c++)
           if (shape[r][c]) { sx += px + c + 0.5; sy += py + r + 0.5; n++; }
       if (!n) return;
-      const cx = ox + (sx / n) * cellSize, cy = oy + (sy / n) * cellSize;
+      const cx = offX + (sx / n) * cell, cy = offY + (sy / n) * cell;
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.fillStyle = 'rgba(15,36,68,0.92)';
-      ctx.font = `700 ${Math.max(10, Math.floor(cellSize * 0.5))}px system-ui, sans-serif`;
+      ctx.font = `700 ${Math.max(10, Math.floor(cell * 0.5))}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.strokeStyle = 'rgba(255,255,255,0.55)';
@@ -570,33 +558,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
         drawExtLabel(sh, st.piece.x, st.piece.y, st.piece.ext, 1); // label pièce active
       }
 
-      // Aperçu "prochaine pièce" — lit st.next tel quel (posé par
-      // randomPiece()/pieceRandom(), RNG inchangé), dessiné via la MÊME
-      // routine que le plateau (drawCell/drawExtLabel), à échelle réduite,
-      // dans la marge droite du plateau (jamais par-dessus). Ne s'affiche
-      // que si cette marge est assez large pour ne rien recouvrir — cas
-      // normal sur les téléphones visés (CLAUDE.md §15, plateau contraint en
-      // hauteur donc large marge horizontale), sinon simplement omis plutôt
-      // que de risquer un recouvrement.
-      const previewCols = 4, previewRows = 2, previewMargin = 8; // 4×2 : bounding box max des 7 formes (I = 1×4)
-      const previewCell = Math.max(8, Math.floor(cell * 0.4));
-      const previewW = previewCell * previewCols;
-      const previewH = previewCell * previewRows;
-      if (offX > previewW + previewMargin * 2) {
-        const previewX = offX + cell * CFG.cols + previewMargin;
-        const previewY = offY + previewMargin;
-        ctx.fillStyle = C.grid;
-        roundRect(ctx, previewX, previewY, previewW, previewH, 6);
-        ctx.fill();
-        const nsh = st.next.shape;
-        const nx = Math.floor((previewCols - nsh[0].length) / 2);
-        const ny = Math.floor((previewRows - nsh.length) / 2);
-        for (let r = 0; r < nsh.length; r++)
-          for (let c = 0; c < nsh[r].length; c++)
-            if (nsh[r][c]) drawCell(nx + c, ny + r, st.next.color, false, previewCell, previewX, previewY);
-        drawExtLabel(nsh, nx, ny, st.next.ext, 1, previewCell, previewX, previewY);
-      }
-
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -669,14 +630,13 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     // duo sur le MÊME seed que le match (rejoue la même suite de pièces,
     // cohérent avec un seed qui identifie un match, pas une partie).
     seedPieces(duoMatch ? duoMatch.seed : null);
-    const t0 = EXT_LIST[(Math.random() * EXT_LIST.length) | 0];
     g.current = {
       grid: emptyGrid(), piece: randomPiece(), next: randomPiece(),
       dropMs: CFG.startDropMs, acc: 0, lines: 0, score: 0, over: false,
       flash: [], flashUntil: 0, soft: false, softConsumed: false, spawnLockUntil: 0,
     };
-    targetRef.current = t0;
-    setTarget(t0); setScore(0); setLines(0); setLevel(1); setOver(false);
+    setNextPreview({ shape: g.current.next.shape, color: g.current.next.color });
+    setScore(0); setLines(0); setLevel(1); setOver(false);
     submittedRef.current = false;
     setBestScore(null);
     setLeaderboard(null);
@@ -926,22 +886,41 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   const gameArea = (
     <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
       <div style={{ width: '100%', maxWidth: 384 }}>
-        {/* ---- ENTÊTE JEU : OBJECTIF + SCORE ---- */}
+        {/* ---- ENTÊTE JEU : SUIVANT + SCORE ---- */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, padding: '0 4px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <span style={{ color: C.textDim }}>Objectif :</span>
-            <span
+            <span style={{ color: C.textDim }}>Suivant</span>
+            {/* Aperçu "prochaine pièce" — simples blocs de couleur (pas de
+                label d'extension), miroir React de st.next (nextPreview),
+                centré dans une bounding box fixe 4×2 (I=1×4 max large,
+                les autres 2×3 max haut) pour ne pas faire sauter le layout
+                quand la forme change. */}
+            <div
               style={{
-                padding: '2px 8px',
-                borderRadius: 6,
-                fontFamily: 'monospace',
-                fontWeight: 600,
-                background: 'rgba(232,130,60,0.18)',
-                color: C.orange,
+                display: 'grid',
+                gridTemplateColumns: `repeat(${NEXT_PREVIEW_COLS}, 10px)`,
+                gridTemplateRows: `repeat(${NEXT_PREVIEW_ROWS}, 10px)`,
+                gap: 2,
               }}
             >
-              range un {target}
-            </span>
+              {Array.from({ length: NEXT_PREVIEW_ROWS * NEXT_PREVIEW_COLS }, (_, i) => {
+                const r = Math.floor(i / NEXT_PREVIEW_COLS), c = i % NEXT_PREVIEW_COLS;
+                const shapeR = r - Math.floor((NEXT_PREVIEW_ROWS - nextPreview.shape.length) / 2);
+                const shapeC = c - Math.floor((NEXT_PREVIEW_COLS - nextPreview.shape[0].length) / 2);
+                const filled = nextPreview.shape[shapeR]?.[shapeC] === 1;
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 2,
+                      background: filled ? nextPreview.color : 'transparent',
+                    }}
+                  />
+                );
+              })}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 12, fontSize: 12, fontFamily: 'monospace', alignItems: 'center' }}>
             <span style={{ color: C.green }}>score&nbsp;{score}</span>
@@ -976,16 +955,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
           onContextMenu={standalone ? undefined : (e) => e.preventDefault()}
         >
           <canvas ref={canvasRef} style={{ display: 'block' }} />
-          {/* feedback "+bonus" quand une ligne cible est rangée */}
-          {bonusFx > 0 && (
-            <div
-              key={bonusFx}
-              className="bonusfx"
-              style={{ position: 'absolute', left: '50%', top: 24, transform: 'translateX(-50%)', pointerEvents: 'none', color: C.shelf }}
-            >
-              <span style={{ fontSize: 18, fontWeight: 700 }}>+{CFG.bonusPoints} bon dossier ! ⚡</span>
-            </div>
-          )}
           {over && (
             <div
               style={{
@@ -1078,19 +1047,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
           Glisse ← → pour ranger · tap pour tourner · glisse ↓ pour accélérer
         </p>
       </div>
-
-      <style>{`
-        @keyframes bonusfx {
-          0%   { opacity: 0; transform: translate(-50%, 8px) scale(0.9); }
-          20%  { opacity: 1; transform: translate(-50%, 0) scale(1.05); }
-          80%  { opacity: 1; }
-          100% { opacity: 0; transform: translate(-50%, -18px) scale(1); }
-        }
-        .bonusfx { animation: bonusfx 1.4s ease-out forwards; }
-        @media (prefers-reduced-motion: reduce) {
-          .bonusfx { animation-duration: 0.8s; }
-        }
-      `}</style>
       </div>
   );
 
