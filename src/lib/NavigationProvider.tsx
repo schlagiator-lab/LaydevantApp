@@ -113,6 +113,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goVaultAdmin = () => push({ screen: 'vaultAdmin' });
   const goGame = () => push({ screen: 'game' });
   const goGameLeaderboard = () => push({ screen: 'gameLeaderboard' });
+  const goGameDuoLobby = () => push({ screen: 'gameDuoLobby' });
   const goTools = () => push({ screen: 'tools' });
   const goCommunications = () => push({ screen: 'communications' });
   // Passe TOUJOURS par l'historique : c'est le popstate en résultant qui
@@ -142,6 +143,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goVaultAdmin,
         goGame,
         goGameLeaderboard,
+        goGameDuoLobby,
         goTools,
         goCommunications,
         goBack,

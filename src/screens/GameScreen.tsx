@@ -61,6 +61,11 @@ export function GameScreen() {
                 Classement
               </button>
             </div>
+            <div style={{ marginTop: 10 }}>
+              <button type="button" onClick={nav.goGameDuoLobby} style={secondaryButtonStyle}>
+                Match Duo
+              </button>
+            </div>
           </div>
         </>
       )}

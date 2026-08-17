@@ -21,6 +21,7 @@ import { VaultEnrollScreen } from './screens/VaultEnrollScreen';
 import { VaultAdminScreen } from './screens/VaultAdminScreen';
 import { GameScreen } from './screens/GameScreen';
 import { GameLeaderboardScreen } from './screens/GameLeaderboardScreen';
+import { GameDuoLobbyScreen } from './screens/GameDuoLobbyScreen';
 import { ToolsScreen } from './screens/ToolsScreen';
 import { CommunicationsScreen } from './screens/CommunicationsScreen';
 import { requestPersistentStorage } from './lib/storagePersistence';
@@ -54,6 +55,8 @@ function Screens() {
       return <GameScreen />;
     case 'gameLeaderboard':
       return <GameLeaderboardScreen />;
+    case 'gameDuoLobby':
+      return <GameDuoLobbyScreen />;
     case 'tools':
       return <ToolsScreen />;
     case 'communications':

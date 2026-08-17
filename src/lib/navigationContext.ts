@@ -32,6 +32,7 @@ export type NavState =
   | { screen: 'vaultAdmin' }
   | { screen: 'game' }
   | { screen: 'gameLeaderboard' }
+  | { screen: 'gameDuoLobby' }
   | { screen: 'tools' }
   | { screen: 'communications' };
 
@@ -87,6 +88,10 @@ export interface NavigationContextValue {
    * fin de partie — cran séparé pour que le retour Android revienne au menu
    * du jeu plutôt qu'à l'accueil. */
   goGameLeaderboard: () => void;
+  /** Lobby du mode duo (brique 4) — matchmaking par code, cran séparé pour
+   * que le retour Android revienne au menu du jeu plutôt qu'à l'accueil,
+   * même convention que goGameLeaderboard. */
+  goGameDuoLobby: () => void;
   /** Sous-menu "Outils" — regroupe diagnostic stockage et enrôlement coffre. */
   goTools: () => void;
   /** Liste des communications d'entreprise (item 4) — remplace l'ancien

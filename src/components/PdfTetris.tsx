@@ -236,9 +236,16 @@ interface PdfTetrisProps {
    * bouton "Classement" à côté de "Rejouer" sur l'écran de fin de partie,
    * pour retourner au sous-écran classement du parent. */
   onShowLeaderboard?: () => void;
+  /** DEV brique 4 - fourni uniquement par GameDuoLobbyScreen une fois les
+   * deux joueurs réunis. Présence seule => mode duo : seedPieces(seed) au
+   * lieu de seedPieces(null), pas de soumission au classement solo. `code`
+   * n'est pas dans le typage donné en brief (matchId/seed/role) mais est
+   * nécessaire au bandeau de vérification visuelle (e) — ajouté ici. matchId/
+   * role posés pour la brique 5 (sync/attaques), non utilisés en brique 4. */
+  duoMatch?: { matchId: string; code: string; seed: number; role: 'host' | 'guest' };
 }
 
-export default function PdfTetris({ standalone = false, onShowLeaderboard }: PdfTetrisProps) {
+export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMatch }: PdfTetrisProps) {
   const nav = useNavigation();
   const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -263,21 +270,32 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   // ni colonne dédiée.
   const lastKnownBestRef = useRef<number | null>(null);
 
-  const g = useRef<GameState>({
-    grid: emptyGrid(),
-    piece: randomPiece(),
-    next: randomPiece(),
-    dropMs: CFG.startDropMs,
-    acc: 0,
-    lines: 0,
-    score: 0,
-    over: false,
-    flash: [], // lignes en cours d'illumination
-    flashUntil: 0,
-    soft: false,
-    softConsumed: false,
-    spawnLockUntil: 0,
+  // DEV brique 4 - calcule l'état initial via l'initialiseur PARESSEUX de
+  // useState (garanti par React de n'être appelé qu'UNE fois, jamais réévalué
+  // aux re-renders suivants — même pattern que `target` juste au-dessus),
+  // donc seedPieces()/randomPiece() n'y tirent bien qu'au montage, pas à
+  // chaque re-render. `g` reste un ref (mutation impérative partout ailleurs
+  // dans ce fichier) : on ne fait que lui passer cette valeur déjà calculée,
+  // sans jamais lire/écrire `.current` pendant le rendu lui-même.
+  const [initialGameState] = useState<GameState>(() => {
+    seedPieces(duoMatch ? duoMatch.seed : null);
+    return {
+      grid: emptyGrid(),
+      piece: randomPiece(),
+      next: randomPiece(),
+      dropMs: CFG.startDropMs,
+      acc: 0,
+      lines: 0,
+      score: 0,
+      over: false,
+      flash: [], // lignes en cours d'illumination
+      flashUntil: 0,
+      soft: false,
+      softConsumed: false,
+      spawnLockUntil: 0,
+    };
   });
+  const g = useRef<GameState>(initialGameState);
   const targetRef = useRef(target);
 
   const collides = useCallback((shape: Shape, px: number, py: number): boolean => {
@@ -604,11 +622,11 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   }, [collides, lockAndClear]);
 
   const restart = useCallback(() => {
-    // DEV brique 3 - restart solo : reseed explicitement en mode Math.random
-    // (au cas où le générateur serait resté seedé, ex. après "Test seed").
-    // Le duo (brique 4) appellera seedPieces(matchSeed) avant son propre
-    // lancement, ailleurs — pas de changement de comportement solo ici.
-    seedPieces(null);
+    // DEV brique 3/4 - reseed explicitement à chaque restart : solo en
+    // Math.random (au cas où le générateur serait resté seedé, ex. après
+    // "Test seed"), duo sur le MÊME seed que le match (rejoue la même suite
+    // de pièces, cohérent avec un seed qui identifie un match, pas une partie).
+    seedPieces(duoMatch ? duoMatch.seed : null);
     const t0 = EXT_LIST[(Math.random() * EXT_LIST.length) | 0];
     g.current = {
       grid: emptyGrid(), piece: randomPiece(), next: randomPiece(),
@@ -621,7 +639,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     setBestScore(null);
     setLeaderboard(null);
     setIsNewRecord(false);
-  }, []);
+  }, [duoMatch]);
 
   // fin de partie : enregistre le score une seule fois puis lit le classement —
   // le tout best-effort, jamais bloquant si hors ligne (CLAUDE.md, hors ligne =
@@ -630,6 +648,14 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
     if (!over || submittedRef.current) return;
     submittedRef.current = true;
     sfxRef.current?.play('gameOver');
+
+    // DEV brique 4 - un duel n'a pas sa place dans le classement solo : pas
+    // de submitScore/getLeaderboard en mode duo, `bestScore`/`leaderboard`
+    // restent à leur valeur initiale `null` (jamais fetchés) — le rendu de
+    // l'overlay (plus bas) traite ce cas séparément pour ne pas afficher un
+    // "Chargement du classement…" indéfini. Reste du game over (overlay,
+    // retour, SFX ci-dessus) inchangé.
+    if (duoMatch) return;
 
     // si la toute dernière pièce complète aussi une ligne, laisse le flash
     // (180ms, cf. lockAndClear) se résoudre avant de lire le score définitif
@@ -655,7 +681,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
       })();
     }, delay);
     return () => window.clearTimeout(timer);
-  }, [over]);
+  }, [over, duoMatch]);
 
   // ---- gestes ----
   const touch = useRef({ x: 0, y: 0, lastColX: 0, moved: false, softOn: false, horiz: false });
@@ -768,6 +794,22 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   const gameArea = (
     <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
       <div style={{ width: '100%', maxWidth: 384 }}>
+        {/* DEV brique 4 - bandeau de vérification visuelle du seed partagé ;
+            à retirer/reconditionner en brique 5. */}
+        {duoMatch && (
+          <div
+            style={{
+              fontSize: 10,
+              fontFamily: 'monospace',
+              color: C.textDim,
+              textAlign: 'center',
+              padding: '2px 4px 6px',
+            }}
+          >
+            DEV duo — code {duoMatch.code} · seed {duoMatch.seed} · rôle {duoMatch.role}
+          </div>
+        )}
+
         {/* ---- ENTÊTE JEU : OBJECTIF + SCORE ---- */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, padding: '0 4px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
@@ -898,7 +940,11 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
                 </p>
               )}
               <div style={{ width: '100%', maxWidth: 260 }}>
-                <Leaderboard entries={leaderboard} currentUserId={session?.user.id} />
+                {/* DEV brique 4 - `leaderboard` reste à `null` (jamais
+                    fetché) en mode duo ; `undefined` au rendu plutôt que
+                    `null` pour éviter un "Chargement du classement…" indéfini
+                    (composant Leaderboard, inchangé — cf. useEffect ci-dessus). */}
+                <Leaderboard entries={duoMatch ? undefined : leaderboard} currentUserId={session?.user.id} />
               </div>
               <div style={{ display: 'flex', gap: 8, flex: 'none' }}>
                 <button
