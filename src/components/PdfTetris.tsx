@@ -235,16 +235,20 @@ interface PdfTetrisProps {
    * bouton "Classement" à côté de "Rejouer" sur l'écran de fin de partie,
    * pour retourner au sous-écran classement du parent. */
   onShowLeaderboard?: () => void;
-  /** DEV brique 4 - fourni uniquement par GameDuoLobbyScreen une fois les
-   * deux joueurs réunis. Présence seule => mode duo : seedPieces(seed) au
-   * lieu de seedPieces(null), pas de soumission au classement solo. `code`
-   * n'est pas dans le typage donné en brief (matchId/seed/role) mais est
-   * nécessaire au bandeau de vérification visuelle (e) — ajouté ici. matchId/
-   * role posés pour la brique 5 (sync/attaques), non utilisés en brique 4. */
+  /** Fourni uniquement par GameDuoLobbyScreen une fois les deux joueurs
+   * réunis. Présence seule => mode duo : seedPieces(seed) au lieu de
+   * seedPieces(null), pas de soumission au classement solo. */
   duoMatch?: { matchId: string; code: string; seed: number; role: 'host' | 'guest' };
+  /** Mode duo uniquement : remplace "Rejouer" par "Nouveau match" sur
+   * l'écran de fin de partie — un vrai rematch entre les deux mêmes joueurs
+   * n'est pas supporté (pas de RPC pour ré-inviter spécifiquement le même
+   * adversaire), donc chaque joueur retourne indépendamment au menu de
+   * création/rejoindre du lobby plutôt que de relancer localement l'ancien
+   * match (qui resterait 'finished' côté serveur, sans adversaire en face). */
+  onExitDuoMatch?: () => void;
 }
 
-export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMatch }: PdfTetrisProps) {
+export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMatch, onExitDuoMatch }: PdfTetrisProps) {
   const nav = useNavigation();
   const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1007,7 +1011,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
               </div>
               <div style={{ display: 'flex', gap: 8, flex: 'none' }}>
                 <button
-                  onClick={restart}
+                  onClick={duoMatch ? (onExitDuoMatch ?? restart) : restart}
                   style={{
                     padding: '8px 16px',
                     borderRadius: 12,
@@ -1019,7 +1023,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
                     cursor: 'pointer',
                   }}
                 >
-                  Rejouer
+                  {duoMatch ? 'Nouveau match' : 'Rejouer'}
                 </button>
                 {onShowLeaderboard && (
                   <button

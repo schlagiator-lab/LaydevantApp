@@ -153,8 +153,17 @@ export function GameDuoLobbyScreen() {
     }
   };
 
+  // Pas de vrai rematch (aucune RPC pour ré-inviter spécifiquement le même
+  // adversaire) : chaque joueur retourne indépendamment au menu de création/
+  // rejoindre, plutôt que de relancer localement l'ancien match `launch`
+  // (déjà 'finished' côté serveur).
+  const handleExitDuoMatch = () => {
+    setLaunch(null);
+    setView('choice');
+  };
+
   if (view === 'play' && launch) {
-    return <PdfTetris standalone duoMatch={launch} />;
+    return <PdfTetris standalone duoMatch={launch} onExitDuoMatch={handleExitDuoMatch} />;
   }
 
   return (
