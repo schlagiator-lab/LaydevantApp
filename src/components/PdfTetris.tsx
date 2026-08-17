@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback, type PointerEvent as ReactPoi
 import { useNavigation } from '../lib/useNavigation';
 import { useAuth } from '../lib/useAuth';
 import { submitScore, getLeaderboard } from '../lib/gameScores';
+import { syncDuoMatch } from '../lib/duoMatch';
 import { Leaderboard } from './Leaderboard';
 import { createTetrisSfx, type SfxName, type TetrisSfx } from '../lib/tetrisSfx';
 import type { GameLeaderboardEntry } from '../types/database';
@@ -115,6 +116,22 @@ const CFG = {
 // barème Tetris classique : récompense les multi-lignes en un seul coup,
 // multiplié par le niveau courant au moment de l'effacement
 const LINE_POINTS: Record<number, number> = { 1: 100, 2: 300, 3: 500, 4: 800 };
+
+// DEV brique 5 - mode duo : barème d'ATTAQUE (distinct du barème de score
+// LINE_POINTS ci-dessus). Single ne pousse rien.
+const ATTACK_LINES: Record<number, number> = { 2: 1, 3: 2, 4: 4 };
+
+const DUO_SYNC_MS = 1000; // cadence de la boucle de sync réseau (attaques + résolution)
+const DUO_DISCONNECT_MS = 10000; // au-delà, adversaire silencieux => déconnecté (temps serveur)
+
+type DuoOutcome = 'won' | 'lost' | 'draw' | 'opponentDisconnected';
+
+const DUO_OUTCOME_LABEL: Record<DuoOutcome, string> = {
+  won: 'Gagné',
+  lost: 'Perdu',
+  draw: 'Match nul',
+  opponentDisconnected: 'Adversaire déconnecté — Gagné',
+};
 
 type Piece = { key: PieceKey; shape: Shape; color: string; ext: string; x: number; y: number };
 type GridCell = { color: string; ext: string } | null;
@@ -327,6 +344,15 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     return result.toppedOut;
   }, []);
 
+  // DEV brique 5 - mode duo uniquement (tout reste à 0/false, jamais lu, si
+  // duoMatch est absent). Refs, pas state : lues/écrites depuis des
+  // callbacks impératifs (applyClears, boucle de sync ~1s) sans jamais
+  // provoquer de re-render pour ces compteurs internes.
+  const myAttackTotalRef = useRef(0); // total CUMULÉ de lignes que j'ai envoyées
+  const appliedFromOpponentRef = useRef(0); // dernier total adverse déjà transformé en garbage
+  const resolvedRef = useRef(false); // true dès que l'issue du duel est figée
+  const [duoOutcome, setDuoOutcome] = useState<DuoOutcome | null>(null);
+
   const lockAndClear = useCallback(() => {
     sfxRef.current?.play('lock');
     const st = g.current;
@@ -377,6 +403,11 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     for (let r = 0; r < CFG.rows; r++)
       if (!st.flash.includes(r)) keep.push(st.grid[r]);
     const cleared = st.flash.length;
+    // DEV brique 5 - émission d'attaque (mode duo uniquement) : cumule selon
+    // le barème ATTAQUE (distinct du barème de score LINE_POINTS ci-dessous).
+    // Pas d'appel réseau ici — juste le compteur ; l'envoi se fait dans la
+    // boucle de sync lente (~1s), qui lit myAttackTotalRef.current.
+    if (duoMatch) myAttackTotalRef.current += ATTACK_LINES[cleared] ?? 0;
     const clearSfx: Record<number, SfxName> = { 1: 'clearSingle', 2: 'clearDouble', 3: 'clearTriple', 4: 'tetris' };
     const sfxName = clearSfx[cleared];
     if (sfxName) sfxRef.current?.play(sfxName);
@@ -412,7 +443,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
       st.over = true;
       setOver(true);
     }
-  }, [collides, flushPendingGarbage]);
+  }, [collides, flushPendingGarbage, duoMatch]);
 
   const step = useCallback(() => {
     const st = g.current;
@@ -683,6 +714,79 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     return () => window.clearTimeout(timer);
   }, [over, duoMatch]);
 
+  // DEV brique 5 - boucle de sync réseau (mode duo uniquement, ~1s) :
+  // envoie mon total d'attaque cumulé + mon état "mort", lit celui de
+  // l'adversaire (garbage entrant, résolution victoire/défaite/déconnexion).
+  // Réseau UNIQUEMENT ici — jamais depuis applyClears ni la boucle rAF.
+  // Gardée par duoMatch : aucun effet, aucun timer, aucun appel réseau en
+  // solo (duoMatch absent).
+  useEffect(() => {
+    if (!duoMatch) return;
+    let cancelled = false;
+    const isHost = duoMatch.role === 'host';
+
+    const tick = async () => {
+      if (resolvedRef.current) return;
+      const died = g.current.over; // état réel de game over local (ref, pas le state React `over`)
+      let row;
+      try {
+        row = await syncDuoMatch(duoMatch.matchId, myAttackTotalRef.current, died);
+      } catch {
+        return; // best-effort : accroc réseau ponctuel, on retente au prochain tick
+      }
+      if (cancelled || resolvedRef.current) return;
+
+      const oppTotal = isHost ? row.guest_attack_total : row.host_attack_total;
+      const oppDiedAt = isHost ? row.guest_died_at : row.host_died_at;
+      const myDiedAt = isHost ? row.host_died_at : row.guest_died_at;
+      const oppLastSeen = isHost ? row.guest_last_seen : row.host_last_seen;
+
+      // garbage entrant : delta cumulatif idempotent, jamais négatif (oppTotal
+      // ne fait que croître côté serveur). Applique via la file brique 2 —
+      // le prochain lock s'en charge, pas d'application directe ici.
+      const delta = oppTotal - appliedFromOpponentRef.current;
+      if (delta > 0) {
+        pendingGarbageRef.current += delta;
+        appliedFromOpponentRef.current = oppTotal;
+      }
+
+      // résolution
+      let outcome: DuoOutcome | null = null;
+      if (oppDiedAt && myDiedAt) {
+        const oppTime = new Date(oppDiedAt).getTime();
+        const myTime = new Date(myDiedAt).getTime();
+        // le plus ANCIEN perd (mort en premier) ; égalité stricte => nul
+        outcome = oppTime === myTime ? 'draw' : oppTime < myTime ? 'won' : 'lost';
+      } else if (oppDiedAt) {
+        outcome = 'won';
+      } else if (died) {
+        outcome = 'lost';
+      } else if (oppLastSeen) {
+        // temps SERVEUR uniquement (server_now/last_seen viennent tous deux
+        // de la ligne) — jamais Date.now() du téléphone.
+        const serverNow = new Date(row.server_now).getTime();
+        const lastSeen = new Date(oppLastSeen).getTime();
+        if (serverNow - lastSeen > DUO_DISCONNECT_MS) outcome = 'opponentDisconnected';
+      }
+
+      if (outcome) {
+        resolvedRef.current = true;
+        setDuoOutcome(outcome);
+        window.clearInterval(intervalId);
+      }
+    };
+
+    void tick();
+    // `tick` ne lit `intervalId` qu'après un `await` (résolu de façon
+    // asynchrone) — la déclaration ci-dessous, plus bas dans le même bloc,
+    // est déjà faite au moment où ce code s'exécute réellement.
+    const intervalId = window.setInterval(() => void tick(), DUO_SYNC_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [duoMatch]);
+
   // ---- gestes ----
   const touch = useRef({ x: 0, y: 0, lastColX: 0, moved: false, softOn: false, horiz: false });
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -931,6 +1035,22 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
               <p style={{ fontSize: 14, color: C.textDim, margin: 0 }}>
                 score {score} · {lines} documents rangés
               </p>
+              {/* DEV brique 5 - issue du duel : couche d'affichage au-dessus
+                  du game over local existant, pilotée par resolvedRef/
+                  duoOutcome (résolution asynchrone via la boucle de sync,
+                  peut prendre jusqu'à ~1s après la mort locale). */}
+              {duoMatch && (
+                <p
+                  style={{
+                    fontSize: 20,
+                    fontWeight: 800,
+                    color: duoOutcome === 'lost' ? C.orange : C.shelf,
+                    margin: 0,
+                  }}
+                >
+                  {duoOutcome ? DUO_OUTCOME_LABEL[duoOutcome] : 'En attente du résultat…'}
+                </p>
+              )}
               {isNewRecord && (
                 <p style={{ fontSize: 13, fontWeight: 700, color: C.shelf, margin: 0 }}>Nouveau record !</p>
               )}
