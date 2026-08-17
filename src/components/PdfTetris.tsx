@@ -770,9 +770,26 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
       }
 
       if (outcome) {
+        // ÉTAPE 1a (fix affichage gagnant) - fige la résolution et coupe la
+        // boucle AVANT tout le reste : garantit qu'aucun tick ne reparte
+        // après, donc que `died` (calculé en tête de tick, avant l'appel
+        // réseau) ne sera plus jamais recalculé/envoyé pour ce match — le
+        // gagnant n'envoie donc jamais p_died=true, même en forçant
+        // st.over ci-dessous.
         resolvedRef.current = true;
-        setDuoOutcome(outcome);
         window.clearInterval(intervalId);
+        setDuoOutcome(outcome);
+        // Si je gagne en étant encore vivant (adversaire mort ou
+        // déconnecté), la résolution seule ne suffit pas : l'overlay de fin
+        // (ci-dessous) n'est rendu que si `over` est vrai. Force donc la fin
+        // de partie LOCALE via le MÊME chemin que le top-out existant (§0)
+        // pour figer le plateau et afficher "Gagné" tout de suite, sans
+        // doublon de mécanisme. "Perdu"/"Match nul" n'ont pas ce problème :
+        // je suis déjà mort localement dans ces deux cas (over déjà vrai).
+        if ((outcome === 'won' || outcome === 'opponentDisconnected') && !g.current.over) {
+          g.current.over = true;
+          setOver(true);
+        }
       }
     };
 
