@@ -153,9 +153,56 @@ function inSpawnWindow(st: GameState): boolean {
   return performance.now() < st.spawnLockUntil;
 }
 
+// DEV brique 3 - mode duo (à venir) : source d'aléa seedable pour la séquence
+// de pièces uniquement. mulberry32, suffisant pour un PRNG déterministe côté
+// client (pas d'usage crypto). `pieceRng` est le SEUL état ; randomPiece est
+// stateless (pas de sac 7-bag), donc rien d'autre à réinitialiser ici.
+function mulberry32(a: number): () => number {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let pieceRng: (() => number) | null = null; // null => solo (Math.random)
+
+// seed: entier (0..2^31-1) pour rejouer une séquence déterministe, ou null
+// pour revenir au mode solo (Math.random). Un même seed appelé deux fois
+// produit exactement la même suite à partir de là.
+export function seedPieces(seed: number | null): void {
+  pieceRng = seed == null ? null : mulberry32(seed >>> 0);
+}
+
+function pieceRandom(): number {
+  return pieceRng ? pieceRng() : Math.random();
+}
+
 function randomPiece(): Piece {
-  const k = KEYS[(Math.random() * KEYS.length) | 0];
+  const k = KEYS[(pieceRandom() * KEYS.length) | 0];
   return { key: k, shape: SHAPES[k], color: PIECE_COLORS[k], ext: PIECE_EXT[k], x: (CFG.cols >> 1) - 1, y: 0 };
+}
+
+// DEV brique 3 - auto-test du déterminisme, appelé depuis le bouton "Test
+// seed" ; à retirer en brique 4. Tire 14 pièces via le MÊME chemin que le
+// jeu (randomPiece), donc via pieceRandom()/pieceRng ci-dessus.
+function runSeedTest(): void {
+  const draw14 = (): string[] => Array.from({ length: 14 }, () => randomPiece().key);
+  seedPieces(12345);
+  const s1 = draw14();
+  seedPieces(12345);
+  const s2 = draw14();
+  seedPieces(99999);
+  const s3 = draw14();
+  seedPieces(null); // ne pas laisser le générateur seedé après le test
+  const deterministic = s1.join(',') === s2.join(',');
+  const seedChanges = s3.join(',') !== s1.join(',');
+  if (deterministic && seedChanges) {
+    console.log('SEED OK', { s1, s2, s3 });
+  } else {
+    console.log('SEED FAIL', { deterministic, seedChanges, s1, s2, s3 });
+  }
 }
 
 // DEV brique 2 - mode duo (à venir) : injection de lignes de malus (garbage).
@@ -557,6 +604,11 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
   }, [collides, lockAndClear]);
 
   const restart = useCallback(() => {
+    // DEV brique 3 - restart solo : reseed explicitement en mode Math.random
+    // (au cas où le générateur serait resté seedé, ex. après "Test seed").
+    // Le duo (brique 4) appellera seedPieces(matchSeed) avant son propre
+    // lancement, ailleurs — pas de changement de comportement solo ici.
+    seedPieces(null);
     const t0 = EXT_LIST[(Math.random() * EXT_LIST.length) | 0];
     g.current = {
       grid: emptyGrid(), piece: randomPiece(), next: randomPiece(),
@@ -757,6 +809,27 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard }: Pdf
               }}
             >
               ＋2 malus
+            </button>
+            {/* DEV brique 3 - vérifie le déterminisme du PRNG de pièces
+                seedé (console.log "SEED OK"/"SEED FAIL") ; à retirer en
+                brique 4. Même garde stopPropagation que le bouton garbage. */}
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={runSeedTest}
+              style={{
+                fontSize: 10,
+                fontFamily: 'system-ui, sans-serif',
+                padding: '2px 6px',
+                borderRadius: 6,
+                border: '1px solid rgba(255,255,255,0.18)',
+                background: 'rgba(255,255,255,0.06)',
+                color: C.textDim,
+                cursor: 'pointer',
+              }}
+            >
+              Test seed
             </button>
           </div>
         </div>
