@@ -201,27 +201,6 @@ function randomPiece(): Piece {
   return { key: k, shape: SHAPES[k], color: PIECE_COLORS[k], ext: PIECE_EXT[k], x: (CFG.cols >> 1) - 1, y: 0 };
 }
 
-// DEV brique 3 - auto-test du déterminisme, appelé depuis le bouton "Test
-// seed" ; à retirer en brique 4. Tire 14 pièces via le MÊME chemin que le
-// jeu (randomPiece), donc via pieceRandom()/pieceRng ci-dessus.
-function runSeedTest(): void {
-  const draw14 = (): string[] => Array.from({ length: 14 }, () => randomPiece().key);
-  seedPieces(12345);
-  const s1 = draw14();
-  seedPieces(12345);
-  const s2 = draw14();
-  seedPieces(99999);
-  const s3 = draw14();
-  seedPieces(null); // ne pas laisser le générateur seedé après le test
-  const deterministic = s1.join(',') === s2.join(',');
-  const seedChanges = s3.join(',') !== s1.join(',');
-  if (deterministic && seedChanges) {
-    console.log('SEED OK', { s1, s2, s3 });
-  } else {
-    console.log('SEED FAIL', { deterministic, seedChanges, s1, s2, s3 });
-  }
-}
-
 // DEV brique 2 - mode duo (à venir) : injection de lignes de malus (garbage).
 // Gris distinct des 7 couleurs de pièce (PIECE_COLORS) pour rester
 // reconnaissable au premier coup d'œil.
@@ -479,30 +458,35 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
     resize();
     window.addEventListener('resize', resize);
 
-    const drawCell = (gx: number, gy: number, color: string | null, ghost = false) => {
-      const x = offX + gx * cell, y = offY + gy * cell;
+    // cellSize/ox/oy optionnels : par défaut le plateau principal (cell/
+    // offX/offY ci-dessus) — l'aperçu "prochaine pièce" plus bas réutilise
+    // cette MÊME routine avec une échelle/position réduites, sans dupliquer
+    // le dessin.
+    const drawCell = (gx: number, gy: number, color: string | null, ghost = false, cellSize = cell, ox = offX, oy = offY) => {
+      const x = ox + gx * cellSize, y = oy + gy * cellSize;
       ctx.fillStyle = ghost ? 'rgba(255,255,255,0.10)' : (color as string);
-      roundRect(ctx, x + 1, y + 1, cell - 2, cell - 2, 3);
+      roundRect(ctx, x + 1, y + 1, cellSize - 2, cellSize - 2, 3);
       ctx.fill();
       if (!ghost) {
         ctx.fillStyle = 'rgba(255,255,255,0.22)';
-        ctx.fillRect(x + 3, y + 2, cell * 0.4, 2);
+        ctx.fillRect(x + 3, y + 2, cellSize * 0.4, 2);
       }
     };
 
-    // label d'extension centré sur une forme (une seule fois par pièce)
-    const drawExtLabel = (shape: Shape, px: number, py: number, ext: string, alpha = 1) => {
+    // label d'extension centré sur une forme (une seule fois par pièce) —
+    // mêmes paramètres optionnels que drawCell ci-dessus, même raison.
+    const drawExtLabel = (shape: Shape, px: number, py: number, ext: string, alpha = 1, cellSize = cell, ox = offX, oy = offY) => {
       // centre géométrique des cases pleines
       let sx = 0, sy = 0, n = 0;
       for (let r = 0; r < shape.length; r++)
         for (let c = 0; c < shape[r].length; c++)
           if (shape[r][c]) { sx += px + c + 0.5; sy += py + r + 0.5; n++; }
       if (!n) return;
-      const cx = offX + (sx / n) * cell, cy = offY + (sy / n) * cell;
+      const cx = ox + (sx / n) * cellSize, cy = oy + (sy / n) * cellSize;
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.fillStyle = 'rgba(15,36,68,0.92)';
-      ctx.font = `700 ${Math.max(10, Math.floor(cell * 0.5))}px system-ui, sans-serif`;
+      ctx.font = `700 ${Math.max(10, Math.floor(cellSize * 0.5))}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.strokeStyle = 'rgba(255,255,255,0.55)';
@@ -586,6 +570,33 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
         drawExtLabel(sh, st.piece.x, st.piece.y, st.piece.ext, 1); // label pièce active
       }
 
+      // Aperçu "prochaine pièce" — lit st.next tel quel (posé par
+      // randomPiece()/pieceRandom(), RNG inchangé), dessiné via la MÊME
+      // routine que le plateau (drawCell/drawExtLabel), à échelle réduite,
+      // dans la marge droite du plateau (jamais par-dessus). Ne s'affiche
+      // que si cette marge est assez large pour ne rien recouvrir — cas
+      // normal sur les téléphones visés (CLAUDE.md §15, plateau contraint en
+      // hauteur donc large marge horizontale), sinon simplement omis plutôt
+      // que de risquer un recouvrement.
+      const previewCols = 4, previewRows = 2, previewMargin = 8; // 4×2 : bounding box max des 7 formes (I = 1×4)
+      const previewCell = Math.max(8, Math.floor(cell * 0.4));
+      const previewW = previewCell * previewCols;
+      const previewH = previewCell * previewRows;
+      if (offX > previewW + previewMargin * 2) {
+        const previewX = offX + cell * CFG.cols + previewMargin;
+        const previewY = offY + previewMargin;
+        ctx.fillStyle = C.grid;
+        roundRect(ctx, previewX, previewY, previewW, previewH, 6);
+        ctx.fill();
+        const nsh = st.next.shape;
+        const nx = Math.floor((previewCols - nsh[0].length) / 2);
+        const ny = Math.floor((previewRows - nsh.length) / 2);
+        for (let r = 0; r < nsh.length; r++)
+          for (let c = 0; c < nsh[r].length; c++)
+            if (nsh[r][c]) drawCell(nx + c, ny + r, st.next.color, false, previewCell, previewX, previewY);
+        drawExtLabel(nsh, nx, ny, st.next.ext, 1, previewCell, previewX, previewY);
+      }
+
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -653,10 +664,10 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   }, [collides, lockAndClear]);
 
   const restart = useCallback(() => {
-    // DEV brique 3/4 - reseed explicitement à chaque restart : solo en
-    // Math.random (au cas où le générateur serait resté seedé, ex. après
-    // "Test seed"), duo sur le MÊME seed que le match (rejoue la même suite
-    // de pièces, cohérent avec un seed qui identifie un match, pas une partie).
+    // reseed explicitement à chaque restart : solo en Math.random (au cas où
+    // le générateur serait resté seedé depuis une partie duo précédente),
+    // duo sur le MÊME seed que le match (rejoue la même suite de pièces,
+    // cohérent avec un seed qui identifie un match, pas une partie).
     seedPieces(duoMatch ? duoMatch.seed : null);
     const t0 = EXT_LIST[(Math.random() * EXT_LIST.length) | 0];
     g.current = {
@@ -915,22 +926,6 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   const gameArea = (
     <div style={{ width: '100%', display: 'flex', justifyContent: 'center', padding: 16, background: C.bgDeep, borderRadius: 16, boxSizing: 'border-box' }}>
       <div style={{ width: '100%', maxWidth: 384 }}>
-        {/* DEV brique 4 - bandeau de vérification visuelle du seed partagé ;
-            à retirer/reconditionner en brique 5. */}
-        {duoMatch && (
-          <div
-            style={{
-              fontSize: 10,
-              fontFamily: 'monospace',
-              color: C.textDim,
-              textAlign: 'center',
-              padding: '2px 4px 6px',
-            }}
-          >
-            DEV duo — code {duoMatch.code} · seed {duoMatch.seed} · rôle {duoMatch.role}
-          </div>
-        )}
-
         {/* ---- ENTÊTE JEU : OBJECTIF + SCORE ---- */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, padding: '0 4px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
@@ -951,49 +946,7 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
           <div style={{ display: 'flex', gap: 12, fontSize: 12, fontFamily: 'monospace', alignItems: 'center' }}>
             <span style={{ color: C.green }}>score&nbsp;{score}</span>
             <span style={{ color: C.textDim }}>niv.&nbsp;{level}</span>
-            {/* DEV brique 2 - bouton de test manuel du garbage (mode duo à
-                venir) ; à retirer/reconditionner en brique 3. stopPropagation
-                sur pointerDown/Up pour ne pas déclencher les gestes de jeu
-                (rotation au tap) captés par la couche plein écran standalone. */}
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onPointerUp={(e) => e.stopPropagation()}
-              onClick={() => { pendingGarbageRef.current += 2; }}
-              style={{
-                fontSize: 10,
-                fontFamily: 'system-ui, sans-serif',
-                padding: '2px 6px',
-                borderRadius: 6,
-                border: '1px solid rgba(255,255,255,0.18)',
-                background: 'rgba(255,255,255,0.06)',
-                color: C.textDim,
-                cursor: 'pointer',
-              }}
-            >
-              ＋2 malus
-            </button>
-            {/* DEV brique 3 - vérifie le déterminisme du PRNG de pièces
-                seedé (console.log "SEED OK"/"SEED FAIL") ; à retirer en
-                brique 4. Même garde stopPropagation que le bouton garbage. */}
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onPointerUp={(e) => e.stopPropagation()}
-              onClick={runSeedTest}
-              style={{
-                fontSize: 10,
-                fontFamily: 'system-ui, sans-serif',
-                padding: '2px 6px',
-                borderRadius: 6,
-                border: '1px solid rgba(255,255,255,0.18)',
-                background: 'rgba(255,255,255,0.06)',
-                color: C.textDim,
-                cursor: 'pointer',
-              }}
-            >
-              Test seed
-            </button>
+            <span style={{ color: C.textDim }}>lignes&nbsp;{lines}</span>
           </div>
         </div>
 
