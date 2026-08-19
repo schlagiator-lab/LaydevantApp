@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { Fragment, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import type { WebSearchContext } from '../lib/navigationContext';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
@@ -8,7 +8,7 @@ import type { WebSearchResult } from '../types/webSearch';
 import { StatusPill } from '../components/StatusPill';
 import { CaptureSheet } from '../components/CaptureSheet';
 import PdfTetris from '../components/PdfTetris';
-import { colors, fonts, textA } from '../styles/tokens';
+import { accentA, colors, fonts, textA } from '../styles/tokens';
 
 const CONFIDENCE_LABELS: Record<WebSearchResult['confidence'], string> = {
   haute: 'Confiance haute',
@@ -19,6 +19,32 @@ const CONFIDENCE_LABELS: Record<WebSearchResult['confidence'], string> = {
 /** 'video' n'est pas un DocType (jamais capturable) : libellé propre plutôt que docTypeLabel. */
 function resultTypeLabel(type: WebSearchResult['type']): string {
   return type === 'video' ? 'Vidéo' : docTypeLabel(type);
+}
+
+/** Icône de lecture — distingue une vidéo d'un document en tête de ligne. */
+function PlayIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" aria-hidden="true" style={{ flex: 'none' }}>
+      <circle cx="10" cy="10" r="8.5" fill="none" stroke={colors.accent} strokeWidth="1.5" />
+      <path d="M8 6.5l6 3.5-6 3.5z" fill={colors.accent} />
+    </svg>
+  );
+}
+
+/** Icône document — même silhouette que PlanKindIcon (PlansSection.tsx), pour l'ensemble des types non-vidéo. */
+function DocIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" aria-hidden="true" style={{ flex: 'none' }}>
+      <path
+        d="M5 2.5h7l3 3v12a1 1 0 01-1 1H5a1 1 0 01-1-1v-14a1 1 0 011-1z"
+        fill="none"
+        stroke={textA(0.45)}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path d="M12 2.5v3h3" fill="none" stroke={textA(0.45)} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 const PATIENCE_MESSAGES = [
@@ -192,6 +218,8 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const orderedResults = [...(results ?? [])].sort(
     (a, b) => Number(a.type === 'video') - Number(b.type === 'video'),
   );
+  // -1 si aucune vidéo : le séparateur "Tutoriels vidéo" ne s'affiche alors jamais.
+  const firstVideoIndex = orderedResults.findIndex((r) => r.type === 'video');
 
   return (
     <div
@@ -302,32 +330,48 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
 
         {!error && results && results.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {orderedResults.map((result, i) => (
-              <div key={`${result.url}-${i}`} style={cardStyle}>
-                <div style={{ fontSize: 13, color: textA(0.6), fontWeight: 600 }}>
-                  {resultTypeLabel(result.type)} · {result.source}
-                </div>
-                <div style={{ fontSize: 16.5, fontWeight: 700, lineHeight: 1.3 }}>{result.title}</div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={confidenceBadgeStyle(result.confidence)}>{CONFIDENCE_LABELS[result.confidence]}</span>
-                    {result.link_ok === false && (
-                      <span style={{ fontSize: 11.5, color: textA(0.55) }}>⚠️ lien non vérifié</span>
-                    )}
+            {orderedResults.map((result, i) => {
+              const isVideo = result.type === 'video';
+              return (
+                <Fragment key={`${result.url}-${i}`}>
+                  {i === firstVideoIndex && <div style={videoSeparatorStyle}>Tutoriels vidéo</div>}
+                  <div style={cardStyle}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {isVideo ? <PlayIcon /> : <DocIcon />}
+                      {isVideo ? (
+                        <>
+                          <span style={videoBadgeStyle}>Vidéo</span>
+                          <span style={{ fontSize: 13, color: textA(0.6), fontWeight: 600 }}>{result.source}</span>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 13, color: textA(0.6), fontWeight: 600 }}>
+                          {resultTypeLabel(result.type)} · {result.source}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 16.5, fontWeight: 700, lineHeight: 1.3 }}>{result.title}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span style={confidenceBadgeStyle(result.confidence)}>{CONFIDENCE_LABELS[result.confidence]}</span>
+                        {result.link_ok === false && (
+                          <span style={{ fontSize: 11.5, color: textA(0.55) }}>⚠️ lien non vérifié</span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button type="button" onClick={() => handleOpen(result)} style={smallSecondaryButtonStyle}>
+                          {result.is_pdf ? 'Consulter' : 'Ouvrir'}
+                        </button>
+                        {result.is_pdf && result.type !== 'video' && (
+                          <button type="button" onClick={() => setCaptureTarget(result)} style={smallPrimaryButtonStyle}>
+                            Ajouter à la bibliothèque
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button type="button" onClick={() => handleOpen(result)} style={smallSecondaryButtonStyle}>
-                      {result.is_pdf ? 'Consulter' : 'Ouvrir'}
-                    </button>
-                    {result.is_pdf && result.type !== 'video' && (
-                      <button type="button" onClick={() => setCaptureTarget(result)} style={smallPrimaryButtonStyle}>
-                        Ajouter à la bibliothèque
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
+                </Fragment>
+              );
+            })}
           </div>
         )}
       </div>
@@ -449,6 +493,29 @@ const cardStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 6,
+};
+
+const videoBadgeStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 700,
+  color: colors.accent,
+  background: accentA(0.16),
+  border: `1px solid ${accentA(0.4)}`,
+  borderRadius: 100,
+  padding: '2px 8px',
+};
+
+// Même patron que eyebrowStyle, avec une bordure haute pour marquer visuellement
+// la coupure entre les documents et le groupe des vidéos (déjà en fin de liste).
+const videoSeparatorStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  color: textA(0.55),
+  marginTop: 4,
+  paddingTop: 10,
+  borderTop: `1px solid ${textA(0.12)}`,
 };
 
 function confidenceBadgeStyle(confidence: WebSearchResult['confidence']): React.CSSProperties {
