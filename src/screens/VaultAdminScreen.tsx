@@ -24,7 +24,18 @@ import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
 import { listInvitations, addInvitation, removeInvitation } from '../lib/onboarding';
 import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
-import type { OnboardingInvitation, ProfileRole, Profile, Department, Specialty, EquipmentRequest } from '../types/database';
+import { listAllDemandes, updateDemandeStatut, demandeTypeLabel, demandeStatutLabel } from '../lib/demandes';
+import type {
+  OnboardingInvitation,
+  ProfileRole,
+  Profile,
+  Department,
+  Specialty,
+  EquipmentRequest,
+  Demande,
+  DemandeType,
+  DemandeStatut,
+} from '../types/database';
 import { StatusPill } from '../components/StatusPill';
 import { VaultRotationSheet } from '../components/VaultRotationSheet';
 import { ConfirmSheet } from '../components/ConfirmSheet';
@@ -999,10 +1010,13 @@ type EquipmentRequestsPhase =
   | { kind: 'loaded'; rows: EquipmentRequest[] };
 
 /**
- * Onglet "Demandes" : deux sous-blocs autonomes, chacun avec son propre
+ * Onglet "Demandes" : trois sous-blocs autonomes, chacun avec son propre
  * chargement/état d'erreur/liste — pas d'état partagé, comme
  * AccountsTab/AccessTab sont déjà deux composants séparés. Suppression de
- * dossier (inchangé) d'abord, puis équipement manquant (item 1, morceau 3).
+ * dossier (inchangé) d'abord, puis équipement manquant (item 1, morceau 3),
+ * puis remontées terrain (canal de remontée général — proposition/bug/autre,
+ * table `demandes`, sans rapport avec les deux premiers blocs qui portent
+ * sur `dossier_deletion_requests`/`dossier_equipment_requests`).
  */
 function DemandesTab() {
   return (
@@ -1014,6 +1028,10 @@ function DemandesTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <p style={eyebrowStyle}>Équipement manquant</p>
         <EquipmentRequestsSection />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p style={eyebrowStyle}>Remontées terrain</p>
+        <RemonteesTerrainSection />
       </div>
     </div>
   );
@@ -1320,6 +1338,271 @@ function EquipmentRequestsSection() {
         />
       )}
     </div>
+  );
+}
+
+const DEMANDE_TYPE_FILTERS: (DemandeType | 'all')[] = ['all', 'amelioration', 'bug', 'autre'];
+const DEMANDE_STATUT_FILTERS: (DemandeStatut | 'all')[] = ['all', 'nouvelle', 'en_cours', 'traitee'];
+
+function demandeTypeFilterLabel(value: DemandeType | 'all'): string {
+  return value === 'all' ? 'Tous' : demandeTypeLabel(value);
+}
+
+function demandeStatutFilterLabel(value: DemandeStatut | 'all'): string {
+  return value === 'all' ? 'Tous' : demandeStatutLabel(value);
+}
+
+type RemonteesPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: Demande[] };
+
+/**
+ * Canal de remontée terrain (amélioration/bug/autre, table `demandes`) — vue
+ * admin : tout voir, filtrer, faire avancer le statut, répondre. Filtré par
+ * défaut sur statut 'nouvelle' (les demandes à traiter en premier), pas de
+ * filtre par type. `reponseByDemande` porte les brouillons de réponse en
+ * cours d'édition (un textarea par carte), même pattern que
+ * `selectedSpecialtyByRequest` dans EquipmentRequestsSection.
+ */
+function RemonteesTerrainSection() {
+  const [typeFilter, setTypeFilter] = useState<DemandeType | 'all'>('all');
+  const [statutFilter, setStatutFilter] = useState<DemandeStatut | 'all'>('nouvelle');
+  const [phase, setPhase] = useState<RemonteesPhase>({ kind: 'loading' });
+  const [reponseByDemande, setReponseByDemande] = useState<Record<string, string>>({});
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingReopen, setPendingReopen] = useState<Demande | null>(null);
+
+  const loadDemandes = useCallback(async () => {
+    setPhase({ kind: 'loading' });
+    try {
+      const rows = await listAllDemandes({
+        type: typeFilter === 'all' ? undefined : typeFilter,
+        statut: statutFilter === 'all' ? undefined : statutFilter,
+      });
+      setPhase({ kind: 'loaded', rows });
+    } catch (err) {
+      setPhase({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, [typeFilter, statutFilter]);
+
+  useEffect(() => {
+    // Chargement au montage et à chaque changement de filtre, via callback
+    // mémoïsée ; setState après await, pattern voulu dans ce fichier.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadDemandes();
+  }, [loadDemandes]);
+
+  async function handleStatutChange(demande: Demande, statut: DemandeStatut) {
+    setPendingReopen(null);
+    setUpdatingId(demande.id);
+    setActionError(null);
+    try {
+      await updateDemandeStatut(demande.id, { statut });
+      await loadDemandes();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  async function handleSaveReponse(demande: Demande) {
+    const reponse = (reponseByDemande[demande.id] ?? demande.reponse_admin ?? '').trim();
+    setUpdatingId(demande.id);
+    setActionError(null);
+    try {
+      await updateDemandeStatut(demande.id, { reponse_admin: reponse || null });
+      await loadDemandes();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="no-scrollbar" style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
+        {DEMANDE_TYPE_FILTERS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setTypeFilter(value)}
+            style={demandeFilterChipStyle(typeFilter === value)}
+          >
+            {demandeTypeFilterLabel(value)}
+          </button>
+        ))}
+      </div>
+      <div className="no-scrollbar" style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
+        {DEMANDE_STATUT_FILTERS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setStatutFilter(value)}
+            style={demandeFilterChipStyle(statutFilter === value)}
+          >
+            {demandeStatutFilterLabel(value)}
+          </button>
+        ))}
+      </div>
+
+      {actionError && <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {actionError}</p>}
+
+      {phase.kind === 'loading' && (
+        <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>
+      )}
+      {phase.kind === 'error' && (
+        <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {phase.message}</p>
+      )}
+      {phase.kind === 'loaded' && phase.rows.length === 0 && (
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucune demande.</p>
+      )}
+
+      {phase.kind === 'loaded' &&
+        phase.rows.map((d) => {
+          const isUpdating = updatingId === d.id;
+          const reponseValue = reponseByDemande[d.id] ?? d.reponse_admin ?? '';
+          const contexte = d.contexte as { platform?: string; appVersion?: string } | null;
+          const label = d.titre ?? d.message.slice(0, 60) + (d.message.length > 60 ? '…' : '');
+          return (
+            <div key={d.id} style={accountRowStyle}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, wordBreak: 'break-word' }}>{label}</div>
+                  <div style={{ fontSize: 12, color: textA(0.55), marginTop: 4 }}>
+                    {demandeTypeLabel(d.type)} · {d.auteur_nom ?? 'inconnu'} · {formatDate(d.created_at)}
+                  </div>
+                </div>
+                <DemandeStatutBadge statut={d.statut} />
+              </div>
+
+              <p style={{ fontSize: 13.5, color: textA(0.8), lineHeight: 1.5, marginTop: 8, whiteSpace: 'pre-wrap' }}>
+                {d.message}
+              </p>
+
+              {contexte?.platform && (
+                <div style={{ fontSize: 11, fontFamily: fonts.mono, color: textA(0.4), marginTop: 6 }}>
+                  {contexte.platform}
+                  {contexte.appVersion ? ` · v${contexte.appVersion}` : ''}
+                </div>
+              )}
+
+              {d.resolved_by_nom && d.resolved_at && (
+                <div style={{ fontSize: 12, color: textA(0.5), marginTop: 6 }}>
+                  Traitée par {d.resolved_by_nom} le {formatDate(d.resolved_at)}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                {d.statut === 'nouvelle' && (
+                  <button
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={() => void handleStatutChange(d, 'en_cours')}
+                    style={{ ...activateButtonStyle, opacity: isUpdating ? 0.6 : 1 }}
+                  >
+                    Prendre en charge
+                  </button>
+                )}
+                {d.statut === 'en_cours' && (
+                  <button
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={() => void handleStatutChange(d, 'traitee')}
+                    style={{ ...activateButtonStyle, opacity: isUpdating ? 0.6 : 1 }}
+                  >
+                    Marquer traitée
+                  </button>
+                )}
+                {d.statut === 'traitee' && (
+                  <button
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={() => setPendingReopen(d)}
+                    style={{ ...revokeButtonStyle, opacity: isUpdating ? 0.6 : 1 }}
+                  >
+                    Rouvrir
+                  </button>
+                )}
+              </div>
+
+              <textarea
+                value={reponseValue}
+                onChange={(e) => setReponseByDemande((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                placeholder="Réponse (optionnel)"
+                rows={2}
+                disabled={isUpdating}
+                style={{ ...tabInputStyle, height: 'auto', marginTop: 10, paddingTop: 10, paddingBottom: 10, resize: 'vertical' }}
+              />
+              <button
+                type="button"
+                disabled={isUpdating}
+                onClick={() => void handleSaveReponse(d)}
+                style={{ ...activateButtonStyle, marginTop: 8, opacity: isUpdating ? 0.6 : 1 }}
+              >
+                Enregistrer la réponse
+              </button>
+            </div>
+          );
+        })}
+
+      {pendingReopen && (
+        <ConfirmSheet
+          title="Rouvrir cette demande ?"
+          message="Elle repassera au statut « En cours »."
+          confirmLabel="Rouvrir"
+          onCancel={() => setPendingReopen(null)}
+          onConfirm={() => void handleStatutChange(pendingReopen, 'en_cours')}
+        />
+      )}
+    </div>
+  );
+}
+
+function demandeFilterChipStyle(active: boolean): CSSProperties {
+  return {
+    flex: 'none',
+    whiteSpace: 'nowrap',
+    height: 32,
+    padding: '0 12px',
+    borderRadius: 100,
+    fontSize: 12.5,
+    fontWeight: 600,
+    cursor: 'pointer',
+    border: `1px solid ${active ? colors.accent : textA(0.25)}`,
+    background: active ? colors.accent : 'transparent',
+    color: active ? '#132146' : colors.text,
+  };
+}
+
+/** Même formule 3 états que le badge de statut côté monteur (DemandesScreen) —
+ * pas de composant partagé, seule la palette (accent/text/success) est
+ * commune, réutilisée ici sans dépendance croisée entre écrans monteur/admin. */
+function DemandeStatutBadge({ statut }: { statut: DemandeStatut }) {
+  const color = statut === 'traitee' ? colors.success : statut === 'en_cours' ? colors.text : colors.accent;
+  const background = statut === 'traitee' ? successA(0.18) : statut === 'en_cours' ? textA(0.1) : accentA(0.18);
+  return (
+    <span
+      style={{
+        flex: 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 9px',
+        borderRadius: 100,
+        background,
+        color,
+        fontSize: 11.5,
+        fontWeight: 700,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      {demandeStatutLabel(statut)}
+    </span>
   );
 }
 
