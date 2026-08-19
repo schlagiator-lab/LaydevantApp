@@ -30,6 +30,7 @@ export function DemandesScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const [demandes, setDemandes] = useState<Demande[] | null | undefined>(null);
+  const [opened, setOpened] = useState<Demande | null>(null);
 
   const reload = async () => {
     try {
@@ -164,28 +165,38 @@ export function DemandesScreen() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {demandes.map((d) => (
-                <DemandeRow key={d.id} demande={d} />
+                <DemandeRow key={d.id} demande={d} onOpen={() => setOpened(d)} />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {opened && <DemandeDetailSheet demande={opened} onClose={() => setOpened(null)} />}
     </div>
   );
 }
 
-function DemandeRow({ demande }: { demande: Demande }) {
+function DemandeRow({ demande, onOpen }: { demande: Demande; onOpen: () => void }) {
   const label = demande.titre ?? demande.message.slice(0, 80) + (demande.message.length > 80 ? '…' : '');
   return (
-    <div
+    <button
+      type="button"
+      onClick={onOpen}
       style={{
         display: 'flex',
         flexDirection: 'column',
         gap: 6,
         background: colors.card,
+        border: 'none',
         borderRadius: 12,
         padding: '10px 12px',
         boxSizing: 'border-box',
+        width: '100%',
+        textAlign: 'left',
+        cursor: 'pointer',
+        font: 'inherit',
+        color: 'inherit',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -196,6 +207,7 @@ function DemandeRow({ demande }: { demande: Demande }) {
           </span>
         </div>
         <StatutBadge statut={demande.statut} />
+        <span style={{ color: textA(0.35), fontSize: 18, lineHeight: '20px' }}>›</span>
       </div>
 
       {demande.reponse_admin && (
@@ -214,6 +226,82 @@ function DemandeRow({ demande }: { demande: Demande }) {
           {demande.reponse_admin}
         </div>
       )}
+    </button>
+  );
+}
+
+/** Détail en lecture seule d'une demande — message complet, statut, réponse
+ * admin et date de résolution le cas échéant. Même pattern de bottom sheet
+ * que NoteFormSheet, sans champs éditables (le suivi/traitement reste
+ * exclusivement admin). */
+function DemandeDetailSheet({ demande, onClose }: { demande: Demande; onClose: () => void }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex',
+        alignItems: 'flex-end',
+        zIndex: 1200,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="no-scrollbar"
+        style={{
+          width: '100%',
+          maxHeight: '85vh',
+          overflowY: 'auto',
+          background: colors.bg,
+          borderTopLeftRadius: 20,
+          borderTopRightRadius: 20,
+          padding: '18px 16px 24px',
+          boxSizing: 'border-box',
+          fontFamily: fonts.sans,
+          color: colors.text,
+        }}
+      >
+        <div style={{ width: 36, height: 4, borderRadius: 2, background: textA(0.25), margin: '0 auto 16px' }} />
+
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 18, fontWeight: 700 }}>{demande.titre ?? demandeTypeLabel(demande.type)}</span>
+            <span style={{ fontSize: 12.5, color: textA(0.55), fontWeight: 500 }}>
+              {demandeTypeLabel(demande.type)} · déposée le {formatDate(demande.created_at)}
+            </span>
+          </div>
+          <StatutBadge statut={demande.statut} />
+        </div>
+
+        <p style={{ fontSize: 14.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', margin: 0, color: textA(0.9) }}>
+          {demande.message}
+        </p>
+
+        {demande.reponse_admin && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: textA(0.06),
+              fontSize: 13.5,
+              color: textA(0.85),
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontWeight: 700, color: textA(0.6), marginBottom: 4 }}>
+              Réponse{demande.resolved_at ? ` · ${formatDate(demande.resolved_at)}` : ''}
+            </div>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{demande.reponse_admin}</div>
+          </div>
+        )}
+
+        <button type="button" onClick={onClose} style={{ ...secondaryButtonStyle, width: '100%', marginTop: 20 }}>
+          Fermer
+        </button>
+      </div>
     </div>
   );
 }
@@ -289,4 +377,15 @@ const primaryButtonStyle: React.CSSProperties = {
   color: '#132146',
   fontSize: 15,
   fontWeight: 700,
+};
+
+const secondaryButtonStyle: React.CSSProperties = {
+  height: 48,
+  borderRadius: 12,
+  border: `1px solid ${textA(0.3)}`,
+  background: 'transparent',
+  color: colors.text,
+  fontSize: 15,
+  fontWeight: 600,
+  cursor: 'pointer',
 };
