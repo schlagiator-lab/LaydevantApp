@@ -3,12 +3,16 @@ import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import { getLocalDepartments, getRecentDocuments, getAllPinnedDocuments } from '../lib/db';
+import { isVaultAdmin } from '../lib/vaultAdmin';
+import { countNouvellesDemandes } from '../lib/demandes';
 import type { Department } from '../types/database';
 import type { RecentDocument } from '../lib/db';
 import { StatusPill } from '../components/StatusPill';
 import { SearchBarButton } from '../components/SearchBarButton';
 import { departmentBadge } from '../lib/departmentStyle';
 import { colors, fonts, textA } from '../styles/tokens';
+
+const DANGER = '#D14343';
 
 export function HomeScreen() {
   const { isOnline } = useAuth();
@@ -18,6 +22,7 @@ export function HomeScreen() {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [recentDocs, setRecentDocs] = useState<RecentDocument[]>([]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  const [nouvellesDemandes, setNouvellesDemandes] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +42,29 @@ export function HomeScreen() {
       cancelled = true;
     };
   }, []);
+
+  // Flag "Coffre (admin)" en rouge s'il y a des demandes 'nouvelle' à
+  // traiter — admin uniquement (isVaultAdmin()), un monteur ne verrait sinon
+  // que ses propres demandes via la RLS, pas un vrai signal global. Best-
+  // effort : en ligne uniquement, échec silencieux (comme
+  // canPublishCommunications), jamais de blocage de l'accueil pour ça.
+  useEffect(() => {
+    if (!isOnline) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const admin = await isVaultAdmin();
+        if (!admin || cancelled) return;
+        const count = await countNouvellesDemandes();
+        if (!cancelled) setNouvellesDemandes(count);
+      } catch {
+        // Reste à 0 en cas d'échec — pas de flag affiché à tort.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOnline]);
 
   const pinnedCount = pinnedIds.size;
   const pinnedLabel =
@@ -350,13 +378,23 @@ export function HomeScreen() {
         </button>
         {/* Panneau admin du coffre (tranche 5) — lien visible par tout le
             monde, le garde-fou (is_vault_admin) se fait dans l'écran
-            lui-même. */}
+            lui-même. Passe en rouge (nouvellesDemandes > 0) quand des
+            demandes 'nouvelle' attendent l'admin (canal de remontée
+            terrain, onglet "Demandes" → section "Remontées terrain") —
+            calculé uniquement pour un admin, cf. effet ci-dessus. */}
         <button
           type="button"
           onClick={nav.goVaultAdmin}
-          style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: nouvellesDemandes > 0 ? DANGER : textA(0.35),
+            fontSize: 11,
+            fontWeight: nouvellesDemandes > 0 ? 700 : 400,
+            cursor: 'pointer',
+          }}
         >
-          Coffre (admin)
+          Coffre (admin){nouvellesDemandes > 0 ? ` (${nouvellesDemandes})` : ''}
         </button>
       </div>
     </div>

@@ -86,6 +86,21 @@ export async function listAllDemandes(
   return (data ?? []) as Demande[];
 }
 
+/** Nombre de demandes au statut 'nouvelle' (admin) — flag sur l'accueil,
+ * CLAUDE.md pas encore documenté pour ce point précis. `head: true` + pas de
+ * `select('*')` : seul le compte est nécessaire, pas les lignes. RLS laisse
+ * l'admin tout voir ; pour un monteur ce compte ne porterait que sur ses
+ * propres demandes (RLS SELECT restreinte), l'appelant doit donc vérifier
+ * `isVaultAdmin()` avant d'utiliser ce nombre comme indicateur global. */
+export async function countNouvellesDemandes(): Promise<number> {
+  const { count, error } = await supabase
+    .from('demandes')
+    .select('id', { count: 'exact', head: true })
+    .eq('statut', 'nouvelle');
+  if (error) throw error;
+  return count ?? 0;
+}
+
 /** Colonnes de la TABLE `demandes` (pas la vue demandes_view) : sans
  * auteur_nom/resolved_by_nom, qui n'existent que côté vue jointe. */
 type DemandeRow = Omit<Demande, 'auteur_nom' | 'resolved_by_nom'>;
