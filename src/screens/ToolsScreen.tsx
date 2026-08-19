@@ -12,6 +12,7 @@ export function ToolsScreen() {
   const nav = useNavigation();
 
   const items = [
+    { key: 'demandes', label: 'Mes demandes', letter: 'M', onClick: nav.goDemandes },
     { key: 'diagnostic', label: 'Diagnostic stockage', letter: 'D', onClick: nav.goDiagnostic },
     { key: 'vaultEnroll', label: 'Coffre (enrôlement)', letter: 'C', onClick: nav.goVaultEnroll },
   ];

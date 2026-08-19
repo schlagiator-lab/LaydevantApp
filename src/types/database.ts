@@ -287,3 +287,28 @@ export interface Communication {
   auteur_nom: string | null;
   created_at: string;
 }
+
+// Demandes (canal de remontée terrain) — table possédée par cette app, créée
+// hors dépôt. Lue via demandes_view, qui joint profiles pour exposer
+// auteur_nom/resolved_by_nom (même convention que les autres vues).
+
+export type DemandeType = 'amelioration' | 'bug' | 'autre';
+
+export type DemandeStatut = 'nouvelle' | 'en_cours' | 'traitee';
+
+export interface Demande {
+  id: string;
+  type: DemandeType;
+  titre: string | null;
+  message: string;
+  statut: DemandeStatut;
+  reponse_admin: string | null;
+  contexte: Record<string, unknown>;
+  auteur: string | null;
+  auteur_nom: string | null;
+  resolved_by: string | null;
+  resolved_by_nom: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}

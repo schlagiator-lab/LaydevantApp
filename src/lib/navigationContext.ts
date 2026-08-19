@@ -34,7 +34,8 @@ export type NavState =
   | { screen: 'gameLeaderboard' }
   | { screen: 'gameDuoLobby' }
   | { screen: 'tools' }
-  | { screen: 'communications' };
+  | { screen: 'communications' }
+  | { screen: 'demandes' };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -97,6 +98,9 @@ export interface NavigationContextValue {
   /** Liste des communications d'entreprise (item 4) — remplace l'ancien
    * raccourci "Toute la documentation" sur l'accueil. */
   goCommunications: () => void;
+  /** Dépôt et suivi des demandes (canal de remontée terrain), accessible
+   * depuis l'onglet "Outils". */
+  goDemandes: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }
