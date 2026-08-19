@@ -7,7 +7,7 @@ import { useToast } from '../lib/useToast';
 import { docTypeLabel } from '../lib/docType';
 import { colors, fonts, textA } from '../styles/tokens';
 
-const DOC_TYPES: WebSearchResultType[] = [
+const DOC_TYPES: Exclude<WebSearchResultType, 'video'>[] = [
   'notice_installation',
   'manuel_programmation',
   'fiche_technique',

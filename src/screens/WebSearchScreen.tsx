@@ -16,6 +16,11 @@ const CONFIDENCE_LABELS: Record<WebSearchResult['confidence'], string> = {
   faible: 'Confiance faible',
 };
 
+/** 'video' n'est pas un DocType (jamais capturable) : libellé propre plutôt que docTypeLabel. */
+function resultTypeLabel(type: WebSearchResult['type']): string {
+  return type === 'video' ? 'Vidéo' : docTypeLabel(type);
+}
+
 const PATIENCE_MESSAGES = [
   'On fouille tout le web, promis on ne lâche rien 🔌',
   "La notice se planque comme un electro sur un chantier… on la traque 🔦",
@@ -51,7 +56,6 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const [equipmentType, setEquipmentType] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<WebSearchResult[] | null>(null);
-  const [stillSearching, setStillSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [captureTarget, setCaptureTarget] = useState<WebSearchResult | null>(null);
   const [patienceIndex, setPatienceIndex] = useState(() =>
@@ -143,7 +147,6 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
     setLoading(true);
     setError(null);
     setResults(null);
-    setStillSearching(false);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
@@ -155,28 +158,20 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
           specialtyName: context.specialtyName,
           equipmentType,
         },
-        {
-          signal: controller.signal,
-          onUpdate: ({ results: partial, stillSearching: searching }) => {
-            setResults(partial);
-            setStillSearching(searching);
-          },
-        },
+        { signal: controller.signal },
       );
       setResults(rows);
-      setStillSearching(false);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         return; // composant démonté pendant le polling : rien à mettre à jour
       }
       if (err instanceof WebSearchTimeoutError) {
-        setError('La recherche a pris trop de temps, réessaie.');
+        setError('Recherche interrompue, réessaie.');
       } else if (err instanceof WebSearchFailedError) {
         setError(err.message);
       } else {
         setError(err instanceof Error ? err.message : 'La recherche web a échoué.');
       }
-      setStillSearching(false);
     } finally {
       if (!controller.signal.aborted) {
         setLoading(false);
@@ -191,6 +186,12 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   const handleCaptured = () => {
     setCaptureTarget(null);
   };
+
+  // Ordre back-end conservé pour les documents ; les vidéos sont repoussées
+  // en fin de liste (tri stable), sans re-scorer quoi que ce soit côté client.
+  const orderedResults = [...(results ?? [])].sort(
+    (a, b) => Number(a.type === 'video') - Number(b.type === 'video'),
+  );
 
   return (
     <div
@@ -301,27 +302,24 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
 
         {!error && results && results.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {stillSearching && (
-              <div style={offlineBannerStyle}>
-                <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', background: colors.accent }} />
-                <span style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.4 }}>
-                  Recherche en cours — d'autres notices peuvent encore arriver.
-                </span>
-              </div>
-            )}
-            {results.map((result, i) => (
+            {orderedResults.map((result, i) => (
               <div key={`${result.url}-${i}`} style={cardStyle}>
                 <div style={{ fontSize: 13, color: textA(0.6), fontWeight: 600 }}>
-                  {docTypeLabel(result.type)} · {result.source}
+                  {resultTypeLabel(result.type)} · {result.source}
                 </div>
                 <div style={{ fontSize: 16.5, fontWeight: 700, lineHeight: 1.3 }}>{result.title}</div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, gap: 8 }}>
-                  <span style={confidenceBadgeStyle(result.confidence)}>{CONFIDENCE_LABELS[result.confidence]}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={confidenceBadgeStyle(result.confidence)}>{CONFIDENCE_LABELS[result.confidence]}</span>
+                    {result.link_ok === false && (
+                      <span style={{ fontSize: 11.5, color: textA(0.55) }}>⚠️ lien non vérifié</span>
+                    )}
+                  </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button type="button" onClick={() => handleOpen(result)} style={smallSecondaryButtonStyle}>
                       {result.is_pdf ? 'Consulter' : 'Ouvrir'}
                     </button>
-                    {result.is_pdf && (
+                    {result.is_pdf && result.type !== 'video' && (
                       <button type="button" onClick={() => setCaptureTarget(result)} style={smallPrimaryButtonStyle}>
                         Ajouter à la bibliothèque
                       </button>
