@@ -24,7 +24,7 @@ import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
 import { listInvitations, addInvitation, removeInvitation } from '../lib/onboarding';
 import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
-import { listAllDemandes, updateDemandeStatut, demandeTypeLabel, demandeStatutLabel } from '../lib/demandes';
+import { listAllDemandes, updateDemandeStatut, deleteDemande, demandeTypeLabel, demandeStatutLabel } from '../lib/demandes';
 import type {
   OnboardingInvitation,
   ProfileRole,
@@ -1363,7 +1363,10 @@ type RemonteesPhase =
  * défaut sur statut 'nouvelle' (les demandes à traiter en premier), pas de
  * filtre par type. `reponseByDemande` porte les brouillons de réponse en
  * cours d'édition (un textarea par carte), même pattern que
- * `selectedSpecialtyByRequest` dans EquipmentRequestsSection.
+ * `selectedSpecialtyByRequest` dans EquipmentRequestsSection. Suppression
+ * définitive réservée aux demandes 'traitee' (bouton visible seulement sur
+ * ce statut) — une demande encore ouverte ne doit disparaître qu'en passant
+ * par le cycle de statut normal, jamais par suppression directe.
  */
 function RemonteesTerrainSection() {
   const [typeFilter, setTypeFilter] = useState<DemandeType | 'all'>('all');
@@ -1373,6 +1376,7 @@ function RemonteesTerrainSection() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingReopen, setPendingReopen] = useState<Demande | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Demande | null>(null);
 
   const loadDemandes = useCallback(async () => {
     setPhase({ kind: 'loading' });
@@ -1414,6 +1418,20 @@ function RemonteesTerrainSection() {
     setActionError(null);
     try {
       await updateDemandeStatut(demande.id, { reponse_admin: reponse || null });
+      await loadDemandes();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  async function handleDelete(demande: Demande) {
+    setPendingDelete(null);
+    setUpdatingId(demande.id);
+    setActionError(null);
+    try {
+      await deleteDemande(demande.id);
       await loadDemandes();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -1527,6 +1545,16 @@ function RemonteesTerrainSection() {
                     Rouvrir
                   </button>
                 )}
+                {d.statut === 'traitee' && (
+                  <button
+                    type="button"
+                    disabled={isUpdating}
+                    onClick={() => setPendingDelete(d)}
+                    style={{ ...revokeButtonStyle, opacity: isUpdating ? 0.6 : 1 }}
+                  >
+                    Supprimer
+                  </button>
+                )}
               </div>
 
               <textarea
@@ -1556,6 +1584,17 @@ function RemonteesTerrainSection() {
           confirmLabel="Rouvrir"
           onCancel={() => setPendingReopen(null)}
           onConfirm={() => void handleStatutChange(pendingReopen, 'en_cours')}
+        />
+      )}
+
+      {pendingDelete && (
+        <ConfirmSheet
+          title="Supprimer cette demande ?"
+          message="Elle sera définitivement supprimée — action irréversible."
+          confirmLabel="Supprimer"
+          danger
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => void handleDelete(pendingDelete)}
         />
       )}
     </div>

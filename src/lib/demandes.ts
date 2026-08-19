@@ -124,3 +124,17 @@ export async function updateDemandeStatut(
   if (error) throw error;
   return data as DemandeRow;
 }
+
+/**
+ * Suppression définitive (admin) — réservée aux demandes déjà 'traitee', le
+ * garde-fou est côté appelant (bouton visible seulement sur ce statut,
+ * RemonteesTerrainSection) : rien à traiter ne doit pouvoir disparaître sans
+ * passer par le cycle de statut normal. Pas de soft delete ici (pas de
+ * colonne deleted_at sur `demandes`, contrairement à `communications`) donc
+ * pas de piège RETURNING/policy SELECT à contourner (CLAUDE.md §3) — un
+ * DELETE direct suffit, l'admin voit/modifie déjà tout via la RLS.
+ */
+export async function deleteDemande(id: string): Promise<void> {
+  const { error } = await supabase.from('demandes').delete().eq('id', id);
+  if (error) throw error;
+}
