@@ -1,5 +1,8 @@
 import { useState } from 'react';
-import { createEquipmentRequest } from '../lib/dossiers';
+import { attachEquipmentRequestNotice, createEquipmentRequest } from '../lib/dossiers';
+import { useToast } from '../lib/useToast';
+import { docTypeLabel } from '../lib/docType';
+import type { DocType } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface EquipmentRequestSheetProps {
@@ -8,6 +11,11 @@ export interface EquipmentRequestSheetProps {
   /** Appelé après création réussie — le parent recharge la liste des demandes. */
   onCreated: () => void;
 }
+
+/** Sous-ensemble de DocType proposé à la saisie — même liste que CaptureSheet
+ * (recherche web de notices) : schema/fiche_perso n'ont pas de sens pour une
+ * notice fabricant jointe à une demande d'équipement. */
+const NOTICE_DOC_TYPES: DocType[] = ['notice_installation', 'manuel_programmation', 'fiche_technique', 'autre'];
 
 /** Les erreurs Supabase/PostgREST sont de simples objets `{ message, ... }`,
  * jamais des instances d'Error — point de passage unique avant affichage. */
@@ -26,25 +34,48 @@ function errorMessage(err: unknown): string {
  * admin qui la résout plus tard (transformation en produit rattaché).
  */
 export function EquipmentRequestSheet({ dossierId, onClose, onCreated }: EquipmentRequestSheetProps) {
+  const { showToast } = useToast();
   const [marque, setMarque] = useState('');
   const [modele, setModele] = useState('');
   const [commentaire, setCommentaire] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [docType, setDocType] = useState<DocType | ''>('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const canSubmit = marque.trim().length > 0 && !submitting;
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files?.[0] ?? null;
+    e.target.value = '';
+    if (!picked) return;
+    if (picked.type !== 'application/pdf' && !picked.name.toLowerCase().endsWith('.pdf')) {
+      showToast('Seuls les fichiers PDF peuvent être joints.');
+      return;
+    }
+    setFile(picked);
+  };
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
-      await createEquipmentRequest({
+      const created = await createEquipmentRequest({
         dossierId,
         marque: marque.trim(),
         modele: modele.trim() || undefined,
         commentaire: commentaire.trim() || undefined,
       });
+      if (file) {
+        try {
+          await attachEquipmentRequestNotice(created.id, file, docType || undefined);
+        } catch {
+          // La déclaration reste valable même si la notice n'a pas pu être jointe —
+          // réessayable depuis la carte "en attente" (EquipmentRequestNotices).
+          showToast("Équipement déclaré, mais la notice n'a pas pu être jointe — réessayez depuis la demande.");
+        }
+      }
       onCreated();
     } catch (err) {
       setError(errorMessage(err));
@@ -85,6 +116,27 @@ export function EquipmentRequestSheet({ dossierId, onClose, onCreated }: Equipme
               style={{ ...inputStyle, height: 'auto', paddingTop: 10, paddingBottom: 10, resize: 'vertical' }}
             />
           </Field>
+          <Field label="Joindre la notice (PDF, optionnel)">
+            <input
+              type="file"
+              accept=".pdf,application/pdf"
+              onChange={handleFileChange}
+              style={{ ...inputStyle, height: 'auto', paddingTop: 8, paddingBottom: 8 }}
+            />
+            {file && <span style={{ fontSize: 12.5, color: textA(0.6), marginTop: 4 }}>{file.name}</span>}
+          </Field>
+          {file && (
+            <Field label="Type de document (optionnel)">
+              <select value={docType} onChange={(e) => setDocType(e.target.value as DocType | '')} style={inputStyle}>
+                <option value="">—</option>
+                {NOTICE_DOC_TYPES.map((dt) => (
+                  <option key={dt} value={dt}>
+                    {docTypeLabel(dt)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
 
         {error && <p style={{ fontSize: 13, color: colors.accent, marginTop: 14 }}>{error}</p>}

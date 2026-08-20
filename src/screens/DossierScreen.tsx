@@ -29,6 +29,7 @@ import { DocumentCard } from '../components/DocumentCard';
 import { AddEquipmentSheet } from '../components/AddEquipmentSheet';
 import { AddDossierDocumentSheet } from '../components/AddDossierDocumentSheet';
 import { EquipmentRequestSheet } from '../components/EquipmentRequestSheet';
+import { EquipmentRequestNotices } from '../components/EquipmentRequestNotices';
 import { DossierFormSheet } from '../components/DossierFormSheet';
 import { CarnetSection } from '../components/CarnetSection';
 import { PlansSection } from '../components/PlansSection';
@@ -474,25 +475,33 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
                     <p style={pendingBlockTitleStyle}>Demandes en attente</p>
                     {equipmentRequests.map((req) => (
-                      <div key={req.id} style={pendingRowStyle}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {req.marque}
-                            {req.modele ? ` ${req.modele}` : ''}
-                          </div>
-                          {req.commentaire && (
-                            <div style={{ fontSize: 12.5, color: textA(0.6), fontWeight: 500, marginTop: 2 }}>
-                              {req.commentaire}
+                      <div key={req.id} style={{ ...pendingRowStyle, flexDirection: 'column', alignItems: 'stretch' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {req.marque}
+                              {req.modele ? ` ${req.modele}` : ''}
                             </div>
-                          )}
-                          <div style={{ fontSize: 11.5, color: textA(0.5), fontWeight: 600, marginTop: 4 }}>
-                            Demandé par {req.requested_by_nom ?? 'inconnu'} le {formatDate(req.created_at)}
+                            {req.commentaire && (
+                              <div style={{ fontSize: 12.5, color: textA(0.6), fontWeight: 500, marginTop: 2 }}>
+                                {req.commentaire}
+                              </div>
+                            )}
+                            <div style={{ fontSize: 11.5, color: textA(0.5), fontWeight: 600, marginTop: 4 }}>
+                              Demandé par {req.requested_by_nom ?? 'inconnu'} le {formatDate(req.created_at)}
+                            </div>
                           </div>
+                          <span style={pendingChipStyle}>
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: colors.accent }} />
+                            En attente
+                          </span>
                         </div>
-                        <span style={pendingChipStyle}>
-                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: colors.accent }} />
-                          En attente
-                        </span>
+                        <EquipmentRequestNotices
+                          requestId={req.id}
+                          notices={req.notices ?? []}
+                          isOnline={isOnline}
+                          onChanged={() => void loadEquipmentRequests()}
+                        />
                       </div>
                     ))}
                   </div>

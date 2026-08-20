@@ -53,17 +53,20 @@ async function checkHasDossierVaultAccess(request, env, dossierId) {
 // espace. "plans" réutilise ce même mécanisme (slug = dossier_id, qui matche
 // déjà [a-z0-9-]+ en tant qu'UUID) plutôt que le paramètre dédié ?dossier=,
 // lequel reste figé sur le préfixe `dossiers/` pour ne rien changer aux
-// photos. Ne PAS rendre le /slug optionnel ici : ça autoriserait galerie ou
-// plans nus, sans entité associée — les préfixes globaux (ci-dessous) sont
-// une liste séparée, volontairement disjointe de ce regex.
-const GENERIC_PREFIX_RE = /^(galerie|plans|vault)\/[a-z0-9-]+$/;
+// photos. "equipment-requests" suit le même besoin : slug = request_id (UUID
+// `dossier_equipment_requests`), staging des notices jointes à une demande
+// d'équipement absent de la base. Ne PAS rendre le /slug optionnel ici : ça
+// autoriserait galerie/plans/equipment-requests nus, sans entité associée —
+// les préfixes globaux (ci-dessous) sont une liste séparée, volontairement
+// disjointe de ce regex.
+const GENERIC_PREFIX_RE = /^(galerie|plans|vault|equipment-requests)\/[a-z0-9-]+$/;
 
 // Préfixes globaux — espaces partagés par toute l'app, sans slug d'entité
 // (rien à faire suivre la tête : pas de dossier, pas de produit). Égalité
 // stricte sur une allowlist fermée, jamais un regex à trou : un préfixe
 // global n'a structurellement aucun segment à valider après la tête. Ajouter
 // un futur préfixe global = ajouter son nom ici, rien d'autre.
-const GLOBAL_PREFIXES = ["communications", "equipment-requests"];
+const GLOBAL_PREFIXES = ["communications"];
 
 // Nom de fichier optionnel (?name=) : accolé tel quel après l'UUID généré,
 // pour que la clé porte la vraie extension (pdf/dwg/...) plutôt que le

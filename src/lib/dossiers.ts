@@ -6,7 +6,9 @@ import type {
   DossierNoteView,
   DossierPhotoView,
   DossierPlanView,
+  DocType,
   EquipmentRequest,
+  EquipmentRequestFile,
 } from '../types/database';
 import type { PhotoAnnotations } from './photoAnnotations';
 
@@ -130,20 +132,92 @@ export async function createEquipmentRequest(input: {
 
 /** Demandes d'équipement d'un dossier, plus ancienne d'abord — seulement
  * `pending` par défaut (affichage provisoire dans la fiche dossier) ;
- * `opts.all` pour tout récupérer (historique éventuel). */
+ * `opts.all` pour tout récupérer (historique éventuel). `notices` est la
+ * ressource imbriquée PostgREST des PDF joints (staging, §11). */
 export async function listDossierEquipmentRequests(
   dossierId: string,
   opts?: { all?: boolean }
 ): Promise<EquipmentRequest[]> {
   let query = supabase
     .from('dossier_equipment_requests')
-    .select('*')
+    .select('*, notices:dossier_equipment_request_files(*)')
     .eq('dossier_id', dossierId)
     .order('created_at', { ascending: true });
   if (!opts?.all) query = query.eq('status', 'pending');
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as EquipmentRequest[];
+}
+
+/**
+ * Joint une notice PDF à une demande d'équipement (staging, aucune
+ * validation admin requise). Octets bruts du fichier, SANS compression —
+ * ce n'est jamais une image, contrairement à uploadDossierPhoto. Même
+ * mécanisme que uploadDossierPlan : `prefix=equipment-requests/{requestId}`
+ * (GENERIC_PREFIX_RE côté Worker, slug = request_id) + `name=` pour
+ * préserver la vraie extension du fichier.
+ */
+export async function attachEquipmentRequestNotice(
+  requestId: string,
+  file: File,
+  docTypeSuggere?: DocType | null
+): Promise<EquipmentRequestFile> {
+  const name = sanitizeFilename(file.name);
+  const mime = file.type || 'application/pdf';
+  const { key } = await uploadPhotoBytes(file, `prefix=equipment-requests/${requestId}&name=${encodeURIComponent(name)}`, mime);
+
+  const { data, error } = await supabase
+    .from('dossier_equipment_request_files')
+    .insert({
+      request_id: requestId,
+      storage_provider: 'r2',
+      storage_key: key,
+      nom_fichier: file.name,
+      mime,
+      taille: file.size,
+      doc_type_suggere: docTypeSuggere ?? null,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as EquipmentRequestFile;
+}
+
+/** Même fetch authentifié que getDossierPlanBlob (Blob re-typé
+ * application/pdf pour PdfViewer) — dupliqué plutôt que partagé, la clé
+ * `/api/photos/{storageKey}` est déjà complète et indépendante du préfixe
+ * appelant. */
+export async function getEquipmentRequestNoticeBlob(storageKey: string): Promise<Blob> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/photos/${storageKey}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Chargement de la notice échoué (HTTP ${res.status})`);
+  const blob = await res.blob();
+  return new Blob([blob], { type: 'application/pdf' });
+}
+
+/**
+ * Hard delete — pas de `deleted_at` sur cette table (staging). Ligne DB
+ * d'abord (source de vérité UI), octet R2 en best-effort ensuite, même
+ * convention que deleteVaultFile (vaultFiles.ts) : un DELETE Worker refusé
+ * (non-admin) ou en échec réseau laisse un orphelin R2 toléré plutôt que de
+ * bloquer la suppression côté utilisateur. Aucune logique de permission
+ * côté client — la RLS (auteur OU is_vault_admin) et le Worker tranchent.
+ */
+export async function deleteEquipmentRequestNotice(fileId: string, storageKey: string): Promise<void> {
+  const { error } = await supabase.from('dossier_equipment_request_files').delete().eq('id', fileId);
+  if (error) throw error;
+
+  try {
+    const token = await getAccessToken();
+    await fetch(`/api/photos/${storageKey}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    // Best-effort : voir le commentaire de fonction ci-dessus.
+  }
 }
 
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */

@@ -154,13 +154,34 @@ export interface DossierDocumentComplet {
 export type EquipmentRequestStatus = 'pending' | 'approved' | 'rejected';
 
 /**
+ * Notice PDF jointe à une demande d'équipement (staging, aucune validation
+ * admin requise) — `dossier_equipment_request_files`, schéma créé hors
+ * dépôt. `storage_key` pointe dans le bucket R2 sous le préfixe
+ * `equipment-requests/{request_id}/...` (worker/index.js).
+ */
+export interface EquipmentRequestFile {
+  id: string;
+  request_id: string;
+  storage_provider: string;
+  storage_key: string;
+  nom_fichier: string;
+  mime: string | null;
+  taille: number | null;
+  doc_type_suggere: DocType | null;
+  auteur: string | null;
+  created_at: string;
+}
+
+/**
  * Demande d'équipement manuel absent de la base (item 1) —
  * `dossier_equipment_requests`, schéma créé hors dépôt (comme
  * `dossier_deletion_requests`). `nom_client` et `requested_by_nom` ne sont
  * peuplés que par `listPendingEquipmentRequests` (vaultAdmin.ts) : le premier
  * via un embed direct (FK réelle `dossier_id → dossiers`), le second via une
  * requête best-effort séparée sur `profiles` (pas de FK `requested_by →
- * profiles`, même limitation que `dossier_deletion_requests`).
+ * profiles`, même limitation que `dossier_deletion_requests`). `notices` est
+ * la ressource imbriquée PostgREST `dossier_equipment_request_files`,
+ * peuplée par `listDossierEquipmentRequests` (dossiers.ts).
  */
 export interface EquipmentRequest {
   id: string;
@@ -177,6 +198,7 @@ export interface EquipmentRequest {
   resolved_product_id: string | null;
   nom_client?: string;
   requested_by_nom?: string | null;
+  notices?: EquipmentRequestFile[];
 }
 // Carnet public par dossier (notes + photos), tables possédées par cette app.
 // Lues via les vues qui joignent profiles pour exposer le nom de l'auteur.
