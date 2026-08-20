@@ -3,7 +3,7 @@ import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import { getLocalDepartments, getRecentDocuments, getAllPinnedDocuments } from '../lib/db';
-import { isVaultAdmin } from '../lib/vaultAdmin';
+import { isVaultAdmin, countPendingDeletionRequests, countPendingEquipmentRequests } from '../lib/vaultAdmin';
 import { countNouvellesDemandes } from '../lib/demandes';
 import type { Department } from '../types/database';
 import type { RecentDocument } from '../lib/db';
@@ -43,11 +43,16 @@ export function HomeScreen() {
     };
   }, []);
 
-  // Flag "Coffre (admin)" en rouge s'il y a des demandes 'nouvelle' à
-  // traiter — admin uniquement (isVaultAdmin()), un monteur ne verrait sinon
-  // que ses propres demandes via la RLS, pas un vrai signal global. Best-
-  // effort : en ligne uniquement, échec silencieux (comme
-  // canPublishCommunications), jamais de blocage de l'accueil pour ça.
+  // Flag "Coffre (admin)" en rouge s'il y a des demandes à traiter dans
+  // l'onglet "Demandes" — admin uniquement (isVaultAdmin()), un monteur ne
+  // verrait sinon que ses propres demandes via la RLS, pas un vrai signal
+  // global. Les trois sections de cet onglet ont des tables indépendantes :
+  // remontées terrain (`demandes`, statut 'nouvelle'), équipement manquant
+  // (`dossier_equipment_requests`, status 'pending') et suppression de
+  // dossier (`dossier_deletion_requests`, status 'pending') — le flag doit
+  // sommer les trois, pas seulement le premier. Best-effort : en ligne
+  // uniquement, échec silencieux (comme canPublishCommunications), jamais de
+  // blocage de l'accueil pour ça.
   useEffect(() => {
     if (!isOnline) return;
     let cancelled = false;
@@ -55,8 +60,12 @@ export function HomeScreen() {
       try {
         const admin = await isVaultAdmin();
         if (!admin || cancelled) return;
-        const count = await countNouvellesDemandes();
-        if (!cancelled) setNouvellesDemandes(count);
+        const [nouvelles, equipement, suppressions] = await Promise.all([
+          countNouvellesDemandes(),
+          countPendingEquipmentRequests(),
+          countPendingDeletionRequests(),
+        ]);
+        if (!cancelled) setNouvellesDemandes(nouvelles + equipement + suppressions);
       } catch {
         // Reste à 0 en cas d'échec — pas de flag affiché à tort.
       }
@@ -378,10 +387,10 @@ export function HomeScreen() {
         </button>
         {/* Panneau admin du coffre (tranche 5) — lien visible par tout le
             monde, le garde-fou (is_vault_admin) se fait dans l'écran
-            lui-même. Passe en rouge (nouvellesDemandes > 0) quand des
-            demandes 'nouvelle' attendent l'admin (canal de remontée
-            terrain, onglet "Demandes" → section "Remontées terrain") —
-            calculé uniquement pour un admin, cf. effet ci-dessus. */}
+            lui-même. Passe en rouge (nouvellesDemandes > 0) dès qu'une des
+            trois sections de l'onglet "Demandes" a quelque chose en attente
+            (remontées terrain, équipement manquant, suppression de dossier)
+            — calculé uniquement pour un admin, cf. effet ci-dessus. */}
         <button
           type="button"
           onClick={nav.goVaultAdmin}

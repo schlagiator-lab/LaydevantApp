@@ -233,6 +233,21 @@ export async function listDeletionRequests(): Promise<DossierDeletionRequestSumm
 }
 
 /**
+ * Nombre de demandes de suppression de dossier en attente — même filtre que
+ * `listDeletionRequests`, juste le compte (flag "Coffre (admin)" de
+ * l'accueil). `head: true` + pas de `select('*')` : seul le compte est
+ * nécessaire. RLS admin-only sur cette table : zéro pour un non-admin.
+ */
+export async function countPendingDeletionRequests(): Promise<number> {
+  const { count, error } = await supabase
+    .from('dossier_deletion_requests')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'pending');
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/**
  * Approuve ou rejette une demande via la RPC `resolve_dossier_deletion_request`
  * — jamais de soft delete direct depuis cet écran : la fonction vérifie
  * l'admin et fait le soft delete + la résolution de façon atomique. Une
@@ -320,6 +335,22 @@ export async function listPendingEquipmentRequests(): Promise<EquipmentRequest[]
       requested_by_nom: r.requested_by ? namesByUserId.get(r.requested_by) ?? null : null,
     };
   });
+}
+
+/**
+ * Nombre de demandes d'équipement manuel en attente — même filtre que
+ * `listPendingEquipmentRequests`, juste le compte (flag "Coffre (admin)" de
+ * l'accueil). RLS `dossier_equipment_requests` laisse `select` à tout
+ * utilisateur authentifié (CLAUDE.md §3) : cette fonction n'est donc un
+ * signal admin fiable que si l'appelant a déjà vérifié `isVaultAdmin()`.
+ */
+export async function countPendingEquipmentRequests(): Promise<number> {
+  const { count, error } = await supabase
+    .from('dossier_equipment_requests')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'pending');
+  if (error) throw error;
+  return count ?? 0;
 }
 
 /**
