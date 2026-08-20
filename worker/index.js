@@ -63,7 +63,7 @@ const GENERIC_PREFIX_RE = /^(galerie|plans|vault)\/[a-z0-9-]+$/;
 // stricte sur une allowlist fermée, jamais un regex à trou : un préfixe
 // global n'a structurellement aucun segment à valider après la tête. Ajouter
 // un futur préfixe global = ajouter son nom ici, rien d'autre.
-const GLOBAL_PREFIXES = ["communications"];
+const GLOBAL_PREFIXES = ["communications", "equipment-requests"];
 
 // Nom de fichier optionnel (?name=) : accolé tel quel après l'UUID généré,
 // pour que la clé porte la vraie extension (pdf/dwg/...) plutôt que le
