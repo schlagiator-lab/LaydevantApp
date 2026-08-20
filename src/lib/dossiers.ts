@@ -224,6 +224,32 @@ export async function deleteEquipmentRequestNotice(fileId: string, storageKey: s
   }
 }
 
+/**
+ * Supprime une demande d'équipement entière (`delete_dossier_equipment_request`,
+ * SECURITY DEFINER — admin toujours, auteur uniquement si encore 'pending' ;
+ * pas de policy DELETE côté RLS sur cette table). Les lignes
+ * `dossier_equipment_request_files` disparaissent via l'ON DELETE CASCADE
+ * de la RPC ; les octets R2 des notices jointes sont nettoyés en best-effort
+ * AVANT l'appel RPC (storage_key doit encore être connu côté client à ce
+ * moment-là), même tolérance à l'orphelin que deleteEquipmentRequestNotice.
+ */
+export async function deleteEquipmentRequest(request: EquipmentRequest): Promise<void> {
+  const token = await getAccessToken();
+  for (const notice of request.notices ?? []) {
+    try {
+      await fetch(`/api/photos/${notice.storage_key}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Best-effort : voir le commentaire de fonction ci-dessus.
+    }
+  }
+
+  const { error } = await supabase.rpc('delete_dossier_equipment_request', { p_request_id: request.id });
+  if (error) throw error;
+}
+
 export interface PromoteEquipmentNoticeResult {
   document_id?: string;
   alreadyPromoted?: boolean;

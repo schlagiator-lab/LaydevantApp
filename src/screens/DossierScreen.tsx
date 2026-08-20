@@ -13,6 +13,7 @@ import {
   listDossierPhotos,
   listDossierPlans,
   listDossierEquipmentRequests,
+  deleteEquipmentRequest,
   uploadDossierPlan,
   type DossierEquipment,
 } from '../lib/dossiers';
@@ -108,6 +109,8 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [showAddDocument, setShowAddDocument] = useState(false);
   const [pendingRemoveEquipment, setPendingRemoveEquipment] = useState<DossierEquipment | null>(null);
   const [pendingRemoveDocument, setPendingRemoveDocument] = useState<DossierDocumentComplet | null>(null);
+  const [pendingDeleteEquipmentRequest, setPendingDeleteEquipmentRequest] = useState<EquipmentRequest | null>(null);
+  const [deletingEquipmentRequest, setDeletingEquipmentRequest] = useState(false);
   const [showVault, setShowVault] = useState(false);
   const [showEditDossier, setShowEditDossier] = useState(false);
   // null = pas encore su (chargement ou hors ligne) ; true/false = présence
@@ -287,6 +290,24 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
     if (!pendingRemoveDocument) return;
     await handleRemoveDocument(pendingRemoveDocument.id);
     setPendingRemoveDocument(null);
+  };
+
+  // La demande peut venir de l'une ou l'autre liste (pending/approved) selon
+  // son statut — recharger les deux plutôt que de suivre laquelle, plus
+  // simple et sans risque d'incohérence.
+  const confirmDeleteEquipmentRequest = async () => {
+    if (!pendingDeleteEquipmentRequest) return;
+    setDeletingEquipmentRequest(true);
+    try {
+      await deleteEquipmentRequest(pendingDeleteEquipmentRequest);
+      void loadEquipmentRequests();
+      void loadApprovedEquipmentRequests();
+      setPendingDeleteEquipmentRequest(null);
+    } catch (err) {
+      showToast(errorMessage(err));
+    } finally {
+      setDeletingEquipmentRequest(false);
+    }
   };
 
   const handleOpenDocument = (doc: DossierDocumentComplet) => {
@@ -523,6 +544,16 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                             En attente
                           </span>
                         </div>
+                        {(isAdmin || req.requested_by === session?.user.id) && (
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteEquipmentRequest(req)}
+                            disabled={!isOnline}
+                            style={{ ...removeButtonStyle, alignSelf: 'flex-start', marginTop: 6, opacity: isOnline ? 1 : 0.4 }}
+                          >
+                            Supprimer la demande
+                          </button>
+                        )}
                         <EquipmentRequestNotices
                           requestId={req.id}
                           notices={req.notices ?? []}
@@ -573,6 +604,16 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                             Approuvée
                           </span>
                         </div>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteEquipmentRequest(req)}
+                            disabled={!isOnline}
+                            style={{ ...removeButtonStyle, alignSelf: 'flex-start', marginTop: 6, opacity: isOnline ? 1 : 0.4 }}
+                          >
+                            Supprimer la demande
+                          </button>
+                        )}
                         <EquipmentRequestNotices
                           requestId={req.id}
                           notices={req.notices ?? []}
@@ -805,6 +846,18 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           message={`« ${pendingRemoveDocument.title} » sera retiré de la documentation du dossier.`}
           onCancel={() => setPendingRemoveDocument(null)}
           onConfirm={() => void confirmRemoveDocument()}
+        />
+      )}
+
+      {pendingDeleteEquipmentRequest && (
+        <ConfirmSheet
+          title="Supprimer cette demande ?"
+          message={`La demande « ${pendingDeleteEquipmentRequest.marque}${pendingDeleteEquipmentRequest.modele ? ` ${pendingDeleteEquipmentRequest.modele}` : ''} » et les notices qui lui sont jointes seront définitivement supprimées.`}
+          confirmLabel={deletingEquipmentRequest ? 'Suppression…' : 'Supprimer'}
+          confirmDisabled={deletingEquipmentRequest}
+          danger
+          onCancel={() => setPendingDeleteEquipmentRequest(null)}
+          onConfirm={() => void confirmDeleteEquipmentRequest()}
         />
       )}
 
