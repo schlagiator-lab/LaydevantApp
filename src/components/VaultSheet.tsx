@@ -9,6 +9,7 @@ import {
   updateVaultSecret,
   destroyDossierVault,
   hasVaultAccess,
+  dossierHasVault,
   bootstrapDossierVault,
 } from '../lib/vaultSecrets';
 import {
@@ -275,9 +276,14 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
           return;
         }
 
-        const secret = await getVaultSecret(dossierId);
+        // Sonde d'existence AVANT l'accès : getVaultSecret ne peut pas servir
+        // de sonde (sa RLS masque le ciphertext sans accès, donc un coffre
+        // existant-mais-inaccessible remonterait null — indiscernable d'un
+        // coffre réellement absent). dossier_has_vault tranche sans exiger
+        // l'accès ni révéler de contenu.
+        const exists = await dossierHasVault(dossierId);
         if (cancelled) return;
-        if (!secret) {
+        if (!exists) {
           setNotes([]);
           onNotesCountChange?.(0);
           setContent({ kind: 'empty' });
@@ -291,6 +297,16 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
             kind: 'error',
             message: "Coffre existant mais aucun accès ne t'a été emballé — contacte un administrateur.",
           });
+          return;
+        }
+
+        const secret = await getVaultSecret(dossierId);
+        if (cancelled) return;
+        if (!secret) {
+          // Incohérence : dossier_has_vault a dit "existe" et l'accès est
+          // là, mais le secret manque quand même. Ne devrait jamais arriver
+          // — fallback défensif plutôt qu'un crash sur unwrapDek(undefined).
+          setContent({ kind: 'error', message: 'Coffre introuvable malgré un accès valide — réessaie plus tard.' });
           return;
         }
 

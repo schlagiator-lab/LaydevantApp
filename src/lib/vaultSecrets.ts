@@ -82,6 +82,21 @@ export async function getOwnDossierAccess(dossierId: string, userId: string): Pr
   return data as VaultDossierAccessRow | null;
 }
 
+/**
+ * Sonde d'existence d'un coffre, indépendante de l'accès (RPC SECURITY
+ * DEFINER `dossier_has_vault`) — ne révèle aucun contenu, juste un booléen.
+ * Nécessaire car `getVaultSecret` ne peut PAS servir de sonde : sa RLS
+ * masque le ciphertext sans accès, donc un coffre existant-mais-inaccessible
+ * (ex. ré-enrôlé dont vault_dossier_access vient d'être purgée) renverrait
+ * `null` comme un coffre réellement absent — deux situations que VaultSheet
+ * doit distinguer avant de proposer d'écrire (bootstrapDossierVault).
+ */
+export async function dossierHasVault(dossierId: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('dossier_has_vault', { p_dossier_id: dossierId });
+  if (error) throw error;
+  return Boolean(data);
+}
+
 /** Tous les destinataires autorisés (access_enabled = true, admins-récupérateurs
  * inclus) — vers qui emballer la DEK à la création d'un coffre. */
 export async function getVaultPublicKeys(): Promise<VaultPublicKey[]> {
