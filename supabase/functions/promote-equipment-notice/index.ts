@@ -38,7 +38,7 @@ const N8N_HEADER_AUTH_SECRET = Deno.env.get('N8N_HEADER_AUTH_SECRET');
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type, apikey',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
