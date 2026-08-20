@@ -10,7 +10,7 @@ import { getPdf } from '../lib/pdfCache';
 import { pinDocument, unpinDocument, isPinnedOnAccount } from '../lib/pinning';
 import { StatusPill } from '../components/StatusPill';
 import { docTypeLabel } from '../lib/docType';
-import { colors, fonts, textA } from '../styles/tokens';
+import { colors, fonts, textA, successA } from '../styles/tokens';
 
 // pdf.js (~1 MB with its worker) is only needed once a document is actually
 // opened — code-split it out so Home/Search/Department screens don't pay for
@@ -326,21 +326,36 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
       </div>
 
       {pdfBlob && (
-        <div style={{ flex: 'none', display: 'flex', justifyContent: 'center', padding: '8px 16px 0' }}>
+        <div style={{ flex: 'none', padding: '14px 16px 0' }}>
           <button
             type="button"
             onClick={handleOpenFullscreen}
             style={{
-              background: 'transparent',
+              width: '100%',
+              height: 56,
+              borderRadius: 14,
               border: 'none',
-              color: textA(0.55),
-              fontSize: 12.5,
-              fontWeight: 600,
-              textDecoration: 'underline',
+              background: colors.accent,
+              color: '#132146',
+              fontSize: 16,
+              fontWeight: 700,
               cursor: 'pointer',
-              padding: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
             }}
           >
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+              <path
+                d="M7 3H3v4M13 3h4v4M7 17H3v-4M13 17h4v-4"
+                fill="none"
+                stroke="#132146"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
             Voir en plein écran
           </button>
         </div>
@@ -374,77 +389,37 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
             </button>
           </div>
         ) : saving ? (
-          <div
-            style={{
-              width: '100%',
-              height: 56,
-              borderRadius: 14,
-              background: 'rgba(222, 122, 34, 0.35)',
-              color: colors.text,
-              fontSize: 16,
-              fontWeight: 700,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              position: 'relative',
-              overflow: 'hidden',
-              boxSizing: 'border-box',
-            }}
-          >
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" style={{ flex: 'none' }}>
-              <circle cx="10" cy="10" r="7.5" fill="none" stroke={textA(0.35)} strokeWidth="2.5" />
-              <path d="M10 2.5a7.5 7.5 0 015.3 12.8" fill="none" stroke={colors.text} strokeWidth="2.5" strokeLinecap="round" />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '6px 2px' }}>
+            <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" style={{ flex: 'none' }}>
+              <circle cx="10" cy="10" r="7.5" fill="none" stroke={successA(0.3)} strokeWidth="2.5" />
+              <path d="M10 2.5a7.5 7.5 0 015.3 12.8" fill="none" stroke={colors.success} strokeWidth="2.5" strokeLinecap="round" />
             </svg>
-            <span>Enregistrement…</span>
-            <span
-              style={{
-                position: 'absolute',
-                left: 0,
-                bottom: 0,
-                height: 3,
-                width: '100%',
-                background: colors.accent,
-              }}
-            />
+            <span style={{ fontSize: 14.5, fontWeight: 700, color: colors.success }}>Enregistrement…</span>
           </div>
         ) : (
           <>
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={!doc}
-              style={{
-                width: '100%',
-                height: 56,
-                borderRadius: 14,
-                border: 'none',
-                background: colors.accent,
-                color: '#132146',
-                fontSize: 16,
-                fontWeight: 700,
-                cursor: doc ? 'pointer' : 'default',
-                opacity: doc ? 1 : 0.6,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-              }}
-            >
-              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-                <path
-                  d="M10 2.5v10.5M5.5 9l4.5 4.5L14.5 9M4 16.5h12"
-                  fill="none"
-                  stroke="#132146"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              {isPinnedElsewhere ? 'Télécharger sur cet appareil' : "Enregistrer sur l'appareil"}
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={!doc}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: colors.success,
+                  fontSize: 14.5,
+                  fontWeight: 700,
+                  textDecoration: 'underline',
+                  cursor: doc ? 'pointer' : 'default',
+                  opacity: doc ? 1 : 0.6,
+                  padding: '6px 2px',
+                }}
+              >
+                {isPinnedElsewhere ? 'Télécharger sur cet appareil' : "Enregistrer sur l'appareil"}
+              </button>
+            </div>
             {isPinnedElsewhere && (
-              <p style={{ fontSize: 12, color: textA(0.5), marginTop: 6 }}>
+              <p style={{ fontSize: 12, color: textA(0.5), marginTop: 2, textAlign: 'center' }}>
                 Épinglé sur votre compte, mais pas encore téléchargé sur cet appareil.
               </p>
             )}
