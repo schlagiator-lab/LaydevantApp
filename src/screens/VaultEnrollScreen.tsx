@@ -1,8 +1,14 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
-import { getVaultEnrollState, submitVaultEnrollment, type VaultEnrollFlow } from '../lib/vaultEnroll';
+import {
+  getVaultEnrollState,
+  submitVaultEnrollment,
+  generateLightUserKeyRecord,
+  type VaultEnrollFlow,
+} from '../lib/vaultEnroll';
 import { generateRecoveryKey, createUserKeys } from '../lib/vault.js';
+import type { UserKeyRecord } from '../lib/vault.js';
 import { StatusPill } from '../components/StatusPill';
 import { colors, fonts, textA } from '../styles/tokens';
 
@@ -77,13 +83,17 @@ export function VaultEnrollScreen() {
     if (!userId || !flow || !canSubmit) return;
     setPhase({ kind: 'submitting', flow });
     try {
-      // Flux léger : récupération d'un monteur = ré-enrôlement assisté par un
-      // admin, pas de clé papier individuelle — createUserKeys exige quand
-      // même une clé de récupération en entrée, donc on la génère ici, on
-      // l'utilise, et on ne la stocke nulle part (ni state, ni ailleurs).
-      const recKeyForSubmit = flow === 'strict' ? recoveryKey : generateRecoveryKey();
-      if (!recKeyForSubmit) throw new Error('Clé de récupération manquante.');
-      const record = await createUserKeys(password, recKeyForSubmit);
+      // Flux strict (admin) : clé papier individuelle, déjà générée et
+      // affichée plus haut (recoveryKey state). Flux léger (monteur) :
+      // génération partagée avec le ré-enrôlement (vaultEnroll.ts) — clé de
+      // récupération jetée, jamais affichée ni stockée ici.
+      let record: UserKeyRecord;
+      if (flow === 'strict') {
+        if (!recoveryKey) throw new Error('Clé de récupération manquante.');
+        record = await createUserKeys(password, recoveryKey);
+      } else {
+        record = await generateLightUserKeyRecord(password);
+      }
       await submitVaultEnrollment(userId, record);
       setPassword('');
       setConfirmPassword('');

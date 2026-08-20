@@ -20,6 +20,7 @@ import {
   type VaultFileListItem,
 } from '../lib/vaultFiles';
 import { isVaultAdmin } from '../lib/vaultAdmin';
+import { isOwnRecoveryAdmin, reenrollVaultUser } from '../lib/vaultEnroll';
 import { unwrapDek, decryptContent, encryptContent } from '../lib/vault.js';
 import { formatBytes } from '../lib/storagePersistence';
 import { isIosDevice } from '../lib/pdfMeasure';
@@ -166,6 +167,19 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     'checking',
   );
 
+  // Ré-enrôlement (perte du mot de passe ET de la clé de récupération, voir
+  // reenrollVaultUser dans vaultEnroll.ts). isRecoveryAdmin cache le point
+  // d'entrée : leur voie de secours est le break-glass mutuel entre
+  // récupérateurs, jamais ce flux — la RPC le refuse de toute façon
+  // (ceinture + bretelles, message d'erreur remonté tel quel si ça se
+  // déclenche malgré le masquage).
+  const [isRecoveryAdmin, setIsRecoveryAdmin] = useState(false);
+  const [reenrollScreen, setReenrollScreen] = useState<'none' | 'confirm' | 'form' | 'success'>('none');
+  const [reenrollPassword, setReenrollPassword] = useState('');
+  const [reenrollConfirmPassword, setReenrollConfirmPassword] = useState('');
+  const [reenrolling, setReenrolling] = useState(false);
+  const [reenrollError, setReenrollError] = useState<string | null>(null);
+
   // Section "Détruire le coffre" (admin uniquement) : réutilise le même
   // gating que VaultAdminScreen (is_vault_admin), pas un nouveau check de
   // rôle. Indépendant du déverrouillage — la destruction ne déchiffre rien,
@@ -223,6 +237,24 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
         // pas l'accès, le formulaire de déverrouillage habituel reste la
         // meilleure option de repli (même comportement qu'avant ce garde-fou).
         if (!cancelled) setEnrollmentPhase('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const recoveryAdmin = await isOwnRecoveryAdmin(userId);
+        if (!cancelled) setIsRecoveryAdmin(recoveryAdmin);
+      } catch {
+        // Échec réseau ponctuel : reste false par défaut — jamais de repli
+        // permissif qui afficherait le lien à tort à un récupérateur.
+        if (!cancelled) setIsRecoveryAdmin(false);
       }
     })();
     return () => {
@@ -363,6 +395,42 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     setUnlockMode((m) => (m === 'password' ? 'recovery' : 'password'));
     setPassword('');
     setRecoveryKey('');
+  }
+
+  // Même minimum que le flux léger d'enrôlement (VaultEnrollScreen,
+  // MIN_LENGTH.light) — pas d'import croisé pour une seule constante, mais
+  // à faire évoluer ensemble si ce seuil change un jour.
+  const REENROLL_MIN_LENGTH = 12;
+  const reenrollLengthOk = reenrollPassword.length >= REENROLL_MIN_LENGTH;
+  const reenrollMatchOk = reenrollPassword.length > 0 && reenrollPassword === reenrollConfirmPassword;
+  const reenrollCanSubmit = reenrollLengthOk && reenrollMatchOk && !reenrolling;
+
+  function cancelReenroll() {
+    setReenrollScreen('none');
+    setReenrollPassword('');
+    setReenrollConfirmPassword('');
+    setReenrollError(null);
+  }
+
+  async function handleReenrollSubmit() {
+    if (!reenrollCanSubmit) return;
+    setReenrolling(true);
+    setReenrollError(null);
+    try {
+      await reenrollVaultUser(reenrollPassword);
+      // Purge défensive de toute session déverrouillée en mémoire — la
+      // nouvelle paire de clés rend l'ancienne privateKey (si une existait
+      // encore, ex. déverrouillée sur un autre dossier plus tôt dans la
+      // session) inutilisable de toute façon.
+      lock();
+      setReenrollPassword('');
+      setReenrollConfirmPassword('');
+      setReenrollScreen('success');
+    } catch (err) {
+      setReenrollError(errorMessage(err));
+    } finally {
+      setReenrolling(false);
+    }
   }
 
   /** Re-chiffre et écrit le tableau de notes complet — un seul blob par dossier, inchangé. */
@@ -659,54 +727,129 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
           </div>
         )}
 
-        {isOnline && !unlocked && (enrollmentPhase === 'enrolled' || enrollmentPhase === 'error') && (
-          <form onSubmit={(e) => void handleUnlockSubmit(e)} style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {isOnline &&
+          !unlocked &&
+          (enrollmentPhase === 'enrolled' || enrollmentPhase === 'error') &&
+          reenrollScreen === 'none' && (
+            <form onSubmit={(e) => void handleUnlockSubmit(e)} style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ fontSize: 13, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
+                {unlockMode === 'password'
+                  ? 'Mot de passe de coffre — distinct de ton mot de passe de connexion.'
+                  : 'Clé de récupération remise à la création du coffre.'}
+              </p>
+              {unlockMode === 'password' ? (
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Mot de passe du coffre"
+                  style={inputStyle}
+                  autoFocus
+                />
+              ) : (
+                <input
+                  type="text"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={recoveryKey}
+                  onChange={(e) => setRecoveryKey(e.target.value)}
+                  placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
+                  style={inputStyle}
+                  autoFocus
+                />
+              )}
+              {unlockError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{unlockError}</span>}
+              <button
+                type="submit"
+                disabled={unlocking || (unlockMode === 'password' ? !password : !recoveryKey)}
+                style={{
+                  ...primaryButtonStyle,
+                  opacity: unlocking || (unlockMode === 'password' ? !password : !recoveryKey) ? 0.5 : 1,
+                }}
+              >
+                {unlocking ? 'Déverrouillage…' : 'Déverrouiller'}
+              </button>
+              <button type="button" onClick={toggleUnlockMode} style={switchModeLinkStyle}>
+                {unlockMode === 'password'
+                  ? 'Mot de passe oublié ? Utiliser ma clé de récupération'
+                  : 'Utiliser mon mot de passe'}
+              </button>
+              {!isRecoveryAdmin && (
+                <button type="button" onClick={() => setReenrollScreen('confirm')} style={switchModeLinkStyle}>
+                  Mot de passe et clé de récupération perdus ?
+                </button>
+              )}
+            </form>
+          )}
+
+        {reenrollScreen === 'confirm' && (
+          <ConfirmSheet
+            title="Repartir de zéro ?"
+            message="Tu vas créer un NOUVEAU mot de passe de coffre. L'ancien et ta clé de récupération sont définitivement abandonnés. Le CONTENU des coffres n'est PAS affecté. Après ça, un administrateur devra rétablir tes accès — préviens-en un."
+            confirmLabel="Continuer"
+            danger
+            onCancel={cancelReenroll}
+            onConfirm={() => setReenrollScreen('form')}
+          />
+        )}
+
+        {isOnline && !unlocked && reenrollScreen === 'form' && (
+          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <p style={{ fontSize: 13, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
-              {unlockMode === 'password'
-                ? 'Mot de passe de coffre — distinct de ton mot de passe de connexion.'
-                : 'Clé de récupération remise à la création du coffre.'}
+              Choisis un nouveau mot de passe de coffre. Distinct de ton mot de passe de connexion, comme le
+              précédent.
             </p>
-            {unlockMode === 'password' ? (
-              <input
-                type="password"
-                autoComplete="off"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Mot de passe du coffre"
-                style={inputStyle}
-                autoFocus
-              />
-            ) : (
-              <input
-                type="text"
-                autoComplete="off"
-                autoCapitalize="characters"
-                autoCorrect="off"
-                spellCheck={false}
-                value={recoveryKey}
-                onChange={(e) => setRecoveryKey(e.target.value)}
-                placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"
-                style={inputStyle}
-                autoFocus
-              />
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={reenrollPassword}
+              onChange={(e) => setReenrollPassword(e.target.value)}
+              placeholder="Nouveau mot de passe du coffre"
+              style={inputStyle}
+              autoFocus
+            />
+            <span style={{ fontSize: 12, color: reenrollLengthOk ? textA(0.45) : colors.accent }}>
+              Minimum {REENROLL_MIN_LENGTH} caractères.
+            </span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={reenrollConfirmPassword}
+              onChange={(e) => setReenrollConfirmPassword(e.target.value)}
+              placeholder="Confirmer le mot de passe"
+              style={inputStyle}
+            />
+            {reenrollConfirmPassword.length > 0 && !reenrollMatchOk && (
+              <span style={{ fontSize: 12, color: colors.accent }}>Les mots de passe ne correspondent pas.</span>
             )}
-            {unlockError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{unlockError}</span>}
+            {reenrollError && <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>{reenrollError}</span>}
             <button
-              type="submit"
-              disabled={unlocking || (unlockMode === 'password' ? !password : !recoveryKey)}
-              style={{
-                ...primaryButtonStyle,
-                opacity: unlocking || (unlockMode === 'password' ? !password : !recoveryKey) ? 0.5 : 1,
-              }}
+              type="button"
+              disabled={!reenrollCanSubmit}
+              onClick={() => void handleReenrollSubmit()}
+              style={{ ...primaryButtonStyle, opacity: reenrollCanSubmit ? 1 : 0.5 }}
             >
-              {unlocking ? 'Déverrouillage…' : 'Déverrouiller'}
+              {reenrolling ? 'Réinitialisation…' : 'Créer le nouveau mot de passe'}
             </button>
-            <button type="button" onClick={toggleUnlockMode} style={switchModeLinkStyle}>
-              {unlockMode === 'password'
-                ? 'Mot de passe oublié ? Utiliser ma clé de récupération'
-                : 'Utiliser mon mot de passe'}
+            <button type="button" onClick={cancelReenroll} style={switchModeLinkStyle}>
+              Annuler
             </button>
-          </form>
+          </div>
+        )}
+
+        {isOnline && !unlocked && reenrollScreen === 'success' && (
+          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <p style={{ fontSize: 13.5, color: textA(0.6), lineHeight: 1.5, margin: 0 }}>
+              Coffre réinitialisé. Tes accès seront rétablis par un administrateur. Le contenu des coffres n'est pas
+              affecté.
+            </p>
+            <button type="button" onClick={onClose} style={primaryButtonStyle}>
+              Fermer
+            </button>
+          </div>
         )}
 
         {isOnline && unlocked && content.kind === 'loading' && (
