@@ -1,15 +1,32 @@
-import { useState } from 'react';
-import { attachEquipmentRequestNotice, createEquipmentRequest } from '../lib/dossiers';
+import { useEffect, useMemo, useState } from 'react';
+import { createEquipmentRequest, addDossierEquipmentWithNotice } from '../lib/dossiers';
+import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
 import { useToast } from '../lib/useToast';
 import { docTypeLabel } from '../lib/docType';
-import type { DocType } from '../types/database';
+import type { Department, DocType, Specialty } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface EquipmentRequestSheetProps {
   dossierId: string;
   onClose: () => void;
-  /** Appelé après création réussie — le parent recharge la liste des demandes. */
+  /** Appelé après création d'une DEMANDE (pas de notice jointe) — le parent
+   * recharge la liste des demandes. */
   onCreated: () => void;
+  /** Appelé après un ajout DIRECT réussi (notice + spécialité fournies dès
+   * la déclaration, pas de demande créée) — le parent recharge la liste des
+   * équipements, même contrat que AddEquipmentSheet.onAdded. */
+  onAddedDirect: () => void;
+}
+
+/** Titre par défaut du chemin direct : marque + modèle si non vide, sinon le
+ * nom de fichier sans l'extension .pdf — même formule que
+ * defaultPromoteTitle (EquipmentRequestNotices.tsx), pas partagée entre les
+ * deux fichiers (mémoire projet : pas d'abstraction croisée pour un si petit
+ * calcul). */
+function defaultDirectTitle(marque: string, modele: string, nomFichier: string): string {
+  const base = `${marque} ${modele}`.trim();
+  if (base) return base;
+  return nomFichier.replace(/\.pdf$/i, '');
 }
 
 /** Sous-ensemble de DocType proposé à la saisie — même liste que CaptureSheet
@@ -34,7 +51,7 @@ function errorMessage(err: unknown): string {
  * modèle et commentaire optionnels. La demande créée est 'pending' — c'est un
  * admin qui la résout plus tard (transformation en produit rattaché).
  */
-export function EquipmentRequestSheet({ dossierId, onClose, onCreated }: EquipmentRequestSheetProps) {
+export function EquipmentRequestSheet({ dossierId, onClose, onCreated, onAddedDirect }: EquipmentRequestSheetProps) {
   const { showToast } = useToast();
   const [marque, setMarque] = useState('');
   const [modele, setModele] = useState('');
@@ -43,6 +60,39 @@ export function EquipmentRequestSheet({ dossierId, onClose, onCreated }: Equipme
   const [docType, setDocType] = useState<DocType | ''>('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Référentiel spécialités — même source que le select admin
+  // (VaultAdminScreen, EquipmentRequestsSection), porté ici à l'identique.
+  // N'est utile que si une notice est jointe (chemin direct) : chargé
+  // inconditionnellement (petit, déjà en IndexedDB, CLAUDE.md §4), affiché
+  // seulement dans ce cas.
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [selectedSpecialtyId, setSelectedSpecialtyId] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [depts, specs] = await Promise.all([getLocalDepartments(), getLocalSpecialties()]);
+      if (cancelled) return;
+      setDepartments(depts);
+      setSpecialties(specs);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const specialtiesByDepartment = useMemo(() => {
+    const map = new Map<string, Specialty[]>();
+    for (const s of specialties) {
+      const list = map.get(s.department_id) ?? [];
+      list.push(s);
+      map.set(s.department_id, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    return map;
+  }, [specialties]);
 
   const canSubmit = marque.trim().length > 0 && !submitting;
 
@@ -59,24 +109,45 @@ export function EquipmentRequestSheet({ dossierId, onClose, onCreated }: Equipme
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
+
+    // Bifurcation (Étape 3) : dès qu'une notice est jointe, la spécialité
+    // devient requise et l'ajout est DIRECT — plus de demande créée, plus de
+    // validation admin. Message doux, pas de soumission tant qu'elle manque.
+    if (file && !selectedSpecialtyId) {
+      setError('Choisis une spécialité pour ajouter directement.');
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     try {
-      const created = await createEquipmentRequest({
+      if (file) {
+        const specialty = specialties.find((s) => s.id === selectedSpecialtyId);
+        const result = await addDossierEquipmentWithNotice({
+          dossierId,
+          specialtyId: selectedSpecialtyId,
+          specialtySlug: specialty?.slug ?? null,
+          brand: marque.trim(),
+          model: modele.trim() || null,
+          docType: (docType || 'autre') as DocType,
+          title: defaultDirectTitle(marque.trim(), modele.trim(), file.name),
+          file,
+        });
+        if (result.failed || !result.product_id) {
+          setError(result.message ?? "L'ajout en base a échoué, réessayez.");
+          return;
+        }
+        onAddedDirect();
+        return;
+      }
+
+      // Aucun fichier joint : comportement inchangé — demande en attente.
+      await createEquipmentRequest({
         dossierId,
         marque: marque.trim(),
         modele: modele.trim() || undefined,
         commentaire: commentaire.trim() || undefined,
       });
-      if (file) {
-        try {
-          await attachEquipmentRequestNotice(created.id, file, docType || undefined);
-        } catch {
-          // La déclaration reste valable même si la notice n'a pas pu être jointe —
-          // réessayable depuis la carte "en attente" (EquipmentRequestNotices).
-          showToast("Équipement déclaré, mais la notice n'a pas pu être jointe — réessayez depuis la demande.");
-        }
-      }
       onCreated();
     } catch (err) {
       setError(errorMessage(err));
@@ -136,6 +207,33 @@ export function EquipmentRequestSheet({ dossierId, onClose, onCreated }: Equipme
                   </option>
                 ))}
               </select>
+            </Field>
+          )}
+          {file && (
+            <Field label="Spécialité">
+              <select
+                value={selectedSpecialtyId}
+                onChange={(e) => setSelectedSpecialtyId(e.target.value)}
+                style={inputStyle}
+              >
+                <option value="">Choisir une spécialité…</option>
+                {departments.map((dept) => {
+                  const deptSpecialties = specialtiesByDepartment.get(dept.id) ?? [];
+                  if (deptSpecialties.length === 0) return null;
+                  return (
+                    <optgroup key={dept.id} label={dept.name}>
+                      {deptSpecialties.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+              <span style={{ fontSize: 12, color: textA(0.55), marginTop: 4 }}>
+                Notice jointe = ajout direct, sans validation admin.
+              </span>
             </Field>
           )}
         </div>

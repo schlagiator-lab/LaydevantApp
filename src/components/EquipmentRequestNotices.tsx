@@ -1,15 +1,17 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   attachEquipmentRequestNotice,
+  addDossierEquipmentWithNotice,
   deleteEquipmentRequestNotice,
   getEquipmentRequestNoticeBlob,
   promoteEquipmentNotice,
 } from '../lib/dossiers';
+import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
 import { useToast } from '../lib/useToast';
 import { isIosDevice } from '../lib/pdfMeasure';
 import { docTypeLabel } from '../lib/docType';
 import { NOTICE_DOC_TYPES } from './EquipmentRequestSheet';
-import type { DocType, EquipmentRequestFile, EquipmentRequestStatus } from '../types/database';
+import type { Department, DocType, EquipmentRequestFile, EquipmentRequestStatus, Specialty } from '../types/database';
 import { ConfirmSheet } from './ConfirmSheet';
 import { colors, fonts, radius, textA } from '../styles/tokens';
 
@@ -19,10 +21,17 @@ const PdfViewer = lazy(() => import('./PdfViewer').then((m) => ({ default: m.Pdf
 
 export interface EquipmentRequestNoticesProps {
   requestId: string;
+  /** Nécessaire au chemin direct (Étape 4) — addDossierEquipmentWithNotice
+   * rattache le produit à CE dossier. Non utilisé pour une demande déjà
+   * 'approved' (attache classique inchangée), mais toujours fourni par le
+   * parent pour rester cohérent entre les deux usages de ce composant. */
+  dossierId: string;
   notices: EquipmentRequestFile[];
   isOnline: boolean;
   /** Statut de la demande parente — le bouton de promotion n'apparaît que
-   * pour une demande 'approved' (même précondition que l'Edge Function). */
+   * pour une demande 'approved' (même précondition que l'Edge Function).
+   * Détermine aussi la bifurcation de "+ Joindre une notice" : 'pending' →
+   * chemin direct (Étape 4), sinon → attache classique inchangée. */
   status: EquipmentRequestStatus;
   marque: string;
   modele: string | null;
@@ -31,6 +40,11 @@ export interface EquipmentRequestNoticesProps {
   isAdmin: boolean;
   /** Appelé après tout ajout/suppression réussi — le parent recharge la liste des demandes. */
   onChanged: () => void;
+  /** Appelé après un ajout DIRECT réussi (Étape 4, demande 'pending') — le
+   * parent recharge la liste des équipements, même contrat que
+   * AddEquipmentSheet.onAdded / EquipmentRequestSheet.onAddedDirect. Absent
+   * pour l'usage 'approved' (jamais déclenché dans ce cas). */
+  onEquipmentAdded?: () => void;
 }
 
 /** Titre par défaut à la promotion : marque + modèle si non vide, sinon le
@@ -57,6 +71,7 @@ function defaultPromoteDocType(suggested: DocType | null): DocType {
  */
 export function EquipmentRequestNotices({
   requestId,
+  dossierId,
   notices,
   isOnline,
   status,
@@ -64,11 +79,50 @@ export function EquipmentRequestNotices({
   modele,
   isAdmin,
   onChanged,
+  onEquipmentAdded,
 }: EquipmentRequestNoticesProps) {
   const { showToast } = useToast();
   const [uploading, setUploading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<EquipmentRequestFile | null>(null);
+
+  // Chemin direct (Étape 4) : joindre une notice à une demande 'pending' ne
+  // l'attache plus seulement en staging, ça ferme la demande et ajoute
+  // l'équipement + le document en base. Référentiel spécialités chargé
+  // seulement pour ce statut — inutile pour 'approved' (attache classique
+  // inchangée, la spécialité a déjà été fixée à la résolution admin).
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [pendingDirectFile, setPendingDirectFile] = useState<File | null>(null);
+  const [directTitle, setDirectTitle] = useState('');
+  const [directDocType, setDirectDocType] = useState<DocType>('autre');
+  const [directSpecialtyId, setDirectSpecialtyId] = useState('');
+  const [directSubmitting, setDirectSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (status !== 'pending') return;
+    let cancelled = false;
+    void (async () => {
+      const [depts, specs] = await Promise.all([getLocalDepartments(), getLocalSpecialties()]);
+      if (cancelled) return;
+      setDepartments(depts);
+      setSpecialties(specs);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+
+  const specialtiesByDepartment = useMemo(() => {
+    const map = new Map<string, Specialty[]>();
+    for (const s of specialties) {
+      const list = map.get(s.department_id) ?? [];
+      list.push(s);
+      map.set(s.department_id, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+    return map;
+  }, [specialties]);
 
   // Promotion vers la bibliothèque (admin, demande approuvée uniquement).
   const [pendingPromote, setPendingPromote] = useState<EquipmentRequestFile | null>(null);
@@ -147,6 +201,19 @@ export function EquipmentRequestNotices({
       showToast('Seuls les fichiers PDF peuvent être joints.');
       return;
     }
+
+    // Chemin direct (Étape 4) : une demande 'pending' n'accepte plus une
+    // simple attache staging — la notice ferme la demande et ajoute
+    // l'équipement + le document en base. 'approved' garde l'attache
+    // classique (la spécialité a déjà été fixée à la résolution admin).
+    if (status === 'pending') {
+      setDirectTitle(defaultPromoteTitle(marque, modele, file.name));
+      setDirectDocType(defaultPromoteDocType(null));
+      setDirectSpecialtyId('');
+      setPendingDirectFile(file);
+      return;
+    }
+
     setUploading(true);
     try {
       await attachEquipmentRequestNotice(requestId, file);
@@ -155,6 +222,37 @@ export function EquipmentRequestNotices({
       showToast(err instanceof Error ? err.message : "Échec de l'envoi de la notice.");
     } finally {
       setUploading(false);
+    }
+  };
+
+  const confirmDirectAttach = async () => {
+    if (!pendingDirectFile || !directSpecialtyId) return;
+    const file = pendingDirectFile;
+    const specialty = specialties.find((s) => s.id === directSpecialtyId);
+    setDirectSubmitting(true);
+    try {
+      const result = await addDossierEquipmentWithNotice({
+        dossierId,
+        specialtyId: directSpecialtyId,
+        specialtySlug: specialty?.slug ?? null,
+        brand: marque,
+        model: modele,
+        docType: directDocType,
+        title: directTitle.trim() || defaultPromoteTitle(marque, modele, file.name),
+        file,
+        requestId,
+      });
+      if (result.failed || !result.product_id) {
+        showToast(result.message ?? "L'ajout en base a échoué, réessayez.");
+        return;
+      }
+      setPendingDirectFile(null);
+      onChanged();
+      onEquipmentAdded?.();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "L'ajout en base a échoué, réessayez.");
+    } finally {
+      setDirectSubmitting(false);
     }
   };
 
@@ -299,6 +397,68 @@ export function EquipmentRequestNotices({
                 value={promoteDocType}
                 onChange={(e) => setPromoteDocType(e.target.value as DocType)}
                 disabled={promoting}
+                style={promoteInputStyle}
+              >
+                {NOTICE_DOC_TYPES.map((dt) => (
+                  <option key={dt} value={dt}>
+                    {docTypeLabel(dt)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </ConfirmSheet>
+      )}
+
+      {pendingDirectFile && (
+        <ConfirmSheet
+          title="Ajouter directement ?"
+          message="La demande sera clôturée : l'équipement et la notice entrent en base immédiatement, sans validation admin."
+          confirmLabel={directSubmitting ? 'Ajout…' : 'Ajouter'}
+          confirmDisabled={directSubmitting || !directSpecialtyId}
+          onCancel={() => setPendingDirectFile(null)}
+          onConfirm={() => void confirmDirectAttach()}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, fontWeight: 600 }}>
+              <span style={{ color: textA(0.65) }}>Spécialité</span>
+              <select
+                value={directSpecialtyId}
+                onChange={(e) => setDirectSpecialtyId(e.target.value)}
+                disabled={directSubmitting}
+                style={promoteInputStyle}
+              >
+                <option value="">Choisir une spécialité…</option>
+                {departments.map((dept) => {
+                  const deptSpecialties = specialtiesByDepartment.get(dept.id) ?? [];
+                  if (deptSpecialties.length === 0) return null;
+                  return (
+                    <optgroup key={dept.id} label={dept.name}>
+                      {deptSpecialties.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, fontWeight: 600 }}>
+              <span style={{ color: textA(0.65) }}>Titre</span>
+              <input
+                value={directTitle}
+                onChange={(e) => setDirectTitle(e.target.value)}
+                disabled={directSubmitting}
+                style={promoteInputStyle}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, fontWeight: 600 }}>
+              <span style={{ color: textA(0.65) }}>Type de document</span>
+              <select
+                value={directDocType}
+                onChange={(e) => setDirectDocType(e.target.value as DocType)}
+                disabled={directSubmitting}
                 style={promoteInputStyle}
               >
                 {NOTICE_DOC_TYPES.map((dt) => (

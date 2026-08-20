@@ -296,6 +296,91 @@ export async function promoteEquipmentNotice(
   return { failed: true, message: payload?.error ?? error.message };
 }
 
+export interface AddDossierEquipmentWithNoticeResult {
+  product_id?: string;
+  document_id?: string;
+  failed?: boolean;
+  message?: string;
+}
+
+/**
+ * "Chemin direct" : quand la notice est déjà en main (+ une spécialité
+ * choisie), rattache l'équipement ET ajoute la notice à la bibliothèque en
+ * un seul geste, sans validation admin — comme une capture web. Deux étapes :
+ *
+ * 1. Upload du PDF en staging (MÊME transport que attachEquipmentRequestNotice
+ *    — uploadPhotoBytes, sans compression, prefix=equipment-requests/{id}).
+ *    Quand la notice n'est pas déjà rattachée à une demande existante
+ *    (params.requestId absent — nouvelle déclaration), un id de staging est
+ *    généré ici (crypto.randomUUID()) : il n'existe encore aucune ligne
+ *    dossier_equipment_requests à utiliser comme segment de préfixe.
+ * 2. Edge Function `add-dossier-equipment-notice` (gate authentifié, pas
+ *    admin) : crée/rattache le produit (RPC upsert_dossier_product), relaie
+ *    n8n pour l'ingestion documents/, et ferme la demande d'origine si
+ *    params.requestId est fourni. Aucune ligne dossier_equipment_request_files
+ *    créée ici — ce n'est pas une demande à tracer, contrairement à
+ *    attachEquipmentRequestNotice.
+ *
+ * Résultat normalisé, même motif que promoteEquipmentNotice ci-dessus :
+ * sur un non-2xx, l'erreur de functions.invoke est relue via error.context
+ * (Response non parsée par supabase-js) pour un message propre plutôt que
+ * l'erreur générique.
+ */
+export async function addDossierEquipmentWithNotice(params: {
+  dossierId: string;
+  specialtyId: string;
+  specialtySlug: string | null;
+  brand: string;
+  model?: string | null;
+  docType: DocType;
+  title: string;
+  file: File;
+  /** Notice jointe à une demande 'pending' existante plutôt qu'à une
+   * déclaration neuve — l'Edge Function ferme cette demande après succès. */
+  requestId?: string;
+}): Promise<AddDossierEquipmentWithNoticeResult> {
+  const name = sanitizeFilename(params.file.name);
+  const mime = params.file.type || 'application/pdf';
+  const stagingId = params.requestId ?? crypto.randomUUID();
+  const { key } = await uploadPhotoBytes(
+    params.file,
+    `prefix=equipment-requests/${stagingId}&name=${encodeURIComponent(name)}`,
+    mime
+  );
+
+  const { data, error } = await supabase.functions.invoke('add-dossier-equipment-notice', {
+    body: {
+      dossier_id: params.dossierId,
+      specialty_id: params.specialtyId,
+      specialty_slug: params.specialtySlug,
+      brand: params.brand,
+      model: params.model ?? null,
+      doc_type: params.docType,
+      title: params.title,
+      storage_key: key,
+      mime,
+      file_size: params.file.size,
+      request_id: params.requestId,
+    },
+  });
+
+  if (!error) {
+    const payload = data as { product_id?: string; document_id?: string } | null;
+    return { product_id: payload?.product_id, document_id: payload?.document_id };
+  }
+
+  let payload: { error?: string } | null = null;
+  const context = (error as { context?: Response }).context;
+  if (context) {
+    try {
+      payload = await context.json();
+    } catch {
+      payload = null;
+    }
+  }
+  return { failed: true, message: payload?.error ?? error.message };
+}
+
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */
 export async function getDossierDocumentsComplets(dossierId: string): Promise<DossierDocumentComplet[]> {
   const { data, error } = await supabase.rpc('dossier_documents_complets', { p_dossier_id: dossierId });

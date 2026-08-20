@@ -556,6 +556,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                         )}
                         <EquipmentRequestNotices
                           requestId={req.id}
+                          dossierId={dossierId}
                           notices={req.notices ?? []}
                           isOnline={isOnline}
                           status={req.status}
@@ -563,6 +564,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                           modele={req.modele}
                           isAdmin={isAdmin}
                           onChanged={() => void loadEquipmentRequests()}
+                          onEquipmentAdded={() => void loadEquipments()}
                         />
                       </div>
                     ))}
@@ -616,6 +618,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                         )}
                         <EquipmentRequestNotices
                           requestId={req.id}
+                          dossierId={dossierId}
                           notices={req.notices ?? []}
                           isOnline={isOnline}
                           status={req.status}
@@ -818,6 +821,10 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           onCreated={() => {
             setShowAddEquipmentRequest(false);
             void loadEquipmentRequests();
+          }}
+          onAddedDirect={() => {
+            setShowAddEquipmentRequest(false);
+            void loadEquipments();
           }}
         />
       )}
