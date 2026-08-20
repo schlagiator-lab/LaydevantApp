@@ -37,6 +37,7 @@ import { CollapsibleSection } from '../components/CollapsibleSection';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { VaultSheet } from '../components/VaultSheet';
 import { getVaultSecret, hasVaultAccess, dossierVaultHasContent } from '../lib/vaultSecrets';
+import { isVaultAdmin } from '../lib/vaultAdmin';
 import { colors, fonts, radius, textA, accentA } from '../styles/tokens';
 
 /** Même format que VaultAdminScreen.tsx:783 — dupliqué localement (dette
@@ -85,6 +86,9 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [dossier, setDossier] = useState<Dossier | null>(null);
   const [equipments, setEquipments] = useState<DossierEquipment[] | null>(null);
   const [equipmentRequests, setEquipmentRequests] = useState<EquipmentRequest[] | null>(null);
+  // Distinct de equipmentRequests (pending) : demandes déjà approuvées, dont
+  // les notices jointes deviennent promouvables vers la bibliothèque.
+  const [approvedEquipmentRequests, setApprovedEquipmentRequests] = useState<EquipmentRequest[] | null>(null);
   const [documents, setDocuments] = useState<DossierDocumentComplet[] | null>(null);
   const [notes, setNotes] = useState<DossierNoteView[] | null>(null);
   const [photos, setPhotos] = useState<DossierPhotoView[] | null>(null);
@@ -94,6 +98,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [equipmentsError, setEquipmentsError] = useState<string | null>(null);
   const [equipmentRequestsError, setEquipmentRequestsError] = useState<string | null>(null);
+  const [approvedEquipmentRequestsError, setApprovedEquipmentRequestsError] = useState<string | null>(null);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
   const [photosError, setPhotosError] = useState<string | null>(null);
@@ -117,6 +122,11 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
   // donc ce signal reste à true après un coffre vidé — libellé volontairement
   // sous-promettant plutôt que de prétendre refléter le nombre de notes.
   const [vaultBadgeExtra, setVaultBadgeExtra] = useState<'vide' | 'configure' | null>(null);
+  // Même mécanisme que VaultAdminScreen (isVaultAdmin, RPC is_vault_admin) —
+  // gate le bouton "Promouvoir vers la bibliothèque" des notices de demande
+  // d'équipement (EquipmentRequestNotices). false par défaut : pas de bouton
+  // tant que l'appel n'a pas répondu, jamais un faux positif.
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Chaque section a son propre chargement, indépendant des autres : l'échec
   // d'une seule (ex. listDossierPlans) ne doit jamais empêcher les autres de
@@ -147,6 +157,15 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       setEquipmentRequests(await listDossierEquipmentRequests(dossierId));
     } catch (err) {
       setEquipmentRequestsError(errorMessage(err));
+    }
+  };
+
+  const loadApprovedEquipmentRequests = async () => {
+    setApprovedEquipmentRequestsError(null);
+    try {
+      setApprovedEquipmentRequests(await listDossierEquipmentRequests(dossierId, { status: 'approved' }));
+    } catch (err) {
+      setApprovedEquipmentRequestsError(errorMessage(err));
     }
   };
 
@@ -194,6 +213,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       void loadDossier();
       void loadEquipments();
       void loadEquipmentRequests();
+      void loadApprovedEquipmentRequests();
       void loadDocuments();
       void loadNotes();
       void loadPhotos();
@@ -211,6 +231,13 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
       void getVaultSecret(dossierId)
         .catch(() => null)
         .then((vaultSecret) => setHasVaultNote(vaultSecret !== null));
+
+      // Gate admin des notices de demande d'équipement (promotion vers la
+      // bibliothèque) — best-effort, comportement dégradé silencieux (pas de
+      // bouton) en cas d'échec plutôt qu'un état d'erreur dédié.
+      void isVaultAdmin()
+        .catch(() => false)
+        .then(setIsAdmin);
 
       // Indicateur du badge "Chiffré" : réutilise le pré-check d'accès déjà
       // en place (hasVaultAccess, celui de VaultSheet) — si l'utilisateur n'a
@@ -500,7 +527,61 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
                           requestId={req.id}
                           notices={req.notices ?? []}
                           isOnline={isOnline}
+                          status={req.status}
+                          marque={req.marque}
+                          modele={req.modele}
+                          isAdmin={isAdmin}
                           onChanged={() => void loadEquipmentRequests()}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {approvedEquipmentRequestsError && (
+                  <div style={{ marginTop: 10 }}>
+                    <SectionError
+                      title="Demandes approuvées indisponibles"
+                      message={approvedEquipmentRequestsError}
+                      onRetry={() => void loadApprovedEquipmentRequests()}
+                    />
+                  </div>
+                )}
+
+                {approvedEquipmentRequests !== null && approvedEquipmentRequests.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                    <p style={pendingBlockTitleStyle}>Demandes approuvées</p>
+                    {approvedEquipmentRequests.map((req) => (
+                      <div key={req.id} style={{ ...pendingRowStyle, flexDirection: 'column', alignItems: 'stretch' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {req.marque}
+                              {req.modele ? ` ${req.modele}` : ''}
+                            </div>
+                            {req.commentaire && (
+                              <div style={{ fontSize: 12.5, color: textA(0.6), fontWeight: 500, marginTop: 2 }}>
+                                {req.commentaire}
+                              </div>
+                            )}
+                            <div style={{ fontSize: 11.5, color: textA(0.5), fontWeight: 600, marginTop: 4 }}>
+                              Demandé par {req.requested_by_nom ?? 'inconnu'} le {formatDate(req.created_at)}
+                            </div>
+                          </div>
+                          <span style={pendingChipStyle}>
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: colors.accent }} />
+                            Approuvée
+                          </span>
+                        </div>
+                        <EquipmentRequestNotices
+                          requestId={req.id}
+                          notices={req.notices ?? []}
+                          isOnline={isOnline}
+                          status={req.status}
+                          marque={req.marque}
+                          modele={req.modele}
+                          isAdmin={isAdmin}
+                          onChanged={() => void loadApprovedEquipmentRequests()}
                         />
                       </div>
                     ))}

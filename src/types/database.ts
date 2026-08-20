@@ -170,6 +170,9 @@ export interface EquipmentRequestFile {
   doc_type_suggere: DocType | null;
   auteur: string | null;
   created_at: string;
+  /** Non nul une fois promue vers la bibliothèque (Edge Function
+   * promote-equipment-notice) — id de la ligne `documents` créée. */
+  promoted_document_id: string | null;
 }
 
 /**

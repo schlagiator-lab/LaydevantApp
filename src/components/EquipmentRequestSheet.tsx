@@ -14,8 +14,9 @@ export interface EquipmentRequestSheetProps {
 
 /** Sous-ensemble de DocType proposé à la saisie — même liste que CaptureSheet
  * (recherche web de notices) : schema/fiche_perso n'ont pas de sens pour une
- * notice fabricant jointe à une demande d'équipement. */
-const NOTICE_DOC_TYPES: DocType[] = ['notice_installation', 'manuel_programmation', 'fiche_technique', 'autre'];
+ * notice fabricant jointe à une demande d'équipement. Exportée : réutilisée
+ * telle quelle par EquipmentRequestNotices (promotion vers la bibliothèque). */
+export const NOTICE_DOC_TYPES: DocType[] = ['notice_installation', 'manuel_programmation', 'fiche_technique', 'autre'];
 
 /** Les erreurs Supabase/PostgREST sont de simples objets `{ message, ... }`,
  * jamais des instances d'Error — point de passage unique avant affichage. */

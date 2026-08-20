@@ -9,6 +9,7 @@ import type {
   DocType,
   EquipmentRequest,
   EquipmentRequestFile,
+  EquipmentRequestStatus,
 } from '../types/database';
 import type { PhotoAnnotations } from './photoAnnotations';
 
@@ -132,18 +133,21 @@ export async function createEquipmentRequest(input: {
 
 /** Demandes d'équipement d'un dossier, plus ancienne d'abord — seulement
  * `pending` par défaut (affichage provisoire dans la fiche dossier) ;
- * `opts.all` pour tout récupérer (historique éventuel). `notices` est la
+ * `opts.status` pour cibler un autre statut (ex. 'approved', pour le bloc
+ * "Demandes approuvées" et la promotion de notices vers la bibliothèque),
+ * ou 'all' pour tout récupérer (historique éventuel). `notices` est la
  * ressource imbriquée PostgREST des PDF joints (staging, §11). */
 export async function listDossierEquipmentRequests(
   dossierId: string,
-  opts?: { all?: boolean }
+  opts?: { status?: EquipmentRequestStatus | 'all' }
 ): Promise<EquipmentRequest[]> {
   let query = supabase
     .from('dossier_equipment_requests')
     .select('*, notices:dossier_equipment_request_files(*)')
     .eq('dossier_id', dossierId)
     .order('created_at', { ascending: true });
-  if (!opts?.all) query = query.eq('status', 'pending');
+  const status = opts?.status ?? 'pending';
+  if (status !== 'all') query = query.eq('status', status);
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as EquipmentRequest[];
@@ -218,6 +222,52 @@ export async function deleteEquipmentRequestNotice(fileId: string, storageKey: s
   } catch {
     // Best-effort : voir le commentaire de fonction ci-dessus.
   }
+}
+
+export interface PromoteEquipmentNoticeResult {
+  document_id?: string;
+  alreadyPromoted?: boolean;
+  failed?: boolean;
+  message?: string;
+}
+
+/**
+ * Promeut une notice de staging vers la bibliothèque via l'Edge Function
+ * `promote-equipment-notice` (admin-only, gate côté serveur). Résultat
+ * normalisé plutôt que l'erreur brute de `functions.invoke` : sur un
+ * non-2xx, supabase-js expose la réponse via `error.context` (un `Response`
+ * qu'il faut lire nous-mêmes, PostgREST ne l'a pas déjà parsé) — c'est ce
+ * qui distingue le 409 "déjà promue" (payload avec `document_id`) du reste
+ * (400/403/404/409 "pas approuvée"/500/502, tous traités comme un échec
+ * générique par l'appelant).
+ */
+export async function promoteEquipmentNotice(
+  fileId: string,
+  title: string,
+  docType: string
+): Promise<PromoteEquipmentNoticeResult> {
+  const { data, error } = await supabase.functions.invoke('promote-equipment-notice', {
+    body: { file_id: fileId, title, doc_type: docType },
+  });
+
+  if (!error) {
+    return { document_id: (data as { document_id?: string } | null)?.document_id };
+  }
+
+  let payload: { error?: string; document_id?: string } | null = null;
+  const context = (error as { context?: Response }).context;
+  if (context) {
+    try {
+      payload = await context.json();
+    } catch {
+      payload = null;
+    }
+  }
+
+  if (payload?.document_id) {
+    return { alreadyPromoted: true, document_id: payload.document_id };
+  }
+  return { failed: true, message: payload?.error ?? error.message };
 }
 
 /** Toutes les notices du dossier (équipements + rattachements directs), dédupliquées. */
