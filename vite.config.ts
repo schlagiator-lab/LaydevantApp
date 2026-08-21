@@ -14,21 +14,15 @@ export default defineConfig({
         short_name: 'Laydevant Docs',
         description:
           "Documentation technique de terrain pour les monteurs Laydevant SA (électricité, télécom, portes automatiques).",
-        theme_color: '#1E3A6B',
-        background_color: '#1E3A6B',
+        theme_color: '#1E2256',
+        background_color: '#1E2256',
         display: 'standalone',
         start_url: '/',
         icons: [
-          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/icons/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/icons/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           {
-            src: '/icons/maskable-icon-192.png',
-            sizes: '192x192',
-            type: 'image/png',
-            purpose: 'maskable',
-          },
-          {
-            src: '/icons/maskable-icon-512.png',
+            src: '/icons/maskable-icon-512x512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
