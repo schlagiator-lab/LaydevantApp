@@ -606,38 +606,94 @@ pas synchronisés. Ils restent consultables hors ligne si le document est
 ## 9. Recherche web de notices et capture
 
 Extension en ligne uniquement, pour les produits absents de la bibliothèque.
-Spécification complète : `Feature recherche web notices.md`. Deux chemins
-distincts.
+Deux chemins distincts : la recherche elle-même (pipeline back-end détaillé
+ci-dessous) et la capture d'un résultat vers la bibliothèque (webhook n8n
+`ingest-from-url`, inchangée). Le pourquoi de l'architecture ci-dessous —
+refonte complète, terminée et déployée — est dans
+`HANDOFF_recherche_web_ensemble_juge.md` ; état courant résumé dans
+`ETAT_PROJET.md`. Ce document remplace l'ancienne architecture à 2 moteurs
+(Anthropic + Perplexity, chacun sa colonne) et l'ancienne Edge Function
+`web-search-notices` (Anthropic direct, sync) — les deux **abandonnées**.
 
-### Recherche — Edge Function `web-search-notices`
+### Recherche — pipeline back-end (3 moteurs + juge LLM)
 
 ```
-PWA → Edge Function "web-search-notices" → API Anthropic (avec recherche web)
-    → réponse triée (JSON) → PWA
+PWA → INSERT web_search_jobs (status='pending')
+    → trigger notify_n8n_web_search() → webhook n8n "notices-search"
+    → 3 moteurs (Serper, Gemini Flash + Grounding, Perplexity sonar-pro)
+    → validation HTTP du pool (AVANT le juge) → juge Claude Haiku 4.5
+    → écrit web_search_jobs.final_results / status_final → PWA poll
 ```
 
-- Le front (`src/lib/webSearch.ts`) n'appelle **jamais** l'API Anthropic
-  directement — la clé serait exposée. Il passe par
-  `supabase.functions.invoke('web-search-notices', ...)`.
-- `verify_jwt` reste activé sur la fonction : seul un utilisateur authentifié
-  l'atteint. La fonction rejoue le JWT de l'appelant sur son propre client
-  Supabase (jamais `service_role`) pour la journalisation et le plafond, donc
-  les mêmes règles RLS s'appliquent qu'un appel vienne d'elle ou du front.
-- Entrée : `brand`, `model` (requis), `department_name`, `specialty_name`,
-  `equipment_type` (optionnels, affinent la requête).
-- Sortie : `{ results: [{ type, title, url, is_pdf, source, confidence }] }`.
-  `type` ∈ `notice_installation`, `manuel_programmation`, `fiche_technique`,
-  `autre` (sous-ensemble de `doc_type`, sans `schema`/`fiche_perso`).
-- Garde-fous de coût : `web_search_log` sert de plafond quotidien souple par
-  utilisateur (`WEB_SEARCH_DAILY_LIMIT`, 50 par défaut, rejeté en 429
-  au-delà) ; `WEB_SEARCH_MAX_USES` (3 par défaut) borne le nombre d'essais de
-  recherche web par appel ; le prompt système est mis en cache côté Anthropic
-  (`cache_control: ephemeral`) car figé d'un appel à l'autre. Ces trois
-  réglages sont des secrets de fonction, ajustables sans changement de code.
-- Modèle et type d'outil de recherche web (`ANTHROPIC_MODEL`,
-  `ANTHROPIC_WEB_SEARCH_TOOL_TYPE`) sont aussi des secrets de fonction — à
-  vérifier sur docs.claude.com avant tout redéploiement, ces identifiants
-  évoluent.
+- Le front (`src/lib/webSearch.ts`) n'appelle **plus aucune Edge Function ni
+  l'API Anthropic** : il fait un simple `INSERT` dans `web_search_jobs`
+  (`brand`, `model` requis, `equipment_type`/`department_name`/
+  `specialty_name` optionnels) puis poll `status_final`/`final_results` sur
+  la même table jusqu'à `'done'` (ou `'error'`), avec un filet de timeout
+  client (`HARD_LIMIT_MS` ~300 s → `WebSearchTimeoutError`, « recherche
+  interrompue »). L'ancienne Edge Function `web-search-notices` n'est plus
+  appelée par le front (débranchement effectif côté code applicatif —
+  dépôt/redéploiement Supabase à confirmer séparément).
+- Le trigger Postgres `notify_n8n_web_search()` (`SECURITY DEFINER`,
+  `AFTER INSERT WHEN status='pending'`) appelle **un seul** webhook n8n
+  (`notices-search`, `net.http_post`, header
+  `rechercheweb-webhook-secret`, body `{job_id}`) — garde-fou : si l'URL ou
+  le secret sont `null` en base (`private_config`), il `return NEW` sans
+  jamais casser l'`INSERT` du job.
+- Le workflow n8n unique lance **3 moteurs en séquence** (n8n ne parallélise
+  pas les branches fannées ; dégradation gracieuse, `Continue On Fail` par
+  nœud) : **Serper** (2 requêtes — normale + `filetype:pdf`, `gl:'ch'`/
+  `hl:'fr'`, rappel pur), **Gemini Flash + Grounding** (`gemini-3.5-flash`,
+  `google_search`, `thinkingBudget:0` obligatoire sous peine de réponse sans
+  `candidates`, timeout 90 s), **Perplexity `sonar-pro`**. Chaque moteur
+  maximise le **rappel** ; c'est le juge qui fait la **précision** en aval —
+  pré-filtrer avant le juge lui cacherait des candidats valides.
+- **Validation AVANT le juge** (la correction clé de la refonte, contre les
+  hallucinations d'URL de Gemini) : une shortlist (documents ≤15 + vidéos
+  ≤3, pool dédupliqué avec un compte d'accord inter-moteurs `engine_count`)
+  est validée en HTTP **en parallèle** (nœud Code, `Promise.all`, HEAD puis
+  GET Range, suit les redirections y compris `vertexaisearch`) — le juge ne
+  voit que des candidats dont `link_ok`/`content_type`/`is_pdf` sont
+  **vérifiés**, jamais supposés depuis un snippet. `content_type` fait
+  autorité sur `is_pdf` (un `text/html` écrase un `is_pdf:true` supposé) ;
+  `link_ok:false` reste un avertissement doux, jamais « lien mort ».
+- **Le juge** : Claude Haiku 4.5, appelé directement par le nœud n8n
+  (`api.anthropic.com/v1/messages`, Header Auth `x-api-key` +
+  `anthropic-version` — **plus aucune Edge Function Supabase dans la
+  boucle**), déduplique/priorise/écarte le hors-sujet parmi les candidats
+  validés ; URL **verbatim** obligatoires (jamais inventées/modifiées),
+  préférence au corroboré (≥2 moteurs) + `link_ok:true`, aux grossistes
+  suisses légitimes (ottofischer/flextron/feller/sonepar/eldas — sources
+  documentaires reconnues, pas des revendeurs à exclure), langue FR sinon
+  DE/EN complet. **Repli mécanique** (tri par type/confiance, sans juge) si
+  l'appel échoue ou rend un JSON invalide — l'utilisateur n'est jamais
+  bloqué. Jusqu'à 5 documents pertinents (jamais gonflés à 5 avec du
+  hors-sujet) + 1 vidéo d'installation/paramétrage en dernier si pertinente
+  (6 résultats max).
+- Sortie (`WebSearchResult`, `src/types/webSearch.ts`) :
+  `{ type, title, url, is_pdf, source, confidence, link_ok?, http_status?,
+  content_type? }[]`. `type` ∈ `notice_installation`, `manuel_programmation`,
+  `fiche_technique`, `autre` (sous-ensemble de `doc_type`, sans
+  `schema`/`fiche_perso`) **+ `video`** — jamais capturable vers la
+  bibliothèque (`is_pdf` toujours faux), ouverture externe (`window.open`)
+  uniquement, affichée en dernier dans la liste.
+- Modèle de données : `web_search_jobs` porte désormais `status_final`
+  (`'processing'`/`'done'`/`'error'`) et `final_results` (jsonb, déjà
+  trié/dédupliqué par le juge) et `done_at_final`. Les anciennes colonnes
+  par moteur (`results_anthropic`/`_perplexity`, `status_*`, `done_at_*`)
+  sont **obsolètes mais encore en place** (nettoyage différé, pas encore
+  fait). Nouvelle table enfant `web_search_results` : journal
+  d'observabilité, une ligne par moteur par job + une ligne `juge` —
+  **RLS activée, zéro policy** (service-only) : le front ne la lit jamais,
+  il poll uniquement `web_search_jobs`.
+- Dette connue (voir `ETAT_PROJET.md`, « Dettes ouvertes ») : nettoyer les
+  colonnes par moteur obsolètes de `web_search_jobs`, supprimer/débrancher
+  pour de bon l'Edge Function `web-search-notices` et les anciens workflows
+  n8n Anthropic/Perplexity, purger la clé orpheline
+  `private_config.n8n_webhook_url_pplx`. Le contexte du job
+  (`equipment_type`/`department_name`/`specialty_name`) est le signal le
+  plus fort du juge contre les homonymes (ex. « ALADIN » récepteur radio vs
+  théâtre) — vérifier qu'il est bien rempli côté front à chaque recherche.
 
 ### Capture vers la bibliothèque — webhook n8n `ingest-from-url`
 
@@ -864,12 +920,22 @@ espacement disloque le mot.
   (préfixes à segment d'entité, `galerie|plans` — les PDF, eux, sont écrits
   en R2 par n8n, jamais par le Worker, §9) et `GLOBAL_PREFIXES` (préfixes
   globaux à segment unique, sans entité rattachée — `communications`, §17).
-  **`DELETE` est admin-only** (`checkIsAdmin`, rejoue le JWT de l'appelant
-  sur la RPC `is_vault_admin` — même rôle admin que le reste de l'app, pas
-  une notion propre au coffre) : tolérable tant que Supabase Storage servait
-  de filet pour les PDF, ce n'est plus le cas depuis que R2 en est la
-  **source unique** (bucket Supabase `documents` vidé, §3) — une suppression
-  malveillante ou accidentelle y serait irréversible sans re-ingestion n8n.
+  **`DELETE` est admin-only pour tout préfixe SAUF `vault/`**
+  (`checkIsAdmin`, rejoue le JWT de l'appelant sur la RPC `is_vault_admin` —
+  même rôle admin que le reste de l'app, pas une notion propre au coffre) :
+  `documents/`, `plans/`, `galerie/`, `communications/…` restent strictement
+  admin-only — tolérable tant que Supabase Storage servait de filet pour les
+  PDF, ce n'est plus le cas depuis que R2 en est la **source unique** (bucket
+  Supabase `documents` vidé, §3) — une suppression malveillante ou
+  accidentelle y serait irréversible sans re-ingestion n8n. Sous
+  `vault/{dossierId}/…` (fichiers chiffrés du coffre), le Worker autorise
+  **aussi** un utilisateur non-admin ayant accès au dossier
+  (`checkHasDossierVaultAccess`, rejoue le JWT sur la RPC
+  `has_dossier_vault_access(p_dossier_id)`, testée en premier —
+  `is_vault_admin` n'est rejouée qu'en repli si cet accès échoue) : miroir
+  volontaire de la policy `DELETE` de `vault_files` côté Postgres (accès
+  nominatif OU admin), pas un relâchement de la règle admin-only ci-dessus
+  pour les autres préfixes.
 - Les URL signées Supabase Storage (repli `storage_provider = 'supabase'`,
   §3) expirent (1 h) : ne pas les stocker, les régénérer à la demande. Une
   fois le PDF téléchargé dans le Cache API, il est servi localement et
@@ -944,10 +1010,16 @@ sans erreur, piège silencieux.
 
 ## 15. À tester tôt, avant d'aller loin
 
-Parc d'appareils : Android uniquement (aucun iOS). Chrome implémente
-`navigator.storage.persist()` et l'accorde en principe automatiquement aux
-PWA installées sur l'écran d'accueil (demandé une fois par session au
-démarrage, `src/lib/storagePersistence.ts`).
+Parc d'appareils : majorité Android (~50 monteurs et techniciens) — la
+**plateforme de référence, jamais dégradée**. S'y ajoute une poignée
+d'iPhones (3 : responsables d'équipe et direction) — **secondaire** : iOS a
+des chemins spécifiques, isolés derrière `isIosDevice()`
+(`src/lib/pdfMeasure.ts`), pour contourner les limites du WebKit iOS
+(`window.open` bloqué après un `await`, polyfill `pdf.js` requis, garde-fou
+« plan trop détaillé ») sans jamais toucher au comportement Android. Chrome
+implémente `navigator.storage.persist()` et l'accorde en principe
+automatiquement aux PWA installées sur l'écran d'accueil (demandé une fois
+par session au démarrage, `src/lib/storagePersistence.ts`).
 
 Vérifier malgré tout sur un appareil réel, via l'écran diagnostic
 (`DiagnosticScreen`, accessible hors du parcours principal) : que
