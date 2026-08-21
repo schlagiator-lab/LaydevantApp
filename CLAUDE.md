@@ -890,8 +890,9 @@ espacement disloque le mot.
 
 - **Seule la clé `anon` figure dans l'application front.** Jamais la clé
   `service_role` : elle contourne la RLS. Elle reste exclusivement dans n8n.
-- **`ANTHROPIC_API_KEY` ne vit que dans les secrets de l'Edge Function**
-  `web-search-notices`, jamais dans le front ni dans Git.
+- **`ANTHROPIC_API_KEY` ne vit que dans les credentials du workflow n8n**
+  (nœud Juge, Header Auth `x-api-key`, §9) — jamais dans le front, jamais
+  dans une Edge Function Supabase, jamais dans Git.
 - `VITE_N8N_INGEST_SECRET` (header `x-webhook-secret` du webhook de capture)
   n'est **pas** un vrai secret. Comme tout `VITE_*`, il est figé au build donc
   inscrit en dur dans le bundle JS — lui-même servi en static asset public,
@@ -901,8 +902,9 @@ espacement disloque le mot.
   — écriture non authentifiée vers la bibliothèque (pollution, conso
   n8n/Supabase, pas d'exfiltration) — est **accepté à ce stade** car l'outil
   est interne. Pour un durcissement réel, router la capture par une Edge
-  Function `verify_jwt` (comme la recherche web, §9) qui rappellerait n8n avec
-  un secret côté serveur — à faire dans un cycle dédié si besoin. Reste malgré
+  Function `verify_jwt` (comme `delete-account`/`promote-equipment-notice`)
+  qui rappellerait n8n avec un secret côté serveur — à faire dans un cycle
+  dédié si besoin. Reste malgré
   tout jamais commité (`.env*` dans `.gitignore`, seul `.env.example` sans
   valeurs est versionné).
 - La clé `anon` est publique par conception ; c'est la RLS qui protège les
@@ -992,11 +994,6 @@ l'exécution) — à configurer dans les paramètres du projet Cloudflare,
 
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
 - `VITE_N8N_INGEST_URL`, `VITE_N8N_INGEST_SECRET` (webhook de capture, §9)
-
-Les secrets d'Edge Function (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`,
-`ANTHROPIC_WEB_SEARCH_TOOL_TYPE`, `WEB_SEARCH_MAX_USES`,
-`WEB_SEARCH_DAILY_LIMIT`) se configurent côté Supabase, indépendamment du
-build front.
 
 HTTPS est fourni automatiquement — indispensable, sans lui pas de service
 worker donc pas de PWA.
