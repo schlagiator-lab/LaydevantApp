@@ -849,6 +849,10 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           excludeDocumentIds={documentIds}
           onClose={() => setShowAddDocument(false)}
           onAdded={() => void loadDocuments()}
+          onRequestMissing={() => {
+            setShowAddDocument(false);
+            setShowAddEquipmentRequest(true);
+          }}
         />
       )}
 

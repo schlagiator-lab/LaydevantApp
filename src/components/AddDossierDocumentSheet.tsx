@@ -17,6 +17,11 @@ export interface AddDossierDocumentSheetProps {
   excludeDocumentIds: Set<string>;
   onClose: () => void;
   onAdded: (documentId: string) => void;
+  /** Le document cherché n'existe pas dans la bibliothèque — ouvre le
+   * formulaire de déclaration (EquipmentRequestSheet, réutilisée telle
+   * quelle, §10 DossierScreen), à la charge du parent (ferme cette sheet-ci
+   * pour éviter d'empiler deux overlays plein écran). */
+  onRequestMissing: () => void;
 }
 
 /** Recherche dans la bibliothèque pour rattacher un document directement au dossier. */
@@ -25,6 +30,7 @@ export function AddDossierDocumentSheet({
   excludeDocumentIds,
   onClose,
   onAdded,
+  onRequestMissing,
 }: AddDossierDocumentSheetProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Row[] | null>(null);
@@ -89,6 +95,10 @@ export function AddDossierDocumentSheet({
           style={inputStyle}
           autoFocus
         />
+
+        <button type="button" onClick={onRequestMissing} style={{ ...linkButtonStyle, marginTop: 10 }}>
+          + Document absent de la base ?
+        </button>
 
         {error && <p style={{ fontSize: 13, color: colors.accent, marginTop: 10 }}>{error}</p>}
 
@@ -182,6 +192,19 @@ const rowStyle: React.CSSProperties = {
   background: colors.card,
   borderRadius: 12,
   padding: '10px 12px',
+};
+
+/** Même style que linkButtonStyle de DossierScreen.tsx — dupliqué localement
+ * (pas d'abstraction partagée entre écrans/sheets pour ce petit bouton). */
+const linkButtonStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: textA(0.55),
+  fontSize: 12,
+  fontWeight: 700,
+  textDecoration: 'underline',
+  cursor: 'pointer',
+  padding: 0,
 };
 
 const smallPrimaryButtonStyle: React.CSSProperties = {
