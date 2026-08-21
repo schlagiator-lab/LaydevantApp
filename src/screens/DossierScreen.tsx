@@ -662,42 +662,55 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
               <SectionError title="Documentation indisponible" message={documentsError} onRetry={() => void loadDocuments()} />
             ) : documents === null ? (
               <p style={{ fontSize: 14, color: textA(0.5) }}>Chargement…</p>
-            ) : documents.length === 0 ? (
-              <p style={{ fontSize: 14, color: textA(0.55) }}>Aucun document rattaché à ce dossier.</p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {documents.map((doc) => {
-                  const pinned = pinnedIds.has(doc.id);
-                  return (
-                    <div key={doc.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <DocumentCard
-                        title={doc.title}
-                        docType={doc.doc_type}
-                        specialtyName={doc.specialty_name}
-                        productLabel={doc.product_label}
-                        excerptHtml={null}
-                        pinned={pinned}
-                        dim={!pinned && !isOnline}
-                        onTap={() => handleOpenDocument(doc)}
-                      />
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 4px' }}>
-                        {doc.origine === 'direct' ? (
-                          <button
-                            type="button"
-                            onClick={() => setPendingRemoveDocument(doc)}
-                            disabled={!isOnline}
-                            style={{ ...linkButtonStyle, opacity: isOnline ? 1 : 0.4 }}
-                          >
-                            Retirer du dossier
-                          </button>
-                        ) : (
-                          <span style={{ fontSize: 12, color: textA(0.4), fontWeight: 600 }}>Via équipement</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              <>
+                {documents.length === 0 ? (
+                  <p style={{ fontSize: 14, color: textA(0.55) }}>Aucun document rattaché à ce dossier.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {documents.map((doc) => {
+                      const pinned = pinnedIds.has(doc.id);
+                      return (
+                        <div key={doc.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <DocumentCard
+                            title={doc.title}
+                            docType={doc.doc_type}
+                            specialtyName={doc.specialty_name}
+                            productLabel={doc.product_label}
+                            excerptHtml={null}
+                            pinned={pinned}
+                            dim={!pinned && !isOnline}
+                            onTap={() => handleOpenDocument(doc)}
+                          />
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 4px' }}>
+                            {doc.origine === 'direct' ? (
+                              <button
+                                type="button"
+                                onClick={() => setPendingRemoveDocument(doc)}
+                                disabled={!isOnline}
+                                style={{ ...linkButtonStyle, opacity: isOnline ? 1 : 0.4 }}
+                              >
+                                Retirer du dossier
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: 12, color: textA(0.4), fontWeight: 600 }}>Via équipement</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setShowAddEquipmentRequest(true)}
+                  disabled={!isOnline}
+                  style={{ ...linkButtonStyle, opacity: isOnline ? 1 : 0.4, marginTop: 12 }}
+                >
+                  + Document absent de la base ?
+                </button>
+              </>
             )}
           </CollapsibleSection>
 
@@ -825,6 +838,7 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
           onAddedDirect={() => {
             setShowAddEquipmentRequest(false);
             void loadEquipments();
+            void loadDocuments();
           }}
         />
       )}
