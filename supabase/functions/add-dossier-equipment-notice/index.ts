@@ -197,27 +197,52 @@ Deno.serve(async (req) => {
   // 0 ligne touchée (déjà résolue entre-temps) : idempotent, pas une erreur
   // — le document est de toute façon déjà créé à ce stade. Aucune ligne de
   // suivi de fichier créée ici (contrairement au flux de staging classique).
+  //
+  // Garde d'appartenance AVANT toute écriture : request_id vient du body,
+  // non fiable tel quel — sans ce contrôle, un appelant peut fournir l'id
+  // de la demande pending d'un AUTRE dossier et se la faire clôturer
+  // (approved + resolved_product_id) avec le produit qu'il vient de créer
+  // ici, contournant resolve_dossier_equipment_request (admin-only). On
+  // relit donc la demande avec le même client service_role et on compare
+  // son dossier_id à celui de la requête courante avant d'écrire quoi que
+  // ce soit.
   if (requestId) {
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
-    const { error: closeErr } = await admin
+
+    const { data: requestRow, error: requestErr } = await admin
       .from('dossier_equipment_requests')
-      .update({
-        status: 'approved',
-        resolved_by: userId,
-        resolved_at: new Date().toISOString(),
-        resolved_product_id: productId,
-        specialty_id: specialtyId,
-      })
+      .select('dossier_id')
       .eq('id', requestId)
-      .eq('status', 'pending');
-    if (closeErr) {
-      // Échec honnête côté logs uniquement : le document existe déjà (n8n a
-      // réussi juste avant) — pas de raison de faire échouer toute la
-      // requête pour un problème de suivi seul (même précédent que
-      // promote-equipment-notice/delete-account, CLAUDE.md §7).
-      console.error('add-dossier-equipment-notice: fermeture de la demande échouée', closeErr);
+      .maybeSingle();
+
+    if (requestErr) {
+      // Échec honnête côté logs uniquement, même précédent que ci-dessous :
+      // le document existe déjà, pas de raison de faire échouer toute la
+      // requête pour un problème de suivi seul.
+      console.error('add-dossier-equipment-notice: lecture de la demande échouée', requestErr);
+    } else if (!requestRow || requestRow.dossier_id !== dossierId) {
+      return json({ ok: false, error: "La demande référencée n'appartient pas à ce dossier." }, 403);
+    } else {
+      const { error: closeErr } = await admin
+        .from('dossier_equipment_requests')
+        .update({
+          status: 'approved',
+          resolved_by: userId,
+          resolved_at: new Date().toISOString(),
+          resolved_product_id: productId,
+          specialty_id: specialtyId,
+        })
+        .eq('id', requestId)
+        .eq('status', 'pending');
+      if (closeErr) {
+        // Échec honnête côté logs uniquement : le document existe déjà (n8n a
+        // réussi juste avant) — pas de raison de faire échouer toute la
+        // requête pour un problème de suivi seul (même précédent que
+        // promote-equipment-notice/delete-account, CLAUDE.md §7).
+        console.error('add-dossier-equipment-notice: fermeture de la demande échouée', closeErr);
+      }
     }
   }
 
