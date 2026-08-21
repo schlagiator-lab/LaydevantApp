@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import PdfTetris from '../components/PdfTetris';
 import { useNavigation } from '../lib/useNavigation';
 import {
@@ -10,6 +10,7 @@ import {
   type CreatedDuoMatch,
   type WaitingDuoMatch,
 } from '../lib/duoMatch';
+import { primeMusicAudio } from '../lib/tetrisMusic';
 import { colors, fonts, textA } from '../styles/tokens';
 
 /** Lancement transmis à PdfTetris (brique 4) — voir PdfTetrisProps.duoMatch. */
@@ -44,9 +45,16 @@ export function GameDuoLobbyScreen() {
   // ---- créer ----
   const [creating, setCreating] = useState(false);
   const [hostedMatch, setHostedMatch] = useState<CreatedDuoMatch | null>(null);
+  // Amorcé SYNCHRONEMENT dans le tap "Créer", avant tout await — iOS bloque
+  // sinon le .play() de la musique lancée plus tard par le poll (hors
+  // geste, voir tetrisMusic.ts). Réutilisé tel quel par PdfTetris, jamais
+  // recréé. N'affecte pas le chemin guest (jeu lancé dans le geste
+  // "Rejoindre" lui-même, pas besoin d'amorçage).
+  const primedMusicRef = useRef<HTMLAudioElement | null>(null);
 
   const handleCreate = async () => {
     if (creating || joining) return;
+    primedMusicRef.current = primeMusicAudio();
     setCreating(true);
     setError(null);
     try {
@@ -163,7 +171,14 @@ export function GameDuoLobbyScreen() {
   };
 
   if (view === 'play' && launch) {
-    return <PdfTetris standalone duoMatch={launch} onExitDuoMatch={handleExitDuoMatch} />;
+    return (
+      <PdfTetris
+        standalone
+        duoMatch={launch}
+        onExitDuoMatch={handleExitDuoMatch}
+        primedMusicAudio={primedMusicRef.current ?? undefined}
+      />
+    );
   }
 
   return (

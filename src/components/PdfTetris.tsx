@@ -5,6 +5,7 @@ import { submitScore, getLeaderboard } from '../lib/gameScores';
 import { syncDuoMatch } from '../lib/duoMatch';
 import { Leaderboard } from './Leaderboard';
 import { createTetrisSfx, type SfxName, type TetrisSfx } from '../lib/tetrisSfx';
+import { TETRIS_MUSIC_SRC, TETRIS_MUSIC_VOLUME } from '../lib/tetrisMusic';
 import type { GameLeaderboardEntry } from '../types/database';
 
 /**
@@ -246,9 +247,22 @@ interface PdfTetrisProps {
    * création/rejoindre du lobby plutôt que de relancer localement l'ancien
    * match (qui resterait 'finished' côté serveur, sans adversaire en face). */
   onExitDuoMatch?: () => void;
+  /** Mode duo host uniquement : élément déjà amorcé dans le geste du tap
+   * "Créer" (GameDuoLobbyScreen, voir tetrisMusic.ts) — iOS WebKit exige que
+   * le .play() qui débloque l'audio soit synchrone dans un geste, or côté
+   * host le montage de ce composant vient du callback de poll (hors geste).
+   * Réutilisé tel quel si fourni ; sinon comportement inchangé (nouvel
+   * élément créé ici, solo et guest). */
+  primedMusicAudio?: HTMLAudioElement;
 }
 
-export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMatch, onExitDuoMatch }: PdfTetrisProps) {
+export default function PdfTetris({
+  standalone = false,
+  onShowLeaderboard,
+  duoMatch,
+  onExitDuoMatch,
+  primedMusicAudio,
+}: PdfTetrisProps) {
   const nav = useNavigation();
   const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -575,15 +589,15 @@ export default function PdfTetris({ standalone = false, onShowLeaderboard, duoMa
   // généralement autorisé ; si le navigateur le bloque quand même, on
   // n'insiste pas (le jeu doit rester jouable sans son).
   useEffect(() => {
-    const audio = new Audio('/tetris_audio.mp3');
+    const audio = primedMusicAudio ?? new Audio(TETRIS_MUSIC_SRC);
     audio.loop = true;
-    audio.volume = 0.35;
+    audio.volume = TETRIS_MUSIC_VOLUME;
     void audio.play().catch(() => {});
     return () => {
       audio.pause();
       audio.currentTime = 0;
     };
-  }, []);
+  }, [primedMusicAudio]);
 
   // Bruitages (rotation, hard drop, clears, game over) — préchargés une
   // seule fois au montage, volume constant sous la musique. Ref (pas de
