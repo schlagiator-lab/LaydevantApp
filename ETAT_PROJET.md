@@ -6,7 +6,7 @@ chaque avancée (pas complété) : une dette réglée en disparaît, une feature
 passe en « fonctionne ». Pour le POURQUOI d'une décision, voir les HANDOFF datés
 (l'archive). Pour la spec technique de Claude Code, voir `CLAUDE.md` (le repo).
 
-À jour au 19 août 2026.
+À jour au 22 août 2026.
 
 ---
 
@@ -112,8 +112,24 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
 - **Annotation de photos du carnet — non destructive** : calque vectoriel
   rééditable, 4 outils, rendu partout, export image à la demande.
 - **Galerie photo, Plans de dossier, Onboarding par liste blanche**.
+- **Pas de canal email (décision prise)** : onboarding géré au cas par cas (petit
+  groupe, pas de round-trip email) ; alerte de suppression en masse gérée IN-APP
+  (redflag + annonces dans le coffre admin), pas de dépendance à un fournisseur
+  externe type Brevo.
 - **Ingestion n8n (écrit dans R2)** : formulaire, webhook `ingest-from-url`, lot.
-- **Backup quotidien** : export JSON n8n vers R2.
+- **Backup quotidien AUTO-RECENSANT vers R2** : le workflow n8n interroge
+  lui-même `pg_tables` au moment de tourner, toute nouvelle table est
+  sauvegardée par défaut, il n'y a plus de liste blanche à maintenir.
+  Exclusions : `private_config` (config reconstructible, évite le
+  secret-au-repos) et les colonnes GÉNÉRÉES (`documents.search_vector`, qui
+  se recalcule à l'import). Une table = un fichier JSON sous `daily/AAAA-MM-JJ/`,
+  plus un `_manifest.json` listant les tables et leur nombre de lignes (preuve
+  de complétude — on ne valide jamais sur un nœud vert). Rétention 30 jours
+  par règle de cycle de vie R2, pas par purge codée. Run de référence :
+  29 tables, 30 objets.
+- **Schéma versionné dans Git** (`supabase/_schema_snapshot.sql`, instantané
+  de récupération, PAS une migration — ne jamais le rejouer). Modèle de
+  sauvegarde complet : les DONNÉES par n8n vers R2, le SCHÉMA par Git.
 - **Soft delete (corbeille)** sur les tables enfant du dossier. **Exceptions** :
   `dossier_documents` et `vault_files` (hard delete assumé).
 - **Mini-jeu Tetris + classement + bruitages + mode duo en ligne** : sections dédiées.
@@ -252,20 +268,15 @@ cumulatif, seed partagé).
 - **Recherche web — badge « Vidéo » côté front** : marquage visuel distinct des
   vidéos (prompt Claude Code fourni), à confirmer déployé.
 - **Recherche web — nettoyage** : supprimer les colonnes par moteur obsolètes de
-  `web_search_jobs`, débrancher l'ancienne Edge Function `web-search-notices`,
-  supprimer les anciens workflows Anthropic/Perplexity et la clé
+  `web_search_jobs`, supprimer les anciens workflows Anthropic/Perplexity et la clé
   `private_config.n8n_webhook_url_pplx` orpheline.
-- **Canal email (Brevo)** : non câblé. Débloque notif demandes de suppression +
-  d'équipement, confirmation onboarding, alerte suppression en masse.
-- **Alerte suppression en masse** : seuil défini (10/10 min/user), dépend de Brevo.
 - **VÉRIF `dossier_produits`** : confirmer que sa policy SELECT n'est PAS
   `deleted_at IS NULL` (sinon bug soft-delete/RETURNING latent).
 - **`dossier_documents` sans soft-delete** : seule table enfant (hors coffre) sans
   `deleted_at`.
-- **Backup — ajouter les tables récentes** : `web_search_jobs`, **`web_search_results`**,
-  `game_scores`, `duo_matches`, `galerie_items`, `galerie_photos`, `dossier_plans`,
-  `dossier_deletion_requests`, `dossier_equipment_requests`, `communications`,
-  `vault_files` ; activer Schedule + purge.
+- **Volumétrie backup à surveiller** : ~65 Mo/jour (dont `documents.content`), soit
+  ~1,9 Go à 30 jours sur 10 Go R2 partagés avec `laydevant-photos`. Levier si ça
+  serre : cesser de sauvegarder `documents.content` (ré-extractible depuis les PDF).
 - **Cache offline — Galerie, Plans, fichiers du coffre, annotation photo** : online-only.
 - **Communication d'entreprise — aperçu offline** : online-only (placeholder).
 - **Garde-fou « PDF trop détaillé » sur les fichiers du coffre** : non appliqué.
@@ -274,21 +285,36 @@ cumulatif, seed partagé).
 - **`gol-1-media.bmp`** reste en BMP (non bloquant).
 - **`formatDate` dupliqué** (~4-5 copies) ; **`planLabel` bugué** (coupe au 1er tiret) ;
   **chevrons `goHome` vs `goBack`** à normaliser.
-- **Comptes de test à supprimer** avant exploitation. **pg_cron** installé mais inutilisé.
+- **`pg_cron`** installé mais inutilisé.
 
 ---
 
 ## Prochain chantier
 
-1. **Recherche web — remplir le contexte du job** (equipment_type…) côté front, puis
-   **nettoyer** l'ancien chemin (colonnes, Edge Function, workflows, clé orpheline).
-2. **Canal email (Brevo)** : débloque demandes de suppression/équipement, confirmation
-   onboarding, alerte suppression en masse. Le blocage le plus rentable à lever.
-3. **Vérif `dossier_produits`** (policy SELECT, bug soft-delete latent).
-4. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
-5. **Protection des données** : Schedule backup + purge, avec toutes les tables
-   récentes (`web_search_results`, `vault_files`, `duo_matches` inclus).
-6. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
+1. **Recherche web — remplir le contexte du job** (`equipment_type`/`department`/
+   `specialty`) côté front : meilleur levier qualité restant contre les homonymes.
+2. **Recherche web — nettoyage staging** : supprimer les colonnes par moteur
+   obsolètes de `web_search_jobs`, les anciens workflows n8n Anthropic/Perplexity,
+   et la clé `private_config.n8n_webhook_url_pplx` orpheline.
+3. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
+4. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
+
+---
+
+## Apprentissages
+
+- **Un backup à LISTE BLANCHE dérive fatalement** (`web_search_log` avait été
+  oubliée sans que personne le voie). Un backup AUTO-RECENSANT inverse le mode
+  d'échec : oublier de toucher la liste veut dire « sauvegardé par défaut », pas
+  « perdu silencieusement ».
+- **`chr(0)` est REFUSÉ par Postgres à la construction** (erreur `54000` « null
+  character not permitted ») : un `select chr(0)` échoue seul. Une colonne
+  text/varchar ne PEUT donc pas contenir de NUL — tout assainissement anti-NUL en
+  lecture est inutile et provoque lui-même l'erreur qu'il prétend éviter. (À ne
+  pas confondre avec le `08P01` côté ÉCRITURE, quand des octets viennent d'un
+  pipeline externe.)
+- **Vérifier l'INPUT réel d'un nœud n8n avant de conclure** : un nœud vert peut
+  servir un résultat épinglé/en cache et masquer que la correction n'a pas pris.
 
 ---
 

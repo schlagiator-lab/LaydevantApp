@@ -1,5 +1,9 @@
 # Audit pré-production — LaydevantApp
 
+> **Suivi au 22 août 2026** — statut ajouté sous chaque finding après la
+> session pré-production. Les findings eux-mêmes ne sont pas modifiés (rapport
+> daté) ; seule la ligne de statut est ajoutée.
+
 Audit en lecture seule. Aucun fichier de code modifié, aucun commit, aucune
 migration lancée. Ce document ne contient pas de correctifs — chaque
 trouvaille sera traitée séparément, une par une.
@@ -28,6 +32,9 @@ recherche web.
 
 **Impact** : n'importe quel utilisateur authentifié (simple monteur, pas admin) peut faire approuver n'importe quelle demande d'équipement `pending` d'un tiers en fournissant son `id` dans le body, en dehors du flux normal. Cela contourne directement la règle documentée en CLAUDE.md §3/§11 : « Résolution admin-only... jamais d'update direct côté client » — ici c'est un `UPDATE` en `service_role` déclenché par un non-admin.
 
+**Statut : RÉSOLU.** Vérification d'appartenance du `request_id` au `dossier_id`
+ajoutée avant l'`UPDATE` en `service_role`.
+
 ### 2. RPC `SECURITY DEFINER` sensibles absentes de tout fichier versionné dans le dépôt — re-vérification interne du rôle invérifiable
 
 **Fonctions concernées** : `resolve_dossier_equipment_request` (écrit `products`/`dossier_produits`), `upsert_dossier_product` (écrit `products`, appelée par `add-dossier-equipment-notice/index.ts:137`), `soft_delete_communication`, `set_comms_publisher`. Aucune n'a de `CREATE FUNCTION`/`CREATE OR REPLACE FUNCTION` dans `supabase/migrations/**/*.sql` (recherche exhaustive du dossier `migrations/`).
@@ -35,6 +42,14 @@ recherche web.
 **Problème** : CLAUDE.md documente ces quatre RPC comme admin-only avec revérification interne de `is_vault_admin()`, mais leur code SQL réel n'est présent nulle part dans le dépôt (contrairement à `search_dossiers`, `dossier_documents_complets` et `rotate_vault_secret`, qui elles sont versionnées et vérifiables — `rotate_vault_secret` fait un exemple correct de la vérification attendue, `20260730_090000_vault_rotate_secret.sql:41-43`).
 
 **Impact** : impossible de confirmer par lecture de source, avant mise en prod, que ces quatre fonctions revérifient bien le rôle appelant à l'intérieur de leur corps plutôt que de faire confiance à un contrôle uniquement côté client/RLS de façade. Ce sont les opérations les plus sensibles de l'app (écriture catalogue produits, résolution de demandes, suppression de communication, octroi du droit de publier) — le risque n'est pas confirmé mais n'est pas non plus exclu par le dépôt.
+
+**Statut : RÉSOLU.** Les 4 fonctions ont été dumpées et vérifiées :
+`resolve_dossier_equipment_request` (`is_vault_admin()` en première
+instruction), `soft_delete_communication` (`is_admin() OR
+is_comms_publisher()`), `set_comms_publisher` (`is_admin()`),
+`upsert_dossier_product` (gate authentifié seul, VOULU — chemin direct
+monteur). Aucun trou. Le schéma complet est désormais versionné dans
+`supabase/_schema_snapshot.sql`.
 
 ### 3. `src/lib/auth.tsx:18-22` — `getSession()` sans `.catch()`, écran blanc indéfini possible
 
@@ -49,6 +64,9 @@ supabase.auth.getSession().then(({ data }) => {
 **Problème** : aucune gestion du cas où la promesse rejette (storage local corrompu/indisponible). `setIsReady(true)` n'est alors jamais appelé, et `src/App.tsx:115` fait `if (!isReady) return null;`.
 
 **Impact** : l'application entière reste sur un écran blanc, indéfiniment, sans aucun message d'erreur ni fallback — y compris pour un technicien qui a déjà des documents épinglés hors ligne et n'a besoin d'aucun réseau pour les consulter. C'est exactement le scénario que CLAUDE.md §6 décrit vouloir éviter à tout prix (« un technicien qui se retrouve éjecté de l'application dans une cave... perd l'accès à des documents pourtant présents sur son appareil ») — ici le mécanisme de protection lui-même a un trou qui produit un blocage total plutôt qu'une dégradation. Probabilité faible, mais aucun garde-fou (pas de timeout, pas de fallback) une fois le cas déclenché.
+
+**Statut : RÉSOLU.** `catch` + timeout garantissent `isReady(true)` dans tous
+les cas.
 
 ---
 
@@ -69,11 +87,15 @@ return json({ ok: true }, 200);
 
 **Impact** : si cette écriture échoue (panne DB transitoire), le compte applicatif est bien créé et utilisable — pas de perte pour l'utilisateur — mais l'invitation reste visible comme « pending » côté admin alors que la personne est déjà enrôlée, source de confusion pour le panneau Onboarding.
 
+**Statut : REPORTÉ**, non bloquant.
+
 ### 5. Gate `verify_jwt` des Edge Functions invérifiable statiquement depuis le dépôt
 
 **Problème** : aucun `supabase/config.toml` ni fichier de config par fonction n'est versionné dans le dépôt (seul `supabase/.temp/linked-project.json`, généré localement, existe). Le gate `verify_jwt` réel de chaque fonction (`enroll` désactivé, les autres activées) n'est documenté que par des commentaires en tête de fichier, jamais par une source de configuration vérifiable en revue de code.
 
 **Impact** : rien n'empêche un futur déploiement avec un `verify_jwt` erroné (ex. désactivé par erreur sur une fonction admin) sans que cela apparaisse dans un diff Git.
+
+**Statut : REPORTÉ**, non bloquant.
 
 ### 6. `src/components/PdfTetris.tsx:593` — mutation d'une valeur reçue en argument de hook (`react-hooks/immutability`)
 
@@ -87,6 +109,8 @@ return json({ ok: true }, 200);
 
 **Impact** : lié à la fonctionnalité mode duo (musique host, commit `c8ed5ff`) — risque de désynchronisation d'état audio entre rendus, non critique pour les chemins documentation/dossiers/coffre.
 
+**Statut : RÉSOLU** (lint ramené à zéro erreur).
+
 ### 7. `src/components/PdfTetris.tsx:609` — mutation d'un ref juste après un appel de hook (`react-hooks/immutability`)
 
 ```
@@ -98,6 +122,8 @@ return json({ ok: true }, 200);
 **Problème** : `sfxRef.current` est modifié après le retour du hook plutôt qu'avant son appel, flaggé par la même règle ESLint.
 
 **Impact** : même feature (mini-jeu, non critique), risque de désynchronisation d'état entre le ref et les effets qui en dépendent.
+
+**Statut : RÉSOLU** (lint ramené à zéro erreur).
 
 ### 8. `src/screens/GameDuoLobbyScreen.tsx:179` — accès à un ref pendant le rendu (`react-hooks/refs`)
 
@@ -111,11 +137,16 @@ return json({ ok: true }, 200);
 
 **Impact** : mode duo du mini-jeu, non critique ; risque de non-mise à jour de l'état audio primé lors d'un re-render.
 
+**Statut : RÉSOLU** (lint ramené à zéro erreur).
+
 ### 9. `supabase/functions/web-search-notices/index.ts` — Edge Function de l'ancien pipeline encore présente et probablement encore déployée
 
 **Problème** : le code complet de l'ancienne Edge Function `web-search-notices` (décrite en CLAUDE.md §9 comme le chemin en production) est toujours dans le dépôt, mais `src/lib/webSearch.ts` ne l'appelle plus du tout (aucune occurrence de `supabase.functions.invoke('web-search-notices'` dans `src/`) — le front fait désormais un `INSERT` direct sur une table `web_search_jobs` puis un polling (`src/lib/webSearch.ts:93-168`), confirmé par `HANDOFF_recherche_web_ensemble_juge.md:210` (« débrancher l'ancienne Edge Function `web-search-notices` — le nouveau chemin ne passe plus par elle ») et `ETAT_PROJET.md:255`.
 
 **Impact** : CLAUDE.md §9 est obsolète sur toute la description de l'architecture de recherche web (l'actuelle passe par `web_search_jobs` + n8n + juge LLM, pas par cette Edge Function) — risque de mauvaises décisions si quelqu'un s'y fie pour une future modification. La fonction elle-même reste potentiellement déployée et invocable par tout utilisateur authentifié (elle a `verify_jwt` activé), ce qui n'est pas une faille en soi mais un coût/une surface résiduelle inutile (peut encore consommer du budget Anthropic si appelée directement).
+
+**Statut : RÉSOLU.** Fonction SUPPRIMÉE côté Supabase ; CLAUDE.md §9/§13/§14
+resynchronisés.
 
 ---
 
@@ -127,11 +158,16 @@ return json({ ok: true }, 200);
 
 **Impact** : la clé anon est publique par conception (RLS = la vraie protection, CLAUDE.md §13), donc pas une fuite critique — mais reste un point d'hygiène/traçabilité Git à connaître.
 
+**Statut : ACCEPTÉ.** Clé anon publique par conception, réécriture
+d'historique non justifiée.
+
 ### 11. `worker/index.js:129-152` — comportement du `DELETE` plus nuancé que ce que documente CLAUDE.md §13
 
 **Problème** : CLAUDE.md §13 affirme sans nuance que « `DELETE` est admin-only ». Le code réel autorise aussi un utilisateur non-admin ayant accès au dossier concerné à supprimer un fichier sous le préfixe `vault/` (`checkHasDossierVaultAccess`, ligne 137, en plus de `checkIsAdmin`), miroir volontaire de la policy Postgres `vault_files` DELETE (commentaire lignes 121-125). Tous les autres préfixes restent strictement admin-only.
 
 **Impact** : aucune faille — comportement intentionnel et cohérent avec le modèle du coffre — mais la documentation CLAUDE.md est à corriger pour refléter cette branche.
+
+**Statut : RÉSOLU** via la synchro CLAUDE.md.
 
 ### 12. Écart doc/code — CLAUDE.md §15 dit « Android uniquement, aucun iOS » alors que le code maintient des garde-fous iOS actifs
 
@@ -139,11 +175,15 @@ return json({ ok: true }, 200);
 
 **Impact** : simple écart de documentation à signaler (soit §15 est obsolète, soit un usage iOS existe déjà sans être documenté) — pas un bug, ces garde-fous sont par ailleurs tous conformes (voir section 4 de l'audit, aucune violation trouvée).
 
+**Statut : RÉSOLU** via la synchro CLAUDE.md.
+
 ### 13. `no-useless-assignment` — variable `n8nBody` assignée puis jamais utilisée
 
 **Fichiers** : `supabase/functions/add-dossier-equipment-notice/index.ts:175`, `supabase/functions/promote-equipment-notice/index.ts:171`.
 
 **Impact** : code mort mineur détecté par ESLint, aucun impact fonctionnel.
+
+**Statut : RÉSOLU** (lint ramené à zéro erreur).
 
 ### 14. `web_search_jobs` colonnes par-moteur obsolètes + `private_config.n8n_webhook_url_pplx` — hors du contrôle du dépôt
 
@@ -151,11 +191,15 @@ return json({ ok: true }, 200);
 
 **Impact** : rien à nettoyer côté ce dépôt — à vérifier/nettoyer directement côté base Supabase (hors périmètre du code source).
 
+**Statut : REPORTÉ**, nettoyage DB hors dépôt.
+
 ### 15. Warnings ESLint `react-refresh/only-export-components` (3)
 
 **Fichiers** : `src/components/AnnotationOverlay.tsx:35`, `src/components/EquipmentRequestSheet.tsx:36`, `src/components/PdfTetris.tsx:195`.
 
 **Impact** : purement stylistique (dégrade le fast-refresh en dev), aucun impact fonctionnel ni en production.
+
+**Statut : ACCEPTÉ**, sans impact prod.
 
 ---
 
