@@ -8,21 +8,21 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icons/favicon-64.png'],
+      includeAssets: ['icons/favicon-48x48.png', 'icons/apple-touch-icon-180x180.png'],
       manifest: {
         name: 'Laydevant SA — Documentation technique',
         short_name: 'Laydevant Docs',
         description:
           "Documentation technique de terrain pour les monteurs Laydevant SA (électricité, télécom, portes automatiques).",
-        theme_color: '#1E2256',
+        theme_color: '#1E3A6B',
         background_color: '#1E2256',
         display: 'standalone',
         start_url: '/',
         icons: [
-          { src: '/icons/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/icons/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'icons/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icons/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           {
-            src: '/icons/maskable-icon-512x512.png',
+            src: 'icons/maskable-icon-512x512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
