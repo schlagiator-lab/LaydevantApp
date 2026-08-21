@@ -9,8 +9,7 @@ import {
 import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
 import { useToast } from '../lib/useToast';
 import { isIosDevice } from '../lib/pdfMeasure';
-import { docTypeLabel } from '../lib/docType';
-import { NOTICE_DOC_TYPES } from './EquipmentRequestSheet';
+import { docTypeLabel, NOTICE_DOC_TYPES } from '../lib/docType';
 import type { Department, DocType, EquipmentRequestFile, EquipmentRequestStatus, Specialty } from '../types/database';
 import { ConfirmSheet } from './ConfirmSheet';
 import { colors, fonts, radius, textA } from '../styles/tokens';

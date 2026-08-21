@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import PdfTetris from '../components/PdfTetris';
 import { useNavigation } from '../lib/useNavigation';
 import {
@@ -49,12 +49,15 @@ export function GameDuoLobbyScreen() {
   // sinon le .play() de la musique lancée plus tard par le poll (hors
   // geste, voir tetrisMusic.ts). Réutilisé tel quel par PdfTetris, jamais
   // recréé. N'affecte pas le chemin guest (jeu lancé dans le geste
-  // "Rejoindre" lui-même, pas besoin d'amorçage).
-  const primedMusicRef = useRef<HTMLAudioElement | null>(null);
+  // "Rejoindre" lui-même, pas besoin d'amorçage). State plutôt que ref :
+  // primedMusicAudio est lu au rendu (JSX ci-dessous), et lire un ref
+  // pendant le rendu n'est pas fiable (react-hooks/refs) — l'amorçage lui-
+  // même reste synchrone dans le handler, seul le stockage change.
+  const [primedMusicAudio, setPrimedMusicAudio] = useState<HTMLAudioElement | null>(null);
 
   const handleCreate = async () => {
     if (creating || joining) return;
-    primedMusicRef.current = primeMusicAudio();
+    setPrimedMusicAudio(primeMusicAudio());
     setCreating(true);
     setError(null);
     try {
@@ -176,7 +179,7 @@ export function GameDuoLobbyScreen() {
         standalone
         duoMatch={launch}
         onExitDuoMatch={handleExitDuoMatch}
-        primedMusicAudio={primedMusicRef.current ?? undefined}
+        primedMusicAudio={primedMusicAudio ?? undefined}
       />
     );
   }

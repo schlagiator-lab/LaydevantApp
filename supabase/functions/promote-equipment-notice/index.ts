@@ -168,7 +168,7 @@ Deno.serve(async (req) => {
   }
 
   const n8nText = await n8nResponse.text().catch(() => '');
-  let n8nBody: N8nPromoteResponse | null = null;
+  let n8nBody: N8nPromoteResponse | null;
   try {
     n8nBody = n8nText ? JSON.parse(n8nText) : null;
   } catch {

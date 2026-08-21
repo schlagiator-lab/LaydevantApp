@@ -192,7 +192,7 @@ let pieceRng: (() => number) | null = null; // null => solo (Math.random)
 // seed: entier (0..2^31-1) pour rejouer une séquence déterministe, ou null
 // pour revenir au mode solo (Math.random). Un même seed appelé deux fois
 // produit exactement la même suite à partir de là.
-export function seedPieces(seed: number | null): void {
+function seedPieces(seed: number | null): void {
   pieceRng = seed == null ? null : mulberry32(seed >>> 0);
 }
 
@@ -267,6 +267,24 @@ export default function PdfTetris({
   const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Bruitages (rotation, hard drop, clears, game over) — préchargés une
+  // seule fois au montage, volume constant sous la musique. Ref (pas de
+  // state) : joués depuis des callbacks impératifs (loop rAF, handlers de
+  // geste), aucun besoin de re-render. Déclaré tôt (avant lockAndClear/
+  // applyClears ci-dessous, qui le referencent) pour que la mutation de
+  // `.current` dans son effet de création ne soit jamais lue comme une
+  // écriture "après coup" dans un hook antérieur.
+  const sfxRef = useRef<TetrisSfx | null>(null);
+  useEffect(() => {
+    const sfx = createTetrisSfx();
+    sfxRef.current = sfx;
+    return () => {
+      sfx.dispose();
+      sfxRef.current = null;
+    };
+  }, []);
+
   const [lines, setLines] = useState(0);
   const [level, setLevel] = useState(1);
   const [over, setOver] = useState(false);
@@ -589,29 +607,22 @@ export default function PdfTetris({
   // généralement autorisé ; si le navigateur le bloque quand même, on
   // n'insiste pas (le jeu doit rester jouable sans son).
   useEffect(() => {
-    const audio = primedMusicAudio ?? new Audio(TETRIS_MUSIC_SRC);
-    audio.loop = true;
-    audio.volume = TETRIS_MUSIC_VOLUME;
+    // primedMusicAudio (quand fourni) a déjà loop/volume posés par
+    // primeMusicAudio() (src/lib/tetrisMusic.ts) — on ne les repose ici que
+    // sur une instance fraîchement créée localement, jamais sur la prop elle-
+    // même.
+    let audio = primedMusicAudio;
+    if (!audio) {
+      audio = new Audio(TETRIS_MUSIC_SRC);
+      audio.loop = true;
+      audio.volume = TETRIS_MUSIC_VOLUME;
+    }
     void audio.play().catch(() => {});
     return () => {
       audio.pause();
       audio.currentTime = 0;
     };
   }, [primedMusicAudio]);
-
-  // Bruitages (rotation, hard drop, clears, game over) — préchargés une
-  // seule fois au montage, volume constant sous la musique. Ref (pas de
-  // state) : joués depuis des callbacks impératifs (loop rAF, handlers de
-  // geste), aucun besoin de re-render.
-  const sfxRef = useRef<TetrisSfx | null>(null);
-  useEffect(() => {
-    const sfx = createTetrisSfx();
-    sfxRef.current = sfx;
-    return () => {
-      sfx.dispose();
-      sfxRef.current = null;
-    };
-  }, []);
 
   // ---- actions ----
   const move = useCallback((dx: number) => {

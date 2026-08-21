@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createEquipmentRequest, addDossierEquipmentWithNotice } from '../lib/dossiers';
 import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
 import { useToast } from '../lib/useToast';
-import { docTypeLabel } from '../lib/docType';
+import { docTypeLabel, NOTICE_DOC_TYPES } from '../lib/docType';
 import type { Department, DocType, Specialty } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
 
@@ -28,12 +28,6 @@ function defaultDirectTitle(marque: string, modele: string, nomFichier: string):
   if (base) return base;
   return nomFichier.replace(/\.pdf$/i, '');
 }
-
-/** Sous-ensemble de DocType proposé à la saisie — même liste que CaptureSheet
- * (recherche web de notices) : schema/fiche_perso n'ont pas de sens pour une
- * notice fabricant jointe à une demande d'équipement. Exportée : réutilisée
- * telle quelle par EquipmentRequestNotices (promotion vers la bibliothèque). */
-export const NOTICE_DOC_TYPES: DocType[] = ['notice_installation', 'manuel_programmation', 'fiche_technique', 'autre'];
 
 /** Les erreurs Supabase/PostgREST sont de simples objets `{ message, ... }`,
  * jamais des instances d'Error — point de passage unique avant affichage. */

@@ -12,3 +12,7 @@ const LABELS: Record<DocType, string> = {
 export function docTypeLabel(docType: DocType): string {
   return LABELS[docType];
 }
+
+/** Sous-ensemble de DocType offert par le formulaire de déclaration
+ * d'équipement absent (EquipmentRequestSheet/EquipmentRequestNotices). */
+export const NOTICE_DOC_TYPES: DocType[] = ['notice_installation', 'manuel_programmation', 'fiche_technique', 'autre'];
