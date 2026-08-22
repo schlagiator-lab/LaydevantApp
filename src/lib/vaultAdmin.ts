@@ -461,49 +461,94 @@ export function deletionAlertLevel(row: DeletionActivityRow): DeletionAlertLevel
   return null;
 }
 
-const DELETION_ALERT_ACK_KEY = 'laydevant.deletionAlertsAck';
+const DELETION_ALERT_REGISTRY_KEY = 'laydevant.deletionAlertsRegistry';
 
-/** Clé composite user_id + valeur de compteur : se périme automatiquement
- * dès que `last_24h` bouge, donc dès que de nouvelles suppressions arrivent. */
-function deletionAlertAckId(row: DeletionActivityRow): string {
-  return `${row.user_id}:${row.last_24h}`;
+export interface DeletionAlertState {
+  row: DeletionActivityRow;
+  level: DeletionAlertLevel;
+  acknowledged: boolean;
 }
 
-function readDeletionAlertAcks(): Set<string> {
+const LEVEL_SEVERITY: Record<DeletionAlertLevel, number> = { cumul: 1, rafale: 2 };
+
+function readAlertRegistry(): Record<string, DeletionAlertState> {
   try {
-    const raw = localStorage.getItem(DELETION_ALERT_ACK_KEY);
-    return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    const raw = localStorage.getItem(DELETION_ALERT_REGISTRY_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, DeletionAlertState>) : {};
   } catch {
-    return new Set();
+    return {};
   }
 }
 
-function writeDeletionAlertAcks(acks: Set<string>): void {
+function writeAlertRegistry(registry: Record<string, DeletionAlertState>): void {
   try {
-    localStorage.setItem(DELETION_ALERT_ACK_KEY, JSON.stringify([...acks]));
+    localStorage.setItem(DELETION_ALERT_REGISTRY_KEY, JSON.stringify(registry));
   } catch {
     // best-effort — stockage plein/indisponible, pas bloquant
   }
 }
 
-/** Acquittement purement local (pas de table, pas de sync entre appareils) :
- * l'admin a déjà vu ce niveau de suppression pour cet utilisateur. */
-export function isDeletionAlertAcknowledged(row: DeletionActivityRow): boolean {
-  return readDeletionAlertAcks().has(deletionAlertAckId(row));
+/**
+ * Combine l'activité live (fenêtres glissantes 15 min / 24h de la RPC
+ * `get_deletion_activity`) avec un registre persistant en localStorage : une
+ * alerte déclenchée ne doit JAMAIS s'éteindre toute seule parce que la
+ * fenêtre glissante est repassée sous le seuil (ex. rafale de 15 min qui se
+ * termine, ou fenêtre 24h qui digère les suppressions) — seul un
+ * acquittement explicite (`acknowledgeDeletionAlert`) l'éteint. Garde la pire
+ * sévérité vue depuis le dernier acquittement et rafraîchit l'instantané
+ * affiché tant que l'incident reste live ; une entrée non acquittée n'est
+ * jamais retirée du registre, même si l'utilisateur disparaît des 7 jours
+ * d'activité renvoyés par la RPC (pas d'expiration implicite).
+ */
+export function reconcileDeletionAlerts(liveRows: DeletionActivityRow[]): DeletionAlertState[] {
+  const registry = readAlertRegistry();
+  let dirty = false;
+
+  for (const row of liveRows) {
+    const liveLevel = deletionAlertLevel(row);
+    const existing = registry[row.user_id];
+
+    if (liveLevel !== null) {
+      if (!existing || existing.acknowledged || LEVEL_SEVERITY[liveLevel] > LEVEL_SEVERITY[existing.level]) {
+        registry[row.user_id] = { row, level: liveLevel, acknowledged: false };
+      } else {
+        registry[row.user_id] = { ...existing, row };
+      }
+      dirty = true;
+    } else if (existing?.acknowledged) {
+      // Incident résolu (acquitté) et retombé sous les seuils : nettoyage.
+      delete registry[row.user_id];
+      dirty = true;
+    }
+    // liveLevel === null et existing non acquitté : ne rien toucher, l'alerte reste active.
+  }
+
+  if (dirty) writeAlertRegistry(registry);
+
+  return Object.values(registry);
 }
 
+/** Acquittement purement local (pas de table, pas de sync entre appareils) :
+ * l'admin a déjà vu cette alerte pour cet utilisateur. La ligne reste
+ * visible (badge "vue") tant qu'une nouvelle alerte plus grave ne la
+ * remplace pas dans le registre. */
 export function acknowledgeDeletionAlert(row: DeletionActivityRow): void {
-  const acks = readDeletionAlertAcks();
-  acks.add(deletionAlertAckId(row));
-  writeDeletionAlertAcks(acks);
+  const registry = readAlertRegistry();
+  const existing = registry[row.user_id];
+  registry[row.user_id] = existing
+    ? { ...existing, acknowledged: true }
+    : { row, level: deletionAlertLevel(row) ?? 'cumul', acknowledged: true };
+  writeAlertRegistry(registry);
 }
 
 /**
  * Nombre d'alertes actives non acquittées — alimente le flag "Coffre (admin)"
  * de l'accueil, même chemin que les trois autres compteurs (HomeScreen.tsx) :
- * sommée avec eux, best-effort, jamais bloquante pour l'accueil.
+ * sommée avec eux, best-effort, jamais bloquante pour l'accueil. Passe par
+ * `reconcileDeletionAlerts` : persiste tant que non acquitté, indépendamment
+ * de la fenêtre glissante de la RPC.
  */
 export async function countActiveDeletionAlerts(): Promise<number> {
   const rows = await getDeletionActivity();
-  return rows.filter((r) => deletionAlertLevel(r) !== null && !isDeletionAlertAcknowledged(r)).length;
+  return reconcileDeletionAlerts(rows).filter((a) => !a.acknowledged).length;
 }

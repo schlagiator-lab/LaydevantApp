@@ -17,14 +17,14 @@ import {
   listPendingEquipmentRequests,
   resolveEquipmentRequest,
   getDeletionActivity,
-  deletionAlertLevel,
-  isDeletionAlertAcknowledged,
+  reconcileDeletionAlerts,
   acknowledgeDeletionAlert,
   type VaultUserKeySummary,
   type VaultDossierSummary,
   type DossierDeletionRequestSummary,
   type DeletionActivityRow,
   type DeletionAlertLevel,
+  type DeletionAlertState,
 } from '../lib/vaultAdmin';
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
@@ -1673,31 +1673,35 @@ function demandeFilterChipStyle(active: boolean): CSSProperties {
 type DeletionActivityPhase =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'loaded'; rows: DeletionActivityRow[] };
+  | { kind: 'loaded'; rows: DeletionActivityRow[]; alerts: DeletionAlertState[] };
 
 /**
  * Section "Activité de suppression" de l'onglet "Notifications" (alerte
  * admin de suppression massive) : une ligne par utilisateur ayant supprimé
  * quelque chose sur 7 jours (`getDeletionActivity`, lecture seule — aucune
- * écriture possible depuis cette section). Les lignes en alerte (seuils
- * `SEUIL_RAFALE`/`SEUIL_CUMUL`, `deletionAlertLevel`, vaultAdmin.ts)
- * remontent en premier, puis le reste de l'activité 7j triée par la RPC.
+ * écriture possible depuis cette section). Les lignes en alerte remontent en
+ * premier, puis le reste de l'activité 7j triée par la RPC.
  * `insufficient_privilege` (non-admin) est déjà réduit à un tableau vide par
  * `getDeletionActivity` — inatteignable en pratique ici puisque l'écran
  * entier est déjà gaté par `isVaultAdmin()`, mais ça revient bien à "ne rien
  * montrer" plutôt qu'à planter.
+ *
+ * Les alertes elles-mêmes passent par `reconcileDeletionAlerts`
+ * (vaultAdmin.ts), pas par un simple `deletionAlertLevel(row)` par ligne
+ * live : ce dernier redevient `null` dès que la fenêtre glissante 15 min/24h
+ * repasse sous le seuil, ce qui éteignait le redflag tout seul sans
+ * acquittement. Le registre persisté garde l'alerte active — y compris pour
+ * un utilisateur qui a depuis disparu des 7 jours renvoyés par la RPC —
+ * jusqu'à acquittement explicite.
  */
 function DeletionActivityTab() {
   const [phase, setPhase] = useState<DeletionActivityPhase>({ kind: 'loading' });
-  // Incrémenté après un acquittement pour forcer un nouveau rendu : l'état
-  // acquitté vit en localStorage (vaultAdmin.ts), pas en state React.
-  const [ackVersion, setAckVersion] = useState(0);
 
   const loadActivity = useCallback(async () => {
     setPhase({ kind: 'loading' });
     try {
       const rows = await getDeletionActivity();
-      setPhase({ kind: 'loaded', rows });
+      setPhase({ kind: 'loaded', rows, alerts: reconcileDeletionAlerts(rows) });
     } catch (err) {
       setPhase({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
@@ -1712,7 +1716,10 @@ function DeletionActivityTab() {
 
   function handleAcknowledge(row: DeletionActivityRow) {
     acknowledgeDeletionAlert(row);
-    setAckVersion((v) => v + 1);
+    // Recalcul purement local (pas de nouvel appel RPC) : l'acquittement vit
+    // en localStorage, `reconcileDeletionAlerts` sur les mêmes lignes suffit
+    // à refléter le nouvel état.
+    setPhase((prev) => (prev.kind === 'loaded' ? { ...prev, alerts: reconcileDeletionAlerts(prev.rows) } : prev));
   }
 
   if (phase.kind === 'loading') {
@@ -1721,31 +1728,47 @@ function DeletionActivityTab() {
   if (phase.kind === 'error') {
     return <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {phase.message}</p>;
   }
-  if (phase.rows.length === 0) {
+  if (phase.rows.length === 0 && phase.alerts.length === 0) {
     return <p style={{ fontSize: 13, color: textA(0.55) }}>Aucune suppression sur les 7 derniers jours.</p>;
   }
 
-  const withLevel = phase.rows.map((row) => ({ row, level: deletionAlertLevel(row) }));
-  const alerting = withLevel.filter((r) => r.level !== null);
-  const normal = withLevel.filter((r) => r.level === null);
+  const { rows, alerts } = phase;
+  const alertUserIds = new Set(alerts.map((a) => a.row.user_id));
+  const normalRows = rows.filter((r) => !alertUserIds.has(r.user_id));
+  // Non acquittées d'abord — ce sont celles qui exigent encore un regard.
+  const sortedAlerts = [...alerts].sort((a, b) => Number(a.acknowledged) - Number(b.acknowledged));
 
   return (
-    <div key={ackVersion} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {alerting.length > 0 && (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {alerts.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <p style={eyebrowStyle}>En alerte</p>
-          {alerting.map(({ row, level }) => (
-            <DeletionActivityRowCard key={row.user_id} row={row} level={level} onAcknowledge={handleAcknowledge} />
+          {sortedAlerts.map(({ row, level, acknowledged }) => (
+            <DeletionActivityRowCard
+              key={row.user_id}
+              row={row}
+              level={level}
+              acknowledged={acknowledged}
+              onAcknowledge={handleAcknowledge}
+            />
           ))}
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <p style={eyebrowStyle}>Activité 7 jours</p>
-        {normal.length === 0 ? (
-          <p style={{ fontSize: 13, color: textA(0.55) }}>Rien en dehors des alertes ci-dessus.</p>
+        {normalRows.length === 0 ? (
+          <p style={{ fontSize: 13, color: textA(0.55) }}>
+            {alerts.length > 0 ? 'Rien en dehors des alertes ci-dessus.' : 'Aucune suppression sur les 7 derniers jours.'}
+          </p>
         ) : (
-          normal.map(({ row }) => (
-            <DeletionActivityRowCard key={row.user_id} row={row} level={null} onAcknowledge={handleAcknowledge} />
+          normalRows.map((row) => (
+            <DeletionActivityRowCard
+              key={row.user_id}
+              row={row}
+              level={null}
+              acknowledged={false}
+              onAcknowledge={handleAcknowledge}
+            />
           ))
         )}
       </div>
@@ -1756,13 +1779,14 @@ function DeletionActivityTab() {
 function DeletionActivityRowCard({
   row,
   level,
+  acknowledged,
   onAcknowledge,
 }: {
   row: DeletionActivityRow;
   level: DeletionAlertLevel | null;
+  acknowledged: boolean;
   onAcknowledge: (row: DeletionActivityRow) => void;
 }) {
-  const acknowledged = level !== null && isDeletionAlertAcknowledged(row);
   const tableEntries = Object.entries(row.tables_24h ?? {});
 
   return (
