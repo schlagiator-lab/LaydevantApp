@@ -413,17 +413,28 @@ export interface DeletionActivityRow {
   auteur: string;
   role: string;
   last_15min: number;
+  /** Pic de suppressions sur une fenêtre de 15 min, sur toute la période de
+   * 90 jours renvoyée par la RPC (v3) — remplace `max_burst_24h` : une
+   * rafale ancienne ne doit pas se perdre dans une fenêtre glissante courte. */
+  max_burst: number;
+  /** Horodatage du pic ci-dessus — sert à afficher "rafale le [date]" pour
+   * une rafale passée (§ affichage, DeletionActivityRowCard). */
+  burst_at: string;
   last_24h: number;
   last_7d: number;
+  /** Total sur les 90 jours de la fenêtre RPC — profondeur de l'activité,
+   * affiché tel quel, n'entre dans aucun seuil d'alerte. */
+  total_90j: number;
   derniere_suppression: string;
-  /** Compte par table sur 24h, ex. `{ dossier_photos: 12, dossier_notes: 3 }`. */
-  tables_24h: Record<string, number>;
+  /** Compte par table sur 90 jours, ex. `{ dossier_photos: 12, dossier_notes: 3 }`.
+   * Remplace `tables_24h` (RPC v3). */
+  tables_90j: Record<string, number>;
 }
 
 /**
  * Alerte admin de suppression massive : une ligne par utilisateur ayant
- * supprimé quelque chose sur les 7 derniers jours (RPC `get_deletion_activity`,
- * `SECURITY DEFINER`, déjà en place côté base). `insufficient_privilege`
+ * supprimé quelque chose sur les 90 derniers jours (RPC `get_deletion_activity`
+ * v3, `SECURITY DEFINER`, déjà en place côté base). `insufficient_privilege`
  * (42501, non-admin) est traité comme "rien à montrer", même convention que
  * `listDeletionRequests`/`listPendingEquipmentRequests` plus haut — pas un
  * plantage. En pratique inatteignable depuis l'onglet admin (déjà gaté par
@@ -445,7 +456,7 @@ export async function getDeletionActivity(): Promise<DeletionActivityRow[]> {
  * données de préprod non représentatives ; à recalibrer une fois un vrai
  * volume de suppressions observé en prod.
  */
-export const SEUIL_RAFALE = 8; // last_15min : rafale en cours, urgent
+export const SEUIL_RAFALE = 8; // max_burst : rafale (en cours ou passée, peu importe quand)
 export const SEUIL_CUMUL = 25; // last_24h : cumul à vérifier
 
 export type DeletionAlertLevel = 'rafale' | 'cumul';
@@ -453,102 +464,146 @@ export type DeletionAlertLevel = 'rafale' | 'cumul';
 /**
  * Niveau d'alerte d'une ligne, ou `null` si sous les deux seuils. "rafale"
  * prioritaire sur "cumul" quand les deux sont dépassés à la fois — c'est le
- * signal le plus urgent (activité en cours vs activité déjà passée).
+ * signal le plus urgent. Basé sur `max_burst` (pic sur toute la période de
+ * 90 jours), PAS `last_15min` : une fenêtre courte redescend toujours à zéro
+ * avec le temps, ce qui masquerait une rafale passée non acquittée — voir le
+ * principe de péremption au niveau du module (une alerte ne s'éteint que par
+ * acquittement, jamais par ancienneté). `last_15min` reste utile pour
+ * l'affichage (distinguer rafale en cours / passée, DeletionActivityRowCard),
+ * simplement plus pour la classification.
  */
 export function deletionAlertLevel(row: DeletionActivityRow): DeletionAlertLevel | null {
-  if (row.last_15min >= SEUIL_RAFALE) return 'rafale';
+  if (row.max_burst >= SEUIL_RAFALE) return 'rafale';
   if (row.last_24h >= SEUIL_CUMUL) return 'cumul';
   return null;
 }
 
-const DELETION_ALERT_REGISTRY_KEY = 'laydevant.deletionAlertsRegistry';
+export interface DeletionAlertSnapshot {
+  max_burst: number;
+  last_24h: number;
+  last_7d: number;
+  total_90j: number;
+}
+
+export interface DeletionAlertHistoryRow {
+  id: string;
+  target_user: string;
+  /** Best-effort côté RPC (jointure `profiles` en service_role) ; null si indisponible. */
+  target_nom: string | null;
+  level: DeletionAlertLevel;
+  snapshot: DeletionAlertSnapshot;
+  acknowledged_by: string;
+  ack_nom: string | null;
+  acknowledged_at: string;
+  note: string | null;
+}
+
+/**
+ * Historique des acquittements d'alerte de suppression (RPC
+ * `get_deletion_alert_history`, `SECURITY DEFINER`, admin-only). Même
+ * convention `insufficient_privilege` que `getDeletionActivity` : tableau
+ * vide pour un non-admin plutôt qu'un plantage.
+ */
+export async function getDeletionAlertHistory(limit = 100): Promise<DeletionAlertHistoryRow[]> {
+  const { data, error } = await supabase.rpc('get_deletion_alert_history', { p_limit: limit });
+  if (error) {
+    if (error.code === '42501') return [];
+    throw error;
+  }
+  return (data ?? []) as DeletionAlertHistoryRow[];
+}
+
+/**
+ * Acquitte l'alerte de suppression d'un utilisateur (RPC
+ * `acknowledge_deletion_alert`, `SECURITY DEFINER`, admin-only). Un admin
+ * acquitte l'activité d'un AUTRE utilisateur (`p_target_user`) — c'est le cas
+ * normal, pas la sienne. `p_snapshot` fige les compteurs courants de la ligne
+ * (max_burst/last_24h/last_7d/total_90j) : c'est cet ÉTAT, pas une alerte
+ * abstraite, qui est acquitté (voir `isAlertCoveredByAck` ci-dessous) — une
+ * nouvelle suppression qui fait dépasser ce snapshot rallume l'alerte même
+ * déjà acquittée. `p_note` est facultative.
+ */
+export async function acknowledgeDeletionAlert(
+  row: DeletionActivityRow,
+  level: DeletionAlertLevel,
+  note?: string
+): Promise<void> {
+  const snapshot: DeletionAlertSnapshot = {
+    max_burst: row.max_burst,
+    last_24h: row.last_24h,
+    last_7d: row.last_7d,
+    total_90j: row.total_90j,
+  };
+  const trimmedNote = note?.trim();
+  const { error } = await supabase.rpc('acknowledge_deletion_alert', {
+    p_target_user: row.user_id,
+    p_level: level,
+    p_snapshot: snapshot,
+    p_note: trimmedNote ? trimmedNote : null,
+  });
+  if (error) throw error;
+}
+
+/**
+ * Un acquittement "couvre" la ligne live courante si aucun de ses compteurs
+ * n'a progressé depuis le snapshot figé à l'acquittement — reproduit la
+ * propriété de péremption de l'ancien acquittement local (clé
+ * user_id + valeur de compteur, désormais remplacée par cette table) : une
+ * nouvelle suppression fait remonter l'alerte même si un acquittement plus
+ * ancien existe pour cet utilisateur.
+ */
+function isAlertCoveredByAck(row: DeletionActivityRow, ack: DeletionAlertHistoryRow): boolean {
+  return (
+    row.max_burst <= ack.snapshot.max_burst &&
+    row.last_24h <= ack.snapshot.last_24h &&
+    row.last_7d <= ack.snapshot.last_7d &&
+    row.total_90j <= ack.snapshot.total_90j
+  );
+}
 
 export interface DeletionAlertState {
   row: DeletionActivityRow;
   level: DeletionAlertLevel;
   acknowledged: boolean;
-}
-
-const LEVEL_SEVERITY: Record<DeletionAlertLevel, number> = { cumul: 1, rafale: 2 };
-
-function readAlertRegistry(): Record<string, DeletionAlertState> {
-  try {
-    const raw = localStorage.getItem(DELETION_ALERT_REGISTRY_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, DeletionAlertState>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeAlertRegistry(registry: Record<string, DeletionAlertState>): void {
-  try {
-    localStorage.setItem(DELETION_ALERT_REGISTRY_KEY, JSON.stringify(registry));
-  } catch {
-    // best-effort — stockage plein/indisponible, pas bloquant
-  }
+  /** Dernier acquittement connu pour cet utilisateur, couvrant ou non la ligne live. */
+  lastAck: DeletionAlertHistoryRow | null;
 }
 
 /**
- * Combine l'activité live (fenêtres glissantes 15 min / 24h de la RPC
- * `get_deletion_activity`) avec un registre persistant en localStorage : une
- * alerte déclenchée ne doit JAMAIS s'éteindre toute seule parce que la
- * fenêtre glissante est repassée sous le seuil (ex. rafale de 15 min qui se
- * termine, ou fenêtre 24h qui digère les suppressions) — seul un
- * acquittement explicite (`acknowledgeDeletionAlert`) l'éteint. Garde la pire
- * sévérité vue depuis le dernier acquittement et rafraîchit l'instantané
- * affiché tant que l'incident reste live ; une entrée non acquittée n'est
- * jamais retirée du registre, même si l'utilisateur disparaît des 7 jours
- * d'activité renvoyés par la RPC (pas d'expiration implicite).
+ * Combine l'activité live (`getDeletionActivity`, fenêtre 90 jours, v3) avec
+ * l'historique des acquittements (`getDeletionAlertHistory`) pour déterminer,
+ * pour chaque ligne en alerte, si le dernier acquittement de cet utilisateur
+ * couvre encore l'état courant.
  */
-export function reconcileDeletionAlerts(liveRows: DeletionActivityRow[]): DeletionAlertState[] {
-  const registry = readAlertRegistry();
-  let dirty = false;
-
-  for (const row of liveRows) {
-    const liveLevel = deletionAlertLevel(row);
-    const existing = registry[row.user_id];
-
-    if (liveLevel !== null) {
-      if (!existing || existing.acknowledged || LEVEL_SEVERITY[liveLevel] > LEVEL_SEVERITY[existing.level]) {
-        registry[row.user_id] = { row, level: liveLevel, acknowledged: false };
-      } else {
-        registry[row.user_id] = { ...existing, row };
-      }
-      dirty = true;
-    } else if (existing?.acknowledged) {
-      // Incident résolu (acquitté) et retombé sous les seuils : nettoyage.
-      delete registry[row.user_id];
-      dirty = true;
+export function reconcileDeletionAlerts(
+  liveRows: DeletionActivityRow[],
+  history: DeletionAlertHistoryRow[]
+): DeletionAlertState[] {
+  const latestAckByUser = new Map<string, DeletionAlertHistoryRow>();
+  for (const entry of history) {
+    const current = latestAckByUser.get(entry.target_user);
+    if (!current || entry.acknowledged_at > current.acknowledged_at) {
+      latestAckByUser.set(entry.target_user, entry);
     }
-    // liveLevel === null et existing non acquitté : ne rien toucher, l'alerte reste active.
   }
 
-  if (dirty) writeAlertRegistry(registry);
-
-  return Object.values(registry);
-}
-
-/** Acquittement purement local (pas de table, pas de sync entre appareils) :
- * l'admin a déjà vu cette alerte pour cet utilisateur. La ligne reste
- * visible (badge "vue") tant qu'une nouvelle alerte plus grave ne la
- * remplace pas dans le registre. */
-export function acknowledgeDeletionAlert(row: DeletionActivityRow): void {
-  const registry = readAlertRegistry();
-  const existing = registry[row.user_id];
-  registry[row.user_id] = existing
-    ? { ...existing, acknowledged: true }
-    : { row, level: deletionAlertLevel(row) ?? 'cumul', acknowledged: true };
-  writeAlertRegistry(registry);
+  const alerts: DeletionAlertState[] = [];
+  for (const row of liveRows) {
+    const level = deletionAlertLevel(row);
+    if (level === null) continue;
+    const lastAck = latestAckByUser.get(row.user_id) ?? null;
+    const acknowledged = lastAck !== null && isAlertCoveredByAck(row, lastAck);
+    alerts.push({ row, level, acknowledged, lastAck });
+  }
+  return alerts;
 }
 
 /**
  * Nombre d'alertes actives non acquittées — alimente le flag "Coffre (admin)"
  * de l'accueil, même chemin que les trois autres compteurs (HomeScreen.tsx) :
- * sommée avec eux, best-effort, jamais bloquante pour l'accueil. Passe par
- * `reconcileDeletionAlerts` : persiste tant que non acquitté, indépendamment
- * de la fenêtre glissante de la RPC.
+ * sommée avec eux, best-effort, jamais bloquante pour l'accueil.
  */
 export async function countActiveDeletionAlerts(): Promise<number> {
-  const rows = await getDeletionActivity();
-  return reconcileDeletionAlerts(rows).filter((a) => !a.acknowledged).length;
+  const [rows, history] = await Promise.all([getDeletionActivity(), getDeletionAlertHistory()]);
+  return reconcileDeletionAlerts(rows, history).filter((a) => !a.acknowledged).length;
 }
