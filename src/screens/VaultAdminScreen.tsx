@@ -49,7 +49,7 @@ import { colors, fonts, textA, successA, accentA } from '../styles/tokens';
 
 type Phase = { kind: 'loading' } | { kind: 'checkError'; message: string } | { kind: 'forbidden' } | { kind: 'ready' };
 
-type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding' | 'demandes' | 'suppressions';
+type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding' | 'demandes';
 
 /** Rouge d'alerte "rafale" — même constante que HomeScreen.DANGER (flag
  * "Coffre (admin)"), dupliquée ici plutôt que partagée : pas de module de
@@ -188,8 +188,7 @@ export function VaultAdminScreen() {
               <TabButton label="Accès" active={tab === 'acces'} onClick={() => setTab('acces')} />
               <TabButton label="Rotation" active={tab === 'rotation'} onClick={() => setTab('rotation')} />
               <TabButton label="Onboarding" active={tab === 'onboarding'} onClick={() => setTab('onboarding')} />
-              <TabButton label="Demandes" active={tab === 'demandes'} onClick={() => setTab('demandes')} />
-              <TabButton label="Suppressions" active={tab === 'suppressions'} onClick={() => setTab('suppressions')} />
+              <TabButton label="Notifications" active={tab === 'demandes'} onClick={() => setTab('demandes')} />
             </div>
 
             {tab === 'comptes' && (
@@ -204,7 +203,6 @@ export function VaultAdminScreen() {
             {tab === 'rotation' && <RotationTab />}
             {tab === 'onboarding' && <OnboardingTab />}
             {tab === 'demandes' && <DemandesTab />}
-            {tab === 'suppressions' && <DeletionActivityTab />}
           </div>
         )}
       </div>
@@ -1036,28 +1034,57 @@ type EquipmentRequestsPhase =
   | { kind: 'loaded'; rows: EquipmentRequest[] };
 
 /**
- * Onglet "Demandes" : trois sous-blocs autonomes, chacun avec son propre
+ * Onglet "Notifications" (ex-"Demandes", renommé pour couvrir aussi
+ * l'activité de suppression ci-dessous) : deux flux nettement séparés
+ * visuellement.
+ *
+ * "À traiter" — trois sous-blocs autonomes, chacun avec son propre
  * chargement/état d'erreur/liste — pas d'état partagé, comme
  * AccountsTab/AccessTab sont déjà deux composants séparés. Suppression de
  * dossier (inchangé) d'abord, puis équipement manquant (item 1, morceau 3),
  * puis remontées terrain (canal de remontée général — proposition/bug/autre,
  * table `demandes`, sans rapport avec les deux premiers blocs qui portent
- * sur `dossier_deletion_requests`/`dossier_equipment_requests`).
+ * sur `dossier_deletion_requests`/`dossier_equipment_requests`). Flux
+ * d'ACTION : chaque ligne se résout (approuver/rejeter/traiter).
+ *
+ * "Activité de suppression" — `DeletionActivityTab`, repris tel quel
+ * (anciennement son propre onglet "Suppressions", devenu impossible à
+ * repérer une fois la barre à six onglets sur écran de téléphone). Flux
+ * d'INFORMATION, lecture seule : rien à approuver, seulement à acquitter.
  */
 function DemandesTab() {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <p style={eyebrowStyle}>Suppression de dossier</p>
-        <DeletionRequestsSection />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <p style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>À traiter</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={eyebrowStyle}>Suppression de dossier</p>
+          <DeletionRequestsSection />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={eyebrowStyle}>Équipement manquant</p>
+          <EquipmentRequestsSection />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={eyebrowStyle}>Remontées terrain</p>
+          <RemonteesTerrainSection />
+        </div>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <p style={eyebrowStyle}>Équipement manquant</p>
-        <EquipmentRequestsSection />
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <p style={eyebrowStyle}>Remontées terrain</p>
-        <RemonteesTerrainSection />
+
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          paddingTop: 20,
+          borderTop: `1px solid ${textA(0.12)}`,
+        }}
+      >
+        <p style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>Activité de suppression</p>
+        <p style={{ fontSize: 12.5, color: textA(0.55), lineHeight: 1.4 }}>
+          Information en lecture seule — à surveiller, pas à traiter.
+        </p>
+        <DeletionActivityTab />
       </div>
     </div>
   );
@@ -1649,15 +1676,16 @@ type DeletionActivityPhase =
   | { kind: 'loaded'; rows: DeletionActivityRow[] };
 
 /**
- * Onglet "Suppressions" (alerte admin de suppression massive) : une ligne
- * par utilisateur ayant supprimé quelque chose sur 7 jours
- * (`getDeletionActivity`, lecture seule — aucune écriture possible depuis cet
- * onglet). Les lignes en alerte (seuils `SEUIL_RAFALE`/`SEUIL_CUMUL`,
- * `deletionAlertLevel`, vaultAdmin.ts) remontent en premier, puis le reste de
- * l'activité 7j triée par la RPC. `insufficient_privilege` (non-admin) est
- * déjà réduit à un tableau vide par `getDeletionActivity` — inatteignable en
- * pratique ici puisque l'écran entier est déjà gaté par `isVaultAdmin()`,
- * mais ça revient bien à "ne rien montrer" plutôt qu'à planter.
+ * Section "Activité de suppression" de l'onglet "Notifications" (alerte
+ * admin de suppression massive) : une ligne par utilisateur ayant supprimé
+ * quelque chose sur 7 jours (`getDeletionActivity`, lecture seule — aucune
+ * écriture possible depuis cette section). Les lignes en alerte (seuils
+ * `SEUIL_RAFALE`/`SEUIL_CUMUL`, `deletionAlertLevel`, vaultAdmin.ts)
+ * remontent en premier, puis le reste de l'activité 7j triée par la RPC.
+ * `insufficient_privilege` (non-admin) est déjà réduit à un tableau vide par
+ * `getDeletionActivity` — inatteignable en pratique ici puisque l'écran
+ * entier est déjà gaté par `isVaultAdmin()`, mais ça revient bien à "ne rien
+ * montrer" plutôt qu'à planter.
  */
 function DeletionActivityTab() {
   const [phase, setPhase] = useState<DeletionActivityPhase>({ kind: 'loading' });
