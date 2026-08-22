@@ -407,3 +407,103 @@ export async function deleteAccount(userId: string): Promise<void> {
     throw new Error(message);
   }
 }
+
+export interface DeletionActivityRow {
+  user_id: string;
+  auteur: string;
+  role: string;
+  last_15min: number;
+  last_24h: number;
+  last_7d: number;
+  derniere_suppression: string;
+  /** Compte par table sur 24h, ex. `{ dossier_photos: 12, dossier_notes: 3 }`. */
+  tables_24h: Record<string, number>;
+}
+
+/**
+ * Alerte admin de suppression massive : une ligne par utilisateur ayant
+ * supprimé quelque chose sur les 7 derniers jours (RPC `get_deletion_activity`,
+ * `SECURITY DEFINER`, déjà en place côté base). `insufficient_privilege`
+ * (42501, non-admin) est traité comme "rien à montrer", même convention que
+ * `listDeletionRequests`/`listPendingEquipmentRequests` plus haut — pas un
+ * plantage. En pratique inatteignable depuis l'onglet admin (déjà gaté par
+ * `isVaultAdmin()`), mais utile pour `countActiveDeletionAlerts` ci-dessous,
+ * appelée sans ce pré-check côté accueil.
+ */
+export async function getDeletionActivity(): Promise<DeletionActivityRow[]> {
+  const { data, error } = await supabase.rpc('get_deletion_activity');
+  if (error) {
+    if (error.code === '42501') return [];
+    throw error;
+  }
+  return (data ?? []) as DeletionActivityRow[];
+}
+
+/**
+ * Seuils d'alerte de suppression massive — volontairement côté front,
+ * jamais en base : ajustables sans migration. Provisoires, calibrés sur des
+ * données de préprod non représentatives ; à recalibrer une fois un vrai
+ * volume de suppressions observé en prod.
+ */
+export const SEUIL_RAFALE = 8; // last_15min : rafale en cours, urgent
+export const SEUIL_CUMUL = 25; // last_24h : cumul à vérifier
+
+export type DeletionAlertLevel = 'rafale' | 'cumul';
+
+/**
+ * Niveau d'alerte d'une ligne, ou `null` si sous les deux seuils. "rafale"
+ * prioritaire sur "cumul" quand les deux sont dépassés à la fois — c'est le
+ * signal le plus urgent (activité en cours vs activité déjà passée).
+ */
+export function deletionAlertLevel(row: DeletionActivityRow): DeletionAlertLevel | null {
+  if (row.last_15min >= SEUIL_RAFALE) return 'rafale';
+  if (row.last_24h >= SEUIL_CUMUL) return 'cumul';
+  return null;
+}
+
+const DELETION_ALERT_ACK_KEY = 'laydevant.deletionAlertsAck';
+
+/** Clé composite user_id + valeur de compteur : se périme automatiquement
+ * dès que `last_24h` bouge, donc dès que de nouvelles suppressions arrivent. */
+function deletionAlertAckId(row: DeletionActivityRow): string {
+  return `${row.user_id}:${row.last_24h}`;
+}
+
+function readDeletionAlertAcks(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETION_ALERT_ACK_KEY);
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDeletionAlertAcks(acks: Set<string>): void {
+  try {
+    localStorage.setItem(DELETION_ALERT_ACK_KEY, JSON.stringify([...acks]));
+  } catch {
+    // best-effort — stockage plein/indisponible, pas bloquant
+  }
+}
+
+/** Acquittement purement local (pas de table, pas de sync entre appareils) :
+ * l'admin a déjà vu ce niveau de suppression pour cet utilisateur. */
+export function isDeletionAlertAcknowledged(row: DeletionActivityRow): boolean {
+  return readDeletionAlertAcks().has(deletionAlertAckId(row));
+}
+
+export function acknowledgeDeletionAlert(row: DeletionActivityRow): void {
+  const acks = readDeletionAlertAcks();
+  acks.add(deletionAlertAckId(row));
+  writeDeletionAlertAcks(acks);
+}
+
+/**
+ * Nombre d'alertes actives non acquittées — alimente le flag "Coffre (admin)"
+ * de l'accueil, même chemin que les trois autres compteurs (HomeScreen.tsx) :
+ * sommée avec eux, best-effort, jamais bloquante pour l'accueil.
+ */
+export async function countActiveDeletionAlerts(): Promise<number> {
+  const rows = await getDeletionActivity();
+  return rows.filter((r) => deletionAlertLevel(r) !== null && !isDeletionAlertAcknowledged(r)).length;
+}

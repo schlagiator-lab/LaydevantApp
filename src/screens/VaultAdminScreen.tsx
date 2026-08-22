@@ -16,9 +16,15 @@ import {
   resolveDeletionRequest,
   listPendingEquipmentRequests,
   resolveEquipmentRequest,
+  getDeletionActivity,
+  deletionAlertLevel,
+  isDeletionAlertAcknowledged,
+  acknowledgeDeletionAlert,
   type VaultUserKeySummary,
   type VaultDossierSummary,
   type DossierDeletionRequestSummary,
+  type DeletionActivityRow,
+  type DeletionAlertLevel,
 } from '../lib/vaultAdmin';
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
@@ -43,7 +49,12 @@ import { colors, fonts, textA, successA, accentA } from '../styles/tokens';
 
 type Phase = { kind: 'loading' } | { kind: 'checkError'; message: string } | { kind: 'forbidden' } | { kind: 'ready' };
 
-type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding' | 'demandes';
+type Tab = 'comptes' | 'acces' | 'rotation' | 'onboarding' | 'demandes' | 'suppressions';
+
+/** Rouge d'alerte "rafale" — même constante que HomeScreen.DANGER (flag
+ * "Coffre (admin)"), dupliquée ici plutôt que partagée : pas de module de
+ * tokens communs pour cette couleur, seul `colors.accent` (orange) l'est. */
+const DANGER = '#D14343';
 
 type AccountsPhase =
   | { kind: 'loading' }
@@ -178,6 +189,7 @@ export function VaultAdminScreen() {
               <TabButton label="Rotation" active={tab === 'rotation'} onClick={() => setTab('rotation')} />
               <TabButton label="Onboarding" active={tab === 'onboarding'} onClick={() => setTab('onboarding')} />
               <TabButton label="Demandes" active={tab === 'demandes'} onClick={() => setTab('demandes')} />
+              <TabButton label="Suppressions" active={tab === 'suppressions'} onClick={() => setTab('suppressions')} />
             </div>
 
             {tab === 'comptes' && (
@@ -192,6 +204,7 @@ export function VaultAdminScreen() {
             {tab === 'rotation' && <RotationTab />}
             {tab === 'onboarding' && <OnboardingTab />}
             {tab === 'demandes' && <DemandesTab />}
+            {tab === 'suppressions' && <DeletionActivityTab />}
           </div>
         )}
       </div>
@@ -837,6 +850,19 @@ type InvitationsPhase =
 
 function formatDate(iso: string): string {
   return new Intl.DateTimeFormat('fr-CH', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso));
+}
+
+/** Même formule que CarnetSection.formatDateTime — date + heure, nécessaire
+ * pour `derniere_suppression` (§ alerte suppression massive), contrairement à
+ * `formatDate` ci-dessus qui suffit pour les autres onglets de cet écran. */
+function formatDateTime(iso: string): string {
+  return new Intl.DateTimeFormat('fr-CH', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(iso));
 }
 
 /**
@@ -1615,6 +1641,168 @@ function demandeFilterChipStyle(active: boolean): CSSProperties {
     background: active ? colors.accent : 'transparent',
     color: active ? '#132146' : colors.text,
   };
+}
+
+type DeletionActivityPhase =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'loaded'; rows: DeletionActivityRow[] };
+
+/**
+ * Onglet "Suppressions" (alerte admin de suppression massive) : une ligne
+ * par utilisateur ayant supprimé quelque chose sur 7 jours
+ * (`getDeletionActivity`, lecture seule — aucune écriture possible depuis cet
+ * onglet). Les lignes en alerte (seuils `SEUIL_RAFALE`/`SEUIL_CUMUL`,
+ * `deletionAlertLevel`, vaultAdmin.ts) remontent en premier, puis le reste de
+ * l'activité 7j triée par la RPC. `insufficient_privilege` (non-admin) est
+ * déjà réduit à un tableau vide par `getDeletionActivity` — inatteignable en
+ * pratique ici puisque l'écran entier est déjà gaté par `isVaultAdmin()`,
+ * mais ça revient bien à "ne rien montrer" plutôt qu'à planter.
+ */
+function DeletionActivityTab() {
+  const [phase, setPhase] = useState<DeletionActivityPhase>({ kind: 'loading' });
+  // Incrémenté après un acquittement pour forcer un nouveau rendu : l'état
+  // acquitté vit en localStorage (vaultAdmin.ts), pas en state React.
+  const [ackVersion, setAckVersion] = useState(0);
+
+  const loadActivity = useCallback(async () => {
+    setPhase({ kind: 'loading' });
+    try {
+      const rows = await getDeletionActivity();
+      setPhase({ kind: 'loaded', rows });
+    } catch (err) {
+      setPhase({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }, []);
+
+  useEffect(() => {
+    // Chargement au montage via callback mémoïsée ; setState après await,
+    // pattern voulu dans ce fichier.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadActivity();
+  }, [loadActivity]);
+
+  function handleAcknowledge(row: DeletionActivityRow) {
+    acknowledgeDeletionAlert(row);
+    setAckVersion((v) => v + 1);
+  }
+
+  if (phase.kind === 'loading') {
+    return <p style={{ fontSize: 14, color: textA(0.5), textAlign: 'center', marginTop: 12 }}>Chargement…</p>;
+  }
+  if (phase.kind === 'error') {
+    return <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {phase.message}</p>;
+  }
+  if (phase.rows.length === 0) {
+    return <p style={{ fontSize: 13, color: textA(0.55) }}>Aucune suppression sur les 7 derniers jours.</p>;
+  }
+
+  const withLevel = phase.rows.map((row) => ({ row, level: deletionAlertLevel(row) }));
+  const alerting = withLevel.filter((r) => r.level !== null);
+  const normal = withLevel.filter((r) => r.level === null);
+
+  return (
+    <div key={ackVersion} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {alerting.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p style={eyebrowStyle}>En alerte</p>
+          {alerting.map(({ row, level }) => (
+            <DeletionActivityRowCard key={row.user_id} row={row} level={level} onAcknowledge={handleAcknowledge} />
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p style={eyebrowStyle}>Activité 7 jours</p>
+        {normal.length === 0 ? (
+          <p style={{ fontSize: 13, color: textA(0.55) }}>Rien en dehors des alertes ci-dessus.</p>
+        ) : (
+          normal.map(({ row }) => (
+            <DeletionActivityRowCard key={row.user_id} row={row} level={null} onAcknowledge={handleAcknowledge} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeletionActivityRowCard({
+  row,
+  level,
+  onAcknowledge,
+}: {
+  row: DeletionActivityRow;
+  level: DeletionAlertLevel | null;
+  onAcknowledge: (row: DeletionActivityRow) => void;
+}) {
+  const acknowledged = level !== null && isDeletionAlertAcknowledged(row);
+  const tableEntries = Object.entries(row.tables_24h ?? {});
+
+  return (
+    <div style={accountRowStyle}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, wordBreak: 'break-word' }}>{row.auteur}</div>
+          <div style={{ fontSize: 12, color: textA(0.55), marginTop: 4 }}>
+            {row.role} · dernière suppression le {formatDateTime(row.derniere_suppression)}
+          </div>
+        </div>
+        {level && <DeletionAlertBadge level={level} acknowledged={acknowledged} />}
+      </div>
+
+      {level && (
+        <p style={{ fontSize: 12.5, color: level === 'rafale' ? DANGER : colors.accent, marginTop: 6, lineHeight: 1.4 }}>
+          {level === 'rafale' ? 'Rafale : activité en cours, urgent.' : 'Cumul : à vérifier.'}
+        </p>
+      )}
+
+      <div style={{ fontSize: 12.5, color: textA(0.7), marginTop: 8 }}>
+        {row.last_15min} sur 15 min · {row.last_24h} sur 24 h · {row.last_7d} sur 7 j
+      </div>
+
+      {tableEntries.length > 0 && (
+        <div style={{ fontSize: 12, color: textA(0.55), marginTop: 6, lineHeight: 1.5 }}>
+          {tableEntries.map(([table, count]) => `${table} (${count})`).join(' · ')}
+        </div>
+      )}
+
+      {level && !acknowledged && (
+        <button type="button" onClick={() => onAcknowledge(row)} style={{ ...activateButtonStyle, marginTop: 10 }}>
+          Marquer comme vue
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Même formule visuelle que `DemandeStatutBadge` (dot + pill) — pas de
+ * composant partagé, seule la palette est commune, cf. commentaire de
+ * `DemandeStatutBadge` plus bas. */
+function DeletionAlertBadge({ level, acknowledged }: { level: DeletionAlertLevel; acknowledged: boolean }) {
+  if (acknowledged) {
+    return <StatusChip label={level === 'rafale' ? 'Rafale · vue' : 'Cumul · vue'} kind="success" />;
+  }
+  const color = level === 'rafale' ? DANGER : colors.accent;
+  const background = level === 'rafale' ? 'rgba(209, 67, 67, 0.18)' : accentA(0.18);
+  return (
+    <span
+      style={{
+        flex: 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 9px',
+        borderRadius: 100,
+        background,
+        color,
+        fontSize: 11.5,
+        fontWeight: 700,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      {level === 'rafale' ? 'Rafale' : 'Cumul'}
+    </span>
+  );
 }
 
 /** Même formule 3 états que le badge de statut côté monteur (DemandesScreen) —
