@@ -117,19 +117,10 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
   (redflag + annonces dans le coffre admin), pas de dépendance à un fournisseur
   externe type Brevo.
 - **Ingestion n8n (écrit dans R2)** : formulaire, webhook `ingest-from-url`, lot.
-- **Backup quotidien AUTO-RECENSANT vers R2** : le workflow n8n interroge
-  lui-même `pg_tables` au moment de tourner, toute nouvelle table est
-  sauvegardée par défaut, il n'y a plus de liste blanche à maintenir.
-  Exclusions : `private_config` (config reconstructible, évite le
-  secret-au-repos) et les colonnes GÉNÉRÉES (`documents.search_vector`, qui
-  se recalcule à l'import). Une table = un fichier JSON sous `daily/AAAA-MM-JJ/`,
-  plus un `_manifest.json` listant les tables et leur nombre de lignes (preuve
-  de complétude — on ne valide jamais sur un nœud vert). Rétention 30 jours
-  par règle de cycle de vie R2, pas par purge codée. Run de référence :
-  29 tables, 30 objets.
-- **Schéma versionné dans Git** (`supabase/_schema_snapshot.sql`, instantané
-  de récupération, PAS une migration — ne jamais le rejouer). Modèle de
-  sauvegarde complet : les DONNÉES par n8n vers R2, le SCHÉMA par Git.
+- **Sauvegarde et restauration** : deux moitiés complémentaires (données par
+  n8n vers R2, schéma versionné dans Git), restauration déjà testée avec
+  succès sur une base vierge — voir la section dédiée « Sauvegarde et
+  restauration » plus bas.
 - **Soft delete (corbeille)** sur les tables enfant du dossier. **Exceptions** :
   `dossier_documents` et `vault_files` (hard delete assumé).
 - **Mini-jeu Tetris + classement + bruitages + mode duo en ligne** : sections dédiées.
@@ -190,6 +181,53 @@ du dossier (chiffrement des octets bruts, pas `wrapKey`). Rotation ne ré-emball
 les FEK (jamais les octets R2), dans la transaction de `rotate_vault_secret`. Table
 `vault_files`, **hard delete**. Harnais `vault.js` : 30/30. Ne jamais modifier
 `vault.js` sans relancer le harnais.
+
+---
+
+## Sauvegarde et restauration
+
+Le modèle repose sur **deux moitiés complémentaires, aucune ne suffit seule** :
+
+- **DONNÉES** : workflow n8n auto-recensant vers Cloudflare R2. Interroge
+  lui-même `pg_tables` à chaque exécution, donc toute nouvelle table est
+  sauvegardée par défaut — il n'y a plus de liste blanche à maintenir.
+  Exclusions : la table `private_config` et les colonnes générées
+  (`documents.search_vector`). Une table = un fichier JSON sous
+  `daily/AAAA-MM-JJ/`, plus un `_manifest.json` portant `table_count` ET
+  `uploaded_count` (preuve que les uploads ont eu lieu).
+- **SCHÉMA** : `supabase/_schema_snapshot.sql`, versionné dans Git. Instantané
+  de récupération, **PAS une migration** — ne jamais le rejouer.
+
+**Rétention hiérarchique**, par règles de cycle de vie R2 (pas de purge
+codée) :
+
+- `daily/` : 30 jours.
+- `monthly/` : 365 jours, archive du 1er de chaque mois (copie du quotidien du
+  jour, via download+upload car le nœud S3 « copy » ne sait pas écrire dans un
+  sous-dossier R2).
+
+Les deux chaînes vivent dans le **même workflow n8n** : un seul interrupteur
+Active les coupe toutes les deux — point de vigilance.
+
+**Prérequis d'infrastructure** (sans quoi le backup ÉCHOUE) — dans
+`/docker/n8n/docker-compose.yml`, service n8n :
+
+```
+N8N_RUNNERS_MAX_OLD_SPACE_SIZE=1024
+N8N_RUNNERS_TASK_TIMEOUT=300
+```
+
+Sans cela, le task runner meurt sur `documents.json` (~65 Mo) avec l'erreur
+« runner became unresponsive ».
+
+**RESTAURATION TESTÉE le 22 août 2026** sur un projet Supabase vierge :
+29/29 tables sauvegardées restaurées à l'identique, coffre compris
+(`vault_user_keys`, `vault_dossier_access`, `vault_secrets`). Procédure
+complète et pièges dans `tools/README.md` (script : `tools/restore.js`).
+
+**Hors périmètre de la sauvegarde** : les octets binaires sur R2 (PDF,
+photos, fichiers du coffre) — seul le **catalogue** est sauvegardé, pas les
+fichiers.
 
 ---
 
@@ -277,6 +315,14 @@ cumulatif, seed partagé).
 - **Volumétrie backup à surveiller** : ~65 Mo/jour (dont `documents.content`), soit
   ~1,9 Go à 30 jours sur 10 Go R2 partagés avec `laydevant-photos`. Levier si ça
   serre : cesser de sauvegarder `documents.content` (ré-extractible depuis les PDF).
+- **Versioning R2 non activé** : une suppression accidentelle d'objet est
+  définitive (les octets ne sont pas sauvegardés, seulement le catalogue).
+- **Copie hebdomadaire hors Cloudflare à mettre en place** sur le serveur de
+  l'entreprise : aujourd'hui `daily/` et `monthly/` dépendent du même
+  fournisseur.
+- **`tools/restore.js` déduit le type des colonnes d'après la valeur**, ce qui
+  ne peut pas être correct à la fois pour `text[]` et pour `jsonb` contenant un
+  tableau. Correctif si besoin : lire `information_schema.columns`.
 - **Cache offline — Galerie, Plans, fichiers du coffre, annotation photo** : online-only.
 - **Communication d'entreprise — aperçu offline** : online-only (placeholder).
 - **Garde-fou « PDF trop détaillé » sur les fichiers du coffre** : non appliqué.
@@ -315,6 +361,13 @@ cumulatif, seed partagé).
   pipeline externe.)
 - **Vérifier l'INPUT réel d'un nœud n8n avant de conclure** : un nœud vert peut
   servir un résultat épinglé/en cache et masquer que la correction n'a pas pris.
+- **`auth.users` n'est PAS dans la sauvegarde** : les comptes doivent être
+  recréés avec leurs UUID d'origine AVANT toute injection, sinon toutes les FK
+  échouent. C'est l'étape que personne n'anticipe.
+- **Une table auto-référencée (`specialties.parent_id`) exige une insertion en
+  deux passes.**
+- **Un backup jamais restauré est une hypothèse, pas une garantie** : le test
+  réel a révélé trois problèmes bloquants invisibles à l'écriture.
 
 ---
 
