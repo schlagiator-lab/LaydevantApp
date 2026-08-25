@@ -6,7 +6,7 @@ chaque avancée (pas complété) : une dette réglée en disparaît, une feature
 passe en « fonctionne ». Pour le POURQUOI d'une décision, voir les HANDOFF datés
 (l'archive). Pour la spec technique de Claude Code, voir `CLAUDE.md` (le repo).
 
-À jour au 22 août 2026.
+À jour au 21 août 2026.
 
 ---
 
@@ -33,6 +33,12 @@ patienter le monteur pendant que **trois moteurs de recherche web** cherchent en
 parallèle et qu'un **juge LLM** tranche. Corollaire côté recherche INTERNE : où que
 l'on se trouve dans l'app, une recherche par texte couvre toute la base et matche
 marque comme modèle.
+
+**Philosophie de l'enrichissement** : un monteur est jugé compétent pour décider
+qu'une notice mérite d'entrer en base. Il le fait déjà seul depuis la recherche web
+(capture → base, sans admin). Corollaire appliqué à la notice terrain : **s'il a
+déjà la doc en main, il l'ajoute directement** ; l'admin n'intervient que quand la
+doc manque — c.-à-d. quand il faut **trouver l'introuvable**, sa vraie valeur.
 
 **Où vivent les fichiers (règle d'or depuis la migration R2)** : TOUT le binaire
 lourd — **PDF de la bibliothèque**, photos du carnet, galerie, plans,
@@ -81,7 +87,7 @@ zero-knowledge, comme les notes. Détail en section dédiée.
 - **Dépôt** : GitHub `schlagiator-lab/LaydevantApp` (privé), dev en Codespaces.
 
 **Clés API** : Publishable key Supabase (publique) côté front + Worker ; Secret key
-(`sb_secret_`) côté `enroll` et n8n. Credential R2 S3 (endpoint sans nom de bucket,
+(`sb_secret_`) côté Edge Functions et n8n. Credential R2 S3 (endpoint sans nom de bucket,
 `Force Path Style: ON`, région `auto`). Côté recherche web : Serper, Gemini, Perplexity
 et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les exports.
 
@@ -100,11 +106,20 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
   validation-avant-juge)** : architecture asynchrone à un seul webhook. Section dédiée.
 - **Dossiers clients** : rattachement d'ÉQUIPEMENTS, remontée auto des notices via
   `products` (+ docs de marque via `brand`). Sections accordéon.
-- **Équipement manuel → demande admin** : déclaration d'un équipement absent, badge
-  « en attente », résolution admin (`resolve_dossier_equipment_request`).
+- **Notice terrain — deux chemins (direct vs demande)** : à la déclaration d'un
+  équipement absent, si le monteur **joint la doc + choisit une spécialité**, l'ajout
+  en base est **DIRECT** (produit créé + notice ingérée, sans admin) ; **sans doc**,
+  c'est une **demande admin** (badge « en attente »), l'admin trouve la notice puis la
+  **promeut**. Section dédiée.
+- **Ajouter une notice hors dossier (catalogue)** : sous-menu de l'onglet Outils. Le
+  monteur retrouve le même formulaire que « équipement absent » (marque, modèle,
+  spécialité, type, PDF **obligatoire**) mais **sans rattachement à un dossier** : la
+  notice entre dans `documents` via le produit et **remonte partout** où un dossier
+  porte ce produit. Section dédiée.
 - **Coffre de données sensibles** : chiffrement par dossier (zero-knowledge,
-  WebCrypto). Notes ET **fichiers chiffrés**. Récupération par ré-enrôlement, deux
-  admins-récupérateurs.
+  WebCrypto). Notes ET **fichiers chiffrés**. **Récupération par ré-enrôlement**
+  (le monteur repart d'une paire neuve en **libre-service**, un admin **répare
+  l'accès**), deux admins-récupérateurs. Section dédiée.
 - **Communication d'entreprise** : espace GLOBAL de diffusion de PDF par
   publisher/admin. Ouverture in-app (viewer partagé).
 - **Carnet public** (notes + photos par dossier) : en clair, RLS « tout authentifié
@@ -112,17 +127,12 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
 - **Annotation de photos du carnet — non destructive** : calque vectoriel
   rééditable, 4 outils, rendu partout, export image à la demande.
 - **Galerie photo, Plans de dossier, Onboarding par liste blanche**.
-- **Pas de canal email (décision prise)** : onboarding géré au cas par cas (petit
-  groupe, pas de round-trip email) ; alerte de suppression en masse gérée IN-APP
-  (redflag + annonces dans le coffre admin), pas de dépendance à un fournisseur
-  externe type Brevo.
-- **Ingestion n8n (écrit dans R2)** : formulaire, webhook `ingest-from-url`, lot.
-- **Sauvegarde et restauration** : deux moitiés complémentaires (données par
-  n8n vers R2, schéma versionné dans Git), restauration déjà testée avec
-  succès sur une base vierge — voir la section dédiée « Sauvegarde et
-  restauration » plus bas.
+- **Ingestion n8n (écrit dans R2)** : formulaire, webhook `ingest-from-url`, lot,
+  **promotion de notice de staging** (`promote-equipment-notice`, section dédiée).
+- **Backup quotidien** : export JSON n8n vers R2.
 - **Soft delete (corbeille)** sur les tables enfant du dossier. **Exceptions** :
-  `dossier_documents` et `vault_files` (hard delete assumé).
+  `dossier_documents`, `vault_files`, `dossier_equipment_request_files` (hard delete
+  assumé — staging).
 - **Mini-jeu Tetris + classement + bruitages + mode duo en ligne** : sections dédiées.
 
 ---
@@ -172,6 +182,126 @@ Vidéos (`type:'video'`) affichées **en bas**, ouverture externe, **non captura
 
 ---
 
+## Notice terrain — deux chemins (direct vs demande)
+
+Point d'entrée unique : la déclaration d'un **équipement absent** de la base depuis
+la fiche dossier (`EquipmentRequestSheet.tsx`). À partir de là, **bifurcation selon
+qu'une doc est jointe** — le seul apport que l'admin fournissait dans le flux demande
+était la spécialité, donc dès que le monteur la donne, l'admin n'a plus de valeur.
+
+**Chemin DIRECT (doc en main + spécialité) — pas d'admin, comme une capture web.**
+Le monteur joint un PDF, choisit un **type de doc** et une **spécialité** (select porté
+du côté admin, même référentiel `getLocalDepartments`/`getLocalSpecialties` en IndexedDB,
+`optgroup` par département). Le PDF est uploadé en **staging** R2 (`equipment-requests/`),
+puis :
+1. **RPC `upsert_dossier_product(dossier_id, specialty_id, brand, model) → product_id`**
+   (SECURITY DEFINER, gate = **authentifié**) : crée/réutilise le produit (anti-doublon
+   `lower(brand)/lower(model)`) et le rattache au dossier (résurrection soft-delete).
+   Elle contourne la RLS car **`products` est admin-only en écriture** — c'est
+   exactement ce que fait n8n pour le flux web. L'équipement apparaît **tout de suite**
+   (même contrat `onAdded → loadEquipments`, refetch complet).
+2. **Edge Function `add-dossier-equipment-notice`** (gate = authentifié) : appelle la
+   RPC (client scopé utilisateur), puis relaie le **workflow n8n de promotion** ; si un
+   `request_id` est fourni (doc jointe à une demande déjà ouverte), **ferme la demande**
+   (service_role : `status='approved'`, `resolved_product_id`). La notice remonte
+   quelques secondes après, via `product_id`. **Aucune demande créée** dans le cas nominal.
+
+**Chemin DEMANDE (pas de doc) — l'admin trouve l'introuvable, puis promeut.**
+`dossier_equipment_requests` (badge « en attente »), résolue par
+**`resolve_dossier_equipment_request(request_id, specialty_id, approve)`** (SECURITY
+DEFINER, admin) : crée/réutilise le produit + le rattache + pose `resolved_product_id`.
+Des **notices peuvent être jointes** à une demande (`dossier_equipment_request_files`,
+staging R2, consultables tout de suite via `<PdfViewer>`). L'admin **promeut** une
+notice jointe via **Edge Function `promote-equipment-notice`** (gate = **admin**),
+qui relaie le même workflow n8n et écrit l'ancre d'idempotence `promoted_document_id`.
+
+**Le workflow n8n de promotion est PARTAGÉ** (`promote-equipment-notice`, Header Auth) :
+télécharge le PDF depuis R2 `equipment-requests/` → extrait le texte → **re-upload vers
+`documents/`** → insert `documents` lié au `product_id`. (Le download est imposé par
+l'extraction du texte ; une fois les octets en main, le re-upload clone le nœud d'upload
+de `ingest-from-url` — pas de CopyObject séparé.) `documents.search_vector` étant
+**générée** (`documents_tsv(title, tags, content)`), n8n n'insère que `content` — le
+plein-texte se calcule seul. `documents` porte `brand` mais **pas** `model` (le modèle
+vit sur `products`), et le lien de remontée est **`product_id`** (jamais un match texte).
+
+Modèle de données :
+- **`dossier_equipment_requests`** : la demande (marque, modèle, commentaire, status,
+  `resolved_product_id`, `specialty_id`). RLS : SELECT `true`, INSERT `requested_by =
+  auth.uid()` ; seul le RPC écrit le reste.
+- **`dossier_equipment_request_files`** (enfant) : notices jointes en staging
+  (`storage_provider 'r2'`, `storage_key`, `nom_fichier`, `mime`, `taille`,
+  `doc_type_suggere`, `auteur`, `promoted_document_id`). RLS : SELECT `true`,
+  INSERT `auteur = auth.uid()`, DELETE `auteur OR is_vault_admin()`. **Hard delete**.
+
+Deux Edge Functions sœurs, deux gates distincts (pas de mode unique surchargé) :
+`promote-equipment-notice` (admin) pour le chemin demande, `add-dossier-equipment-notice`
+(authentifié) pour le direct. Toutes deux relaient le même webhook n8n via
+`N8N_PROMOTE_URL`/`N8N_HEADER_AUTH_*`.
+
+**Chemin CATALOGUE (hors dossier) — sous-menu « Ajouter une notice » de l'onglet Outils.**
+Même formulaire que le direct, mais **aucun dossier** : le seul rôle du dossier dans le
+direct était le rattachement `dossier_produits` ; tout le reste (staging
+`equipment-requests/`, workflow n8n de promotion, insert `documents` lié par
+`product_id`) est déjà dossier-agnostique. On retire donc juste le rattachement.
+- **RPC `upsert_product_standalone(specialty_id, brand, model) → product_id`** (SECURITY
+  DEFINER, gate authentifié) : clone `upsert_dossier_product` **sans** l'INSERT
+  `dossier_produits`. `products` n'a pas de `deleted_at` → aucune résurrection à gérer,
+  RPC plus simple. Anti-doublon `(specialty_id, lower(brand), lower(model))`.
+- **Edge Function `add-catalog-notice`** (gate authentifié, sœur de
+  `add-dossier-equipment-notice`) : appelle la RPC (client scopé user), relaie le **même**
+  webhook n8n de promotion, **même payload**. Pas de `service_role`, pas de demande à
+  fermer. **Fichier obligatoire** (le fallback « demande admin » n'a pas de sens hors dossier).
+- Le PDF transite par le **même staging `equipment-requests/`** (contrainte de préfixe
+  conservée = garde-fou contre un `storage_key` arbitraire). n8n et Worker **inchangés**.
+La notice ajoutée remonte dans la recherche et dans tout dossier futur portant le produit.
+
+---
+
+## Coffre — récupération par ré-enrôlement (libre-service)
+
+Le contenu d'un coffre n'est **jamais chiffré pour le seul monteur** : chaque DEK est
+aussi emballée vers les **deux admins-récupérateurs**. Un monteur qui perd son mot de
+passe **et** sa clé de récupération ne perd donc que **son chemin d'accès** (sa clé
+privée RSA), jamais le contenu.
+
+**Un « reset de mot de passe » classique est impossible** — et c'est voulu : changer le
+mot de passe d'une clé privée existante exige de la **déverrouiller** d'abord (mot de
+passe OU clé de récup), ce que le monteur n'a plus. La primitive correcte est le
+**ré-enrôlement** : repartir d'une **paire neuve** + un **nouveau mot de passe**
+(l'ancienne paire est jetée, elle ne sert plus), puis un admin **répare l'accès** (geste
+existant : ré-emballe les DEK vers la nouvelle clé publique).
+
+Mécanisme (accessible en **libre-service** depuis l'écran de déverrouillage, lien
+« Mot de passe et clé de récupération perdus ? ») :
+- **RPC `reenroll_vault_user(...8 params crypto...)`** (SECURITY DEFINER) : **remplace
+  la paire** dans `vault_user_keys` (sans toucher `access_enabled`, gelé par le trigger
+  `vault_user_keys_guard` pour un non-admin) et **purge les lignes `vault_dossier_access`**
+  du monteur (les DEK emballées vers l'ancienne clé, devenues illisibles). Elle **refuse
+  un `is_recovery_admin`**. Réutilise 100 % de la crypto de l'enrôlement monteur
+  (`createUserKeys`) ; persiste via la RPC, **jamais** via `submitVaultEnrollment`
+  (INSERT → conflit PK).
+- Le ré-enrôlé retombe alors dans l'état **« apprenti sans accès »** — un état que l'UI
+  gère déjà. Puis « Réparer l'accès » (`upsertDossierAccessRow`, upsert PK
+  `(dossier_id, user_id)`) ré-octroie sur la nouvelle clé. Les **FEK** des fichiers,
+  emballées sous la DEK (pas sous la clé du monteur), redeviennent lisibles sans autre
+  geste.
+
+**Garde récupérateur à deux niveaux** : la RPC refuse un récupérateur (base) **et** le
+lien est masqué pour lui côté UI (`vault?.is_recovery_admin`, comme `AccountsTab`). Un
+récupérateur qui s'auto-ré-enrôlerait invaliderait sa clé papier et pourrait casser la
+récupération globale ; sa voie reste le **break-glass mutuel**.
+
+**Sonde d'existence — `dossier_has_vault(dossier_id) → boolean`** (SECURITY DEFINER) :
+le pré-check d'ouverture (`VaultSheet`) distinguait mal « coffre absent » de « coffre
+présent mais masqué faute d'accès » — les deux rendent `null` via la RLS SELECT de
+`vault_secrets` (`has_dossier_vault_access(...)`). La sonde répond à l'**existence** sans
+exiger l'accès (jamais un octet de contenu). Le pré-check est désormais à **4 étages** :
+`hasVaultAccess` (global) → **`dossierHasVault`** (existence) → `getOwnDossierAccess`
+(ma ligne) → `getVaultSecret` (déverrouillage). Un ré-enrôlé sans accès voit le message
+actionnable « contacte un administrateur », plus jamais « coffre vide ».
+
+---
+
 ## Coffre — fichiers chiffrés (modèle enveloppe FEK)
 
 [inchangé — voir HANDOFF_coffre_fichiers_chiffres.md]
@@ -181,53 +311,6 @@ du dossier (chiffrement des octets bruts, pas `wrapKey`). Rotation ne ré-emball
 les FEK (jamais les octets R2), dans la transaction de `rotate_vault_secret`. Table
 `vault_files`, **hard delete**. Harnais `vault.js` : 30/30. Ne jamais modifier
 `vault.js` sans relancer le harnais.
-
----
-
-## Sauvegarde et restauration
-
-Le modèle repose sur **deux moitiés complémentaires, aucune ne suffit seule** :
-
-- **DONNÉES** : workflow n8n auto-recensant vers Cloudflare R2. Interroge
-  lui-même `pg_tables` à chaque exécution, donc toute nouvelle table est
-  sauvegardée par défaut — il n'y a plus de liste blanche à maintenir.
-  Exclusions : la table `private_config` et les colonnes générées
-  (`documents.search_vector`). Une table = un fichier JSON sous
-  `daily/AAAA-MM-JJ/`, plus un `_manifest.json` portant `table_count` ET
-  `uploaded_count` (preuve que les uploads ont eu lieu).
-- **SCHÉMA** : `supabase/_schema_snapshot.sql`, versionné dans Git. Instantané
-  de récupération, **PAS une migration** — ne jamais le rejouer.
-
-**Rétention hiérarchique**, par règles de cycle de vie R2 (pas de purge
-codée) :
-
-- `daily/` : 30 jours.
-- `monthly/` : 365 jours, archive du 1er de chaque mois (copie du quotidien du
-  jour, via download+upload car le nœud S3 « copy » ne sait pas écrire dans un
-  sous-dossier R2).
-
-Les deux chaînes vivent dans le **même workflow n8n** : un seul interrupteur
-Active les coupe toutes les deux — point de vigilance.
-
-**Prérequis d'infrastructure** (sans quoi le backup ÉCHOUE) — dans
-`/docker/n8n/docker-compose.yml`, service n8n :
-
-```
-N8N_RUNNERS_MAX_OLD_SPACE_SIZE=1024
-N8N_RUNNERS_TASK_TIMEOUT=300
-```
-
-Sans cela, le task runner meurt sur `documents.json` (~65 Mo) avec l'erreur
-« runner became unresponsive ».
-
-**RESTAURATION TESTÉE le 22 août 2026** sur un projet Supabase vierge :
-29/29 tables sauvegardées restaurées à l'identique, coffre compris
-(`vault_user_keys`, `vault_dossier_access`, `vault_secrets`). Procédure
-complète et pièges dans `tools/README.md` (script : `tools/restore.js`).
-
-**Hors périmètre de la sauvegarde** : les octets binaires sur R2 (PDF,
-photos, fichiers du coffre) — seul le **catalogue** est sauvegardé, pas les
-fichiers.
 
 ---
 
@@ -254,11 +337,30 @@ cumulatif, seed partagé).
 
 ## Conventions vivantes (à respecter à chaque fois)
 
+- **Notice terrain — bifurcation** : **doc jointe + spécialité → ajout DIRECT**
+  (RPC `upsert_dossier_product` + Edge Function `add-dossier-equipment-notice`, gate
+  authentifié) ; **sans doc → demande admin**. La spécialité devient **obligatoire dès
+  qu'une doc est jointe** (le seul apport de l'admin dans ce cas).
+- **`products` est admin-only en écriture (RLS)** : un monteur crée un produit
+  UNIQUEMENT via RPC SECURITY DEFINER (`upsert_dossier_product`), jamais en direct.
+  `dossier_produits` est en revanche `ALL using(true)` (tout authentifié rattache).
+- **Bibliothèque — la notice remonte via `product_id`** (`dossier_documents_complets`,
+  chemin `equipement`), jamais par un match texte marque/modèle. `documents` porte
+  `brand` mais **pas** `model`. `documents.search_vector` est **générée**
+  (`documents_tsv(title, tags, content)`) → n'insérer que `content`/`title`/`tags`.
+- **Promotion de notice — le workflow n8n est partagé** (staging `equipment-requests/`
+  → extract → `documents/` → insert). Download imposé par l'extraction ; pas de
+  CopyObject. `promoted_document_id` = ancre d'idempotence (2e promotion refusée 409).
+- **Coffre — pas de reset de mot de passe** (zero-knowledge) : la récupération, c'est le
+  **ré-enrôlement** (`reenroll_vault_user`, paire neuve + purge accès), suivi de
+  « Réparer l'accès ». Ne jamais persister un ré-enrôlement via `submitVaultEnrollment`
+  (INSERT → conflit PK). Un **récupérateur est exclu** du libre-service (RPC + UI).
+- **Coffre — `dossier_has_vault` distingue « absent » de « masqué »** : pré-check
+  d'ouverture à 4 étages, sinon un ré-enrôlé sans accès voit à tort « coffre vide ».
 - **Recherche web — validation AVANT le juge** : le juge choisit parmi des URL
   **vérifiées** (`link_ok`/`content_type`) et **corroborées** (`engine_count`) ; il
   n'invente/ne modifie JAMAIS une URL ; `content_type` fait autorité sur `is_pdf`.
-  Les vidéos doivent être **incluses explicitement** dans la shortlist (elles ne
-  passent pas le filtre « document »).
+  Les vidéos doivent être **incluses explicitement** dans la shortlist.
 - **Recherche web — grossistes suisses légitimes** (ottofischer/flextron/feller/
   sonepar/eldas), pas des revendeurs à exclure. `link_ok:false` = avertissement doux.
 - **n8n — credential recréé = re-sélectionner sur chaque nœud** (piège de l'id
@@ -266,9 +368,13 @@ cumulatif, seed partagé).
   du nœud, pas par le bandeau « Couldn't connect » du credential (faux positif).
 - **n8n — nœud Anthropic en Header Auth** (`x-api-key` + `anthropic-version` +
   `content-type`), pas le credential natif `anthropicApi`.
+- **n8n — S3 sur R2** : upload OK ; **listing** exige région `auto` (sinon 0 objet
+  silencieux) ; download par clé connue fiable, sinon repli `@aws-sdk/client-s3`
+  GetObject. Nettoyer un `undefined` dans un array de `queryReplacement` (`$N` désaligné) ;
+  filtrer l'octet NUL `\u0000` avant Postgres (08P01).
 - **n8n — nœud Code sandbox** : `URL` **non exposé** (extraire le domaine par regex) ;
-  `this.helpers.httpRequest` disponible (utilisé pour la validation parallèle) ;
-  `Prefer: return=minimal` → 204 → « no items on branch » = **succès**, pas un échec.
+  `this.helpers.httpRequest` disponible ; `Prefer: return=minimal` → 204 → « no items on
+  branch » = **succès**.
 - **Gemini** : `thinkingBudget:0` obligatoire (sinon réponse sans `candidates`) ;
   URL de grounding = redirections `vertexaisearch` à résoudre.
 - **Ouverture PDF = règle de plateforme** ; **pdf.js** = polyfill au démarrage.
@@ -277,9 +383,9 @@ cumulatif, seed partagé).
   file_path` ; toujours un Blob des deux côtés.
 - **Calque d'annotation photo** : `dossier_photos.annotations` = source unique ;
   original R2 jamais touché ; export à la demande, jamais stocké.
-- **Worker `/api/photos`** : POST validé par `GENERIC_PREFIX_RE`/`GLOBAL_PREFIXES` ;
-  GET préfixe-agnostique ; DELETE différencié (`vault/` → accès dossier OU admin ;
-  autres → admin-only).
+- **Worker `/api/photos`** : POST validé par `GENERIC_PREFIX_RE`/`GLOBAL_PREFIXES`
+  (dont **`equipment-requests/`**) ; GET préfixe-agnostique ; DELETE différencié
+  (`vault/` → accès dossier OU admin ; `equipment-requests/` et autres → admin-only).
 - **SOFT-DELETE + policy SELECT `deleted_at IS NULL` = piège 42501** → RPC SECURITY
   DEFINER. `fetch` manuel vers PostgREST à éviter (apikey en header refusée).
 - **Vue avec nouvelle colonne = DROP + CREATE** (+ `security_invoker`, + grant).
@@ -288,7 +394,8 @@ cumulatif, seed partagé).
   (nouvel insert exclut le 999) ; nouvelle spécialité = penser au dropdown n8n.
 - **Credential R2 S3** : endpoint sans bucket, `Force Path Style: ON`, région `auto`.
 - **`auth.uid()` NULL dans le SQL Editor** ; simuler via `set_config('request.jwt.
-  claims', …, true)` dans un même run.
+  claims', …, true)` dans un même run (utile pour tester une RPC SECURITY DEFINER
+  en `begin; … rollback;`).
 - **Edge Function : le push ne déploie PAS** → `npx supabase functions deploy`.
 - **Après un push, fermer/rouvrir la PWA** (cache SW) ; changement SW → rouvrir EN
   LIGNE 1-2×.
@@ -300,29 +407,33 @@ cumulatif, seed partagé).
 
 ## Dettes ouvertes
 
+- **Nettoyage staging `equipment-requests/`** : après copie vers `documents/`, l'objet
+  de staging reste orphelin. Le cleanup DOIT se faire côté **n8n** (DeleteObject R2
+  best-effort en fin du workflow de promotion) — l'Edge Function ne peut pas (DELETE
+  `equipment-requests/` est admin-only côté Worker). Brique dédiée à faire ; négligeable
+  en attendant (R2 10 Go, PDF de notice).
+- **Convergence `resolve_dossier_equipment_request` ↔ `upsert_dossier_product`** : la
+  résolution admin contient une copie inline des étapes produit (créer/réutiliser +
+  rattacher). Refactorer `resolve` pour appeler la RPC, dans une brique isolée avec son
+  test (ne pas mêler risque-sur-du-testé et feature).
 - **Recherche web — contexte du job souvent vide** (`equipment_type`/`department`/
-  `specialty`) : c'est le signal le plus fort du juge contre les homonymes. Vérifier
-  que l'appli remplit et envoie ces champs à l'INSERT. **Meilleur levier qualité restant.**
-- **Recherche web — badge « Vidéo » côté front** : marquage visuel distinct des
-  vidéos (prompt Claude Code fourni), à confirmer déployé.
+  `specialty`) : signal le plus fort du juge contre les homonymes. **Meilleur levier
+  qualité restant.**
+- **Recherche web — badge « Vidéo » côté front** : à confirmer déployé.
 - **Recherche web — nettoyage** : supprimer les colonnes par moteur obsolètes de
-  `web_search_jobs`, supprimer les anciens workflows Anthropic/Perplexity et la clé
+  `web_search_jobs`, débrancher l'ancienne Edge Function `web-search-notices`,
+  supprimer les anciens workflows Anthropic/Perplexity et la clé
   `private_config.n8n_webhook_url_pplx` orpheline.
-- **VÉRIF `dossier_produits`** : confirmer que sa policy SELECT n'est PAS
-  `deleted_at IS NULL` (sinon bug soft-delete/RETURNING latent).
-- **`dossier_documents` sans soft-delete** : seule table enfant (hors coffre) sans
-  `deleted_at`.
-- **Volumétrie backup à surveiller** : ~65 Mo/jour (dont `documents.content`), soit
-  ~1,9 Go à 30 jours sur 10 Go R2 partagés avec `laydevant-photos`. Levier si ça
-  serre : cesser de sauvegarder `documents.content` (ré-extractible depuis les PDF).
-- **Versioning R2 non activé** : une suppression accidentelle d'objet est
-  définitive (les octets ne sont pas sauvegardés, seulement le catalogue).
-- **Copie hebdomadaire hors Cloudflare à mettre en place** sur le serveur de
-  l'entreprise : aujourd'hui `daily/` et `monthly/` dépendent du même
-  fournisseur.
-- **`tools/restore.js` déduit le type des colonnes d'après la valeur**, ce qui
-  ne peut pas être correct à la fois pour `text[]` et pour `jsonb` contenant un
-  tableau. Correctif si besoin : lire `information_schema.columns`.
+- **Canal email (Brevo)** : non câblé. Débloque notif demandes de suppression +
+  d'équipement, confirmation onboarding, alerte suppression en masse.
+- **Alerte suppression en masse** : seuil défini (10/10 min/user), dépend de Brevo.
+- **`dossier_documents` sans soft-delete** : seule table enfant (hors coffre/staging)
+  sans `deleted_at`.
+- **Backup — ajouter les tables récentes** : `web_search_jobs`, **`web_search_results`**,
+  `game_scores`, `duo_matches`, `galerie_items`, `galerie_photos`, `dossier_plans`,
+  `dossier_deletion_requests`, `dossier_equipment_requests`,
+  **`dossier_equipment_request_files`**, `communications`, `vault_files` ; activer
+  Schedule + purge.
 - **Cache offline — Galerie, Plans, fichiers du coffre, annotation photo** : online-only.
 - **Communication d'entreprise — aperçu offline** : online-only (placeholder).
 - **Garde-fou « PDF trop détaillé » sur les fichiers du coffre** : non appliqué.
@@ -331,51 +442,38 @@ cumulatif, seed partagé).
 - **`gol-1-media.bmp`** reste en BMP (non bloquant).
 - **`formatDate` dupliqué** (~4-5 copies) ; **`planLabel` bugué** (coupe au 1er tiret) ;
   **chevrons `goHome` vs `goBack`** à normaliser.
-- **`pg_cron`** installé mais inutilisé.
+- **Comptes de test à supprimer** avant exploitation. **pg_cron** installé mais inutilisé.
 
 ---
 
 ## Prochain chantier
 
-1. **Recherche web — remplir le contexte du job** (`equipment_type`/`department`/
-   `specialty`) côté front : meilleur levier qualité restant contre les homonymes.
-2. **Recherche web — nettoyage staging** : supprimer les colonnes par moteur
-   obsolètes de `web_search_jobs`, les anciens workflows n8n Anthropic/Perplexity,
-   et la clé `private_config.n8n_webhook_url_pplx` orpheline.
-3. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
-4. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
-
----
-
-## Apprentissages
-
-- **Un backup à LISTE BLANCHE dérive fatalement** (`web_search_log` avait été
-  oubliée sans que personne le voie). Un backup AUTO-RECENSANT inverse le mode
-  d'échec : oublier de toucher la liste veut dire « sauvegardé par défaut », pas
-  « perdu silencieusement ».
-- **`chr(0)` est REFUSÉ par Postgres à la construction** (erreur `54000` « null
-  character not permitted ») : un `select chr(0)` échoue seul. Une colonne
-  text/varchar ne PEUT donc pas contenir de NUL — tout assainissement anti-NUL en
-  lecture est inutile et provoque lui-même l'erreur qu'il prétend éviter. (À ne
-  pas confondre avec le `08P01` côté ÉCRITURE, quand des octets viennent d'un
-  pipeline externe.)
-- **Vérifier l'INPUT réel d'un nœud n8n avant de conclure** : un nœud vert peut
-  servir un résultat épinglé/en cache et masquer que la correction n'a pas pris.
-- **`auth.users` n'est PAS dans la sauvegarde** : les comptes doivent être
-  recréés avec leurs UUID d'origine AVANT toute injection, sinon toutes les FK
-  échouent. C'est l'étape que personne n'anticipe.
-- **Une table auto-référencée (`specialties.parent_id`) exige une insertion en
-  deux passes.**
-- **Un backup jamais restauré est une hypothèse, pas une garantie** : le test
-  réel a révélé trois problèmes bloquants invisibles à l'écriture.
+1. **Nettoyage staging + convergence `resolve`** : DeleteObject n8n best-effort dans le
+   workflow de promotion, puis refactor de `resolve_dossier_equipment_request` sur
+   `upsert_dossier_product` (brique isolée, testée).
+2. **Recherche web — remplir le contexte du job** (equipment_type…) côté front, puis
+   **nettoyer** l'ancien chemin (colonnes, Edge Function, workflows, clé orpheline).
+3. **Canal email (Brevo)** : débloque demandes de suppression/équipement, confirmation
+   onboarding, alerte suppression en masse. Le blocage le plus rentable à lever.
+4. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
+5. **Protection des données** : Schedule backup + purge, avec toutes les tables
+   récentes (`web_search_results`, `vault_files`, `dossier_equipment_request_files`,
+   `duo_matches` inclus).
+6. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
 
 ---
 
 ## Où trouver le détail
 
-- **Le pourquoi des décisions** : les HANDOFF datés (archive). Le plus récent :
-  **`HANDOFF_recherche_web_ensemble_juge.md`** (Ensemble Search : 3 moteurs + juge +
-  validation-avant-juge, et le bêtisier — hallucination Gemini, `thinkingBudget:0`,
-  binding Anthropic fantôme, vidéos filtrées avant le juge).
+- **Le pourquoi des décisions** : les HANDOFF datés (archive). Les plus récents :
+  - **`HANDOFF_notice_terrain_demande_vs_direct.md`** (notice terrain : staging R2,
+    promotion admin, puis bascule vers le direct — le pourquoi de « doc en main →
+    pas d'admin », `products` admin-only → RPC, workflow n8n partagé, `search_vector`
+    générée, `documents` sans `model`).
+  - **`HANDOFF_coffre_reenrolement_recuperation.md`** (coffre : reset impossible →
+    ré-enrôlement, purge = état apprenti, garde récupérateur à deux niveaux, sonde
+    `dossier_has_vault` et pré-check à 4 étages).
+  - **`HANDOFF_recherche_web_ensemble_juge.md`** (Ensemble Search : 3 moteurs + juge +
+    validation-avant-juge, et le bêtisier).
 - **La spec technique + règles Claude Code** : `CLAUDE.md` à la racine du repo.
 - **Le comment exact d'un workflow n8n** : le workflow lui-même dans n8n.
