@@ -25,6 +25,7 @@ import { GameDuoLobbyScreen } from './screens/GameDuoLobbyScreen';
 import { ToolsScreen } from './screens/ToolsScreen';
 import { CommunicationsScreen } from './screens/CommunicationsScreen';
 import { DemandesScreen } from './screens/DemandesScreen';
+import { AddCatalogNoticeScreen } from './screens/AddCatalogNoticeScreen';
 import { requestPersistentStorage } from './lib/storagePersistence';
 
 function Screens() {
@@ -64,6 +65,8 @@ function Screens() {
       return <CommunicationsScreen />;
     case 'demandes':
       return <DemandesScreen />;
+    case 'addCatalogNotice':
+      return <AddCatalogNoticeScreen />;
   }
 }
 

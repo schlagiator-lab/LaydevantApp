@@ -35,7 +35,8 @@ export type NavState =
   | { screen: 'gameDuoLobby' }
   | { screen: 'tools' }
   | { screen: 'communications' }
-  | { screen: 'demandes' };
+  | { screen: 'demandes' }
+  | { screen: 'addCatalogNotice' };
 
 export const BLANK_SEARCH: SearchParams = {
   query: '',
@@ -101,6 +102,11 @@ export interface NavigationContextValue {
   /** Dépôt et suivi des demandes (canal de remontée terrain), accessible
    * depuis l'onglet "Outils". */
   goDemandes: () => void;
+  /** Ajout d'une notice à la bibliothèque sans dossier client, accessible
+   * depuis l'onglet "Outils" — chemin direct sans validation admin, même
+   * principe que le chemin direct de EquipmentRequestSheet mais sans
+   * rattachement à un dossier. */
+  goAddCatalogNotice: () => void;
   /** Pops the navigation stack — the back chevron on Search and Document screens. */
   goBack: () => void;
 }
