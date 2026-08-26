@@ -6,7 +6,7 @@ chaque avancée (pas complété) : une dette réglée en disparaît, une feature
 passe en « fonctionne ». Pour le POURQUOI d'une décision, voir les HANDOFF datés
 (l'archive). Pour la spec technique de Claude Code, voir `CLAUDE.md` (le repo).
 
-À jour au 21 août 2026.
+À jour au 26 août 2026.
 
 ---
 
@@ -116,6 +116,10 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
   spécialité, type, PDF **obligatoire**) mais **sans rattachement à un dossier** : la
   notice entre dans `documents` via le produit et **remonte partout** où un dossier
   porte ce produit. Section dédiée.
+- **Mes demandes (feedback + équipement) & flag « Outils »** : l'onglet Outils →
+  « Mes demandes » regroupe deux canaux (retours d'amélioration/bug + suivi des
+  demandes d'équipement/document), et l'entrée « Outils » porte un **flag de couleur**
+  (orange « en cours » / vert « traitée ») qui s'efface à la consultation. Section dédiée.
 - **Coffre de données sensibles** : chiffrement par dossier (zero-knowledge,
   WebCrypto). Notes ET **fichiers chiffrés**. **Récupération par ré-enrôlement**
   (le monteur repart d'une paire neuve en **libre-service**, un admin **répare
@@ -226,8 +230,8 @@ vit sur `products`), et le lien de remontée est **`product_id`** (jamais un mat
 
 Modèle de données :
 - **`dossier_equipment_requests`** : la demande (marque, modèle, commentaire, status,
-  `resolved_product_id`, `specialty_id`). RLS : SELECT `true`, INSERT `requested_by =
-  auth.uid()` ; seul le RPC écrit le reste.
+  `resolved_product_id`, `specialty_id`, `seen_by_requester_at`). RLS : SELECT `true`,
+  INSERT `requested_by = auth.uid()` ; seul le RPC écrit le reste.
 - **`dossier_equipment_request_files`** (enfant) : notices jointes en staging
   (`storage_provider 'r2'`, `storage_key`, `nom_fichier`, `mime`, `taille`,
   `doc_type_suggere`, `auteur`, `promoted_document_id`). RLS : SELECT `true`,
@@ -254,6 +258,46 @@ direct était le rattachement `dossier_produits` ; tout le reste (staging
 - Le PDF transite par le **même staging `equipment-requests/`** (contrainte de préfixe
   conservée = garde-fou contre un `storage_key` arbitraire). n8n et Worker **inchangés**.
 La notice ajoutée remonte dans la recherche et dans tout dossier futur portant le produit.
+
+---
+
+## Mes demandes & flag « Outils » (feedback + équipement)
+
+L'onglet Outils → **« Mes demandes »** regroupe **deux canaux distincts** derrière des
+onglets qui agissent comme un **mode** (pas comme un simple filtre) :
+
+- **Feedback** (table **`demandes`**) : formulaire d'envoi libre + fil « Mes demandes »,
+  filtré par `type` (Proposition d'amélioration / Remonter un bug / Autre). Statut
+  `nouvelle`/`en_cours`/`traitee`, réponse admin dans `reponse_admin`, `auteur = user`.
+  Côté admin : « Remontées terrain » (prise en charge + réponse).
+- **Demande d'équipement** (4ᵉ onglet) : **source différente** `dossier_equipment_requests`
+  (**pas** un 4ᵉ `type` de `demandes`), en **lecture seule** — ces demandes naissent d'un
+  dossier, pas de ce formulaire. Liste **mes** demandes tous dossiers confondus, statut
+  `pending`/`approved`/`rejected`. En ce mode, le **formulaire d'envoi est masqué**.
+
+**Le flag « Outils »** est un **état dérivé**, recalculé à l'affichage à partir de mes
+demandes — **pas une notification stockée/routée**. Mapping :
+- **Feedback** : une demande `traitee` non-vue → **vert** ; sinon `en_cours` non-vue →
+  **orange** ; `nouvelle` ignorée (l'admin n'a rien produit).
+- **Équipement** : une demande `approved`/`rejected` non-vue → **vert** ; `pending` ignorée.
+- **Entrée « Outils »** : agrège les deux canaux, **vert > orange** (l'actionnable
+  d'abord). Aucun élément non-vu → **pas de flag**, l'onglet redevient normal.
+
+**Acquittement — par canal, à l'ouverture de la vue** (le flag « disparaît une fois la
+réponse consultée ») :
+- `acknowledge_my_feedback()` (SECURITY DEFINER) : pose `seen_by_requester_at = now()`
+  sur **mes** demandes `en_cours`/`traitee`. **Ré-armable** : une transition ultérieure
+  bumpe `updated_at` (trigger `trg_demande_updated`), et le flag se recalcule sur
+  `seen_by_requester_at IS NULL OR seen_by_requester_at < updated_at` — un nouveau
+  passage `en_cours → traitee` ré-allume donc le vert.
+- `acknowledge_my_equipment_requests()` (SECURITY DEFINER) : pose `seen_by_requester_at`
+  sur **mes** demandes résolues. **Terminal** (pas de ré-armement : `seen IS NULL`).
+
+Les deux RPC sont `SECURITY DEFINER` bornées à l'auteur (`auteur`/`requested_by =
+auth.uid()`) car l'**UPDATE de ces tables est admin-only en RLS** — le monteur ne pose
+pas lui-même sa marque de « vu ». Colonne `seen_by_requester_at` (timestamptz, nullable)
+ajoutée sur `demandes` **et** `dossier_equipment_requests`. Le hook front lit la **même
+source** que les cartes « En cours »/« Traitée » déjà affichées : zéro divergence.
 
 ---
 
@@ -342,8 +386,9 @@ cumulatif, seed partagé).
   authentifié) ; **sans doc → demande admin**. La spécialité devient **obligatoire dès
   qu'une doc est jointe** (le seul apport de l'admin dans ce cas).
 - **`products` est admin-only en écriture (RLS)** : un monteur crée un produit
-  UNIQUEMENT via RPC SECURITY DEFINER (`upsert_dossier_product`), jamais en direct.
-  `dossier_produits` est en revanche `ALL using(true)` (tout authentifié rattache).
+  UNIQUEMENT via RPC SECURITY DEFINER (`upsert_dossier_product` / `upsert_product_standalone`),
+  jamais en direct. `dossier_produits` est en revanche `ALL using(true)` (tout authentifié
+  rattache).
 - **Bibliothèque — la notice remonte via `product_id`** (`dossier_documents_complets`,
   chemin `equipement`), jamais par un match texte marque/modèle. `documents` porte
   `brand` mais **pas** `model`. `documents.search_vector` est **générée**
@@ -351,6 +396,16 @@ cumulatif, seed partagé).
 - **Promotion de notice — le workflow n8n est partagé** (staging `equipment-requests/`
   → extract → `documents/` → insert). Download imposé par l'extraction ; pas de
   CopyObject. `promoted_document_id` = ancre d'idempotence (2e promotion refusée 409).
+- **Flag « Outils » = état dérivé, pas une notif** : recalculé à l'affichage depuis mes
+  demandes (feedback `demandes` + équipement `dossier_equipment_requests`). Acquittement
+  **par canal**, à l'ouverture de la vue, via RPC SECURITY DEFINER (`acknowledge_my_feedback`
+  / `acknowledge_my_equipment_requests`, bornées à l'auteur — UPDATE admin-only en RLS).
+  Feedback **ré-armable** via `updated_at` (`seen < updated_at`) ; équipement **terminal**
+  (`seen IS NULL`). Agrégation **vert (réponse) > orange (en cours)** ; `nouvelle`/`pending`
+  ignorés.
+- **4ᵉ onglet « Demande d'équipement » = source distincte, pas un `type` de `demandes`** :
+  mode lecture seule sur `dossier_equipment_requests` (les demandes naissent d'un dossier),
+  formulaire d'envoi masqué en ce mode.
 - **Coffre — pas de reset de mot de passe** (zero-knowledge) : la récupération, c'est le
   **ré-enrôlement** (`reenroll_vault_user`, paire neuve + purge accès), suivi de
   « Réparer l'accès ». Ne jamais persister un ré-enrôlement via `submitVaultEnrollment`
@@ -395,7 +450,9 @@ cumulatif, seed partagé).
 - **Credential R2 S3** : endpoint sans bucket, `Force Path Style: ON`, région `auto`.
 - **`auth.uid()` NULL dans le SQL Editor** ; simuler via `set_config('request.jwt.
   claims', …, true)` dans un même run (utile pour tester une RPC SECURITY DEFINER
-  en `begin; … rollback;`).
+  en `begin; … rollback;`). Une RPC qui **écrit** (ex. `acknowledge_my_*`,
+  `reenroll_vault_user`) ne se lance PAS à blanc dans l'éditeur — c'est l'app qui
+  l'appelle ; on ne teste que sa **création** (harnais) et son comportement via l'app.
 - **Edge Function : le push ne déploie PAS** → `npx supabase functions deploy`.
 - **Après un push, fermer/rouvrir la PWA** (cache SW) ; changement SW → rouvrir EN
   LIGNE 1-2×.
@@ -432,8 +489,8 @@ cumulatif, seed partagé).
 - **Backup — ajouter les tables récentes** : `web_search_jobs`, **`web_search_results`**,
   `game_scores`, `duo_matches`, `galerie_items`, `galerie_photos`, `dossier_plans`,
   `dossier_deletion_requests`, `dossier_equipment_requests`,
-  **`dossier_equipment_request_files`**, `communications`, `vault_files` ; activer
-  Schedule + purge.
+  **`dossier_equipment_request_files`**, **`demandes`**, `communications`, `vault_files` ;
+  activer Schedule + purge.
 - **Cache offline — Galerie, Plans, fichiers du coffre, annotation photo** : online-only.
 - **Communication d'entreprise — aperçu offline** : online-only (placeholder).
 - **Garde-fou « PDF trop détaillé » sur les fichiers du coffre** : non appliqué.
@@ -458,7 +515,7 @@ cumulatif, seed partagé).
 4. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
 5. **Protection des données** : Schedule backup + purge, avec toutes les tables
    récentes (`web_search_results`, `vault_files`, `dossier_equipment_request_files`,
-   `duo_matches` inclus).
+   `demandes`, `duo_matches` inclus).
 6. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
 
 ---
@@ -475,5 +532,8 @@ cumulatif, seed partagé).
     `dossier_has_vault` et pré-check à 4 étages).
   - **`HANDOFF_recherche_web_ensemble_juge.md`** (Ensemble Search : 3 moteurs + juge +
     validation-avant-juge, et le bêtisier).
+- **Le flag « Outils » + le canal équipement de « Mes demandes »** : briques légères
+  (colonnes `seen_by_requester_at` + RPC `acknowledge_my_*`, flag dérivé, 4ᵉ onglet) —
+  pas de HANDOFF dédié, tout est dans la section « Mes demandes & flag Outils » ci-dessus.
 - **La spec technique + règles Claude Code** : `CLAUDE.md` à la racine du repo.
 - **Le comment exact d'un workflow n8n** : le workflow lui-même dans n8n.
