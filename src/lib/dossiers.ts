@@ -154,6 +154,76 @@ export async function listDossierEquipmentRequests(
 }
 
 /**
+ * Demandes d'équipement du user courant, tous dossiers confondus (écran "Mes
+ * demandes", onglet équipement) — la RLS SELECT de `dossier_equipment_requests`
+ * est ouverte à tout authentifié (CLAUDE.md §3), donc le filtre par
+ * `requested_by` est fait ici, pas par la RLS. `nom_client` vient du même
+ * embed FK que `listPendingEquipmentRequests` (vaultAdmin.ts). Triées pending
+ * d'abord puis résolues (`resolved_at` desc) — tri fait côté client,
+ * PostgREST ne sait pas exprimer un ORDER BY conditionnel par statut.
+ */
+export async function listMyEquipmentRequests(): Promise<EquipmentRequest[]> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return [];
+
+  const { data, error } = await supabase
+    .from('dossier_equipment_requests')
+    .select('id, dossier_id, marque, modele, status, created_at, resolved_at, seen_by_requester_at, dossiers(nom_client)')
+    .eq('requested_by', userId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+
+  type Row = {
+    id: string;
+    dossier_id: string;
+    marque: string;
+    modele: string | null;
+    status: EquipmentRequestStatus;
+    created_at: string;
+    resolved_at: string | null;
+    seen_by_requester_at: string | null;
+    dossiers: { nom_client: string } | { nom_client: string }[] | null;
+  };
+  const rows = (data ?? []) as unknown as Row[];
+
+  const mapped: EquipmentRequest[] = rows.map((r) => {
+    const rel = Array.isArray(r.dossiers) ? r.dossiers[0] : r.dossiers;
+    return {
+      id: r.id,
+      dossier_id: r.dossier_id,
+      requested_by: userId,
+      marque: r.marque,
+      modele: r.modele,
+      commentaire: null,
+      specialty_id: null,
+      status: r.status,
+      created_at: r.created_at,
+      resolved_by: null,
+      resolved_at: r.resolved_at,
+      resolved_product_id: null,
+      seen_by_requester_at: r.seen_by_requester_at,
+      nom_client: rel?.nom_client ?? r.dossier_id,
+    };
+  });
+
+  return mapped.sort((a, b) => {
+    if (a.status === 'pending' && b.status !== 'pending') return -1;
+    if (a.status !== 'pending' && b.status === 'pending') return 1;
+    if (a.status === 'pending') return 0;
+    return (b.resolved_at ?? '').localeCompare(a.resolved_at ?? '');
+  });
+}
+
+/** Pose le "vu" sur toutes mes demandes d'équipement résolues (RPC
+ * `acknowledge_my_equipment_requests`, terminal — pas de ré-armement) —
+ * éteint le flag équipement de l'onglet Outils. */
+export async function acknowledgeEquipmentRequests(): Promise<void> {
+  const { error } = await supabase.rpc('acknowledge_my_equipment_requests');
+  if (error) throw error;
+}
+
+/**
  * Joint une notice PDF à une demande d'équipement (staging, aucune
  * validation admin requise). Octets bruts du fichier, SANS compression —
  * ce n'est jamais une image, contrairement à uploadDossierPhoto. Même

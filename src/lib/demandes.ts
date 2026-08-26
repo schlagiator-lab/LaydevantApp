@@ -125,6 +125,13 @@ export async function updateDemandeStatut(
   return data as DemandeRow;
 }
 
+/** Pose le "vu" sur mes demandes en_cours/traitee (RPC `acknowledge_my_feedback`,
+ * ré-armable via `updated_at`) — éteint le flag de l'onglet Outils. */
+export async function acknowledgeFeedback(): Promise<void> {
+  const { error } = await supabase.rpc('acknowledge_my_feedback');
+  if (error) throw error;
+}
+
 /**
  * Suppression définitive (admin) — réservée aux demandes déjà 'traitee', le
  * garde-fou est côté appelant (bouton visible seulement sur ce statut,

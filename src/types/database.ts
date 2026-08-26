@@ -202,6 +202,8 @@ export interface EquipmentRequest {
   nom_client?: string;
   requested_by_nom?: string | null;
   notices?: EquipmentRequestFile[];
+  /** Non peuplé par tous les listings — seulement `listMyEquipmentRequests` (dossiers.ts). */
+  seen_by_requester_at?: string | null;
 }
 // Carnet public par dossier (notes + photos), tables possédées par cette app.
 // Lues via les vues qui joignent profiles pour exposer le nom de l'auteur.
@@ -336,4 +338,5 @@ export interface Demande {
   resolved_at: string | null;
   created_at: string;
   updated_at: string;
+  seen_by_requester_at: string | null;
 }
