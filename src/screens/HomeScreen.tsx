@@ -10,6 +10,7 @@ import {
   countActiveDeletionAlerts,
 } from '../lib/vaultAdmin';
 import { countNouvellesDemandes } from '../lib/demandes';
+import { useToolsFlag } from '../lib/useToolsFlag';
 import type { Department } from '../types/database';
 import type { RecentDocument } from '../lib/db';
 import { StatusPill } from '../components/StatusPill';
@@ -23,6 +24,7 @@ export function HomeScreen() {
   const { isOnline } = useAuth();
   const nav = useNavigation();
   const { showToast } = useToast();
+  const { toolsColor } = useToolsFlag();
 
   const [departments, setDepartments] = useState<Department[]>([]);
   const [recentDocs, setRecentDocs] = useState<RecentDocument[]>([]);
@@ -384,12 +386,35 @@ export function HomeScreen() {
           Jeu
         </button>
         {/* Sous-menu Outils : diagnostic stockage + enrôlement coffre,
-            fonctionnalités inchangées, juste regroupées (ToolsScreen). */}
+            fonctionnalités inchangées, juste regroupées (ToolsScreen). Pastille
+            (toolsColor) prévient qu'un admin a répondu à une remontée
+            (demandes) ou une demande d'équipement — vert = traitée/ajoutée,
+            orange = en cours (voir useToolsFlag.ts). */}
         <button
           type="button"
           onClick={nav.goTools}
-          style={{ background: 'transparent', border: 'none', color: textA(0.35), fontSize: 11, cursor: 'pointer' }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            background: 'transparent',
+            border: 'none',
+            color: textA(0.35),
+            fontSize: 11,
+            cursor: 'pointer',
+          }}
         >
+          {toolsColor && (
+            <span
+              style={{
+                flex: 'none',
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: toolsColor === 'green' ? colors.success : colors.accent,
+              }}
+            />
+          )}
           Outils
         </button>
         {/* Panneau admin du coffre (tranche 5) — lien visible par tout le

@@ -1,5 +1,7 @@
 import { useNavigation } from '../lib/useNavigation';
 import { departmentBadge } from '../lib/departmentStyle';
+import { useToolsFlag } from '../lib/useToolsFlag';
+import type { FlagColor } from '../lib/toolsFlag';
 import { colors, fonts, textA } from '../styles/tokens';
 
 /**
@@ -10,12 +12,13 @@ import { colors, fonts, textA } from '../styles/tokens';
  */
 export function ToolsScreen() {
   const nav = useNavigation();
+  const { feedbackColor } = useToolsFlag();
 
-  const items = [
-    { key: 'demandes', label: 'Mes demandes', letter: 'M', onClick: nav.goDemandes },
-    { key: 'addCatalogNotice', label: 'Ajouter une notice', letter: 'N', onClick: nav.goAddCatalogNotice },
-    { key: 'diagnostic', label: 'Diagnostic stockage', letter: 'D', onClick: nav.goDiagnostic },
-    { key: 'vaultEnroll', label: 'Coffre (enrôlement)', letter: 'C', onClick: nav.goVaultEnroll },
+  const items: { key: string; label: string; letter: string; onClick: () => void; flag: FlagColor }[] = [
+    { key: 'demandes', label: 'Mes demandes', letter: 'M', onClick: nav.goDemandes, flag: feedbackColor },
+    { key: 'addCatalogNotice', label: 'Ajouter une notice', letter: 'N', onClick: nav.goAddCatalogNotice, flag: null },
+    { key: 'diagnostic', label: 'Diagnostic stockage', letter: 'D', onClick: nav.goDiagnostic, flag: null },
+    { key: 'vaultEnroll', label: 'Coffre (enrôlement)', letter: 'C', onClick: nav.goVaultEnroll, flag: null },
   ];
 
   return (
@@ -97,6 +100,17 @@ export function ToolsScreen() {
                 {item.letter}
               </span>
               <span style={{ flex: 1, fontSize: 16, fontWeight: 700, color: colors.text }}>{item.label}</span>
+              {item.flag && (
+                <span
+                  style={{
+                    flex: 'none',
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: item.flag === 'green' ? colors.success : colors.accent,
+                  }}
+                />
+              )}
               <span style={{ color: textA(0.35), fontSize: 18 }}>›</span>
             </button>
           );
