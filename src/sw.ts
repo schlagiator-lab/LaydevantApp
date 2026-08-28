@@ -60,3 +60,54 @@ registerRoute(
     ],
   })
 );
+
+// Notifications push (brique 3b) — réception uniquement, aucun envoi ici.
+// userVisibleOnly (posé côté client à la souscription, src/lib/push.ts)
+// impose une notification visible à chaque push reçu, Android comme iOS.
+self.addEventListener('push', (event) => {
+  let payload: { title?: string; body?: string } = {};
+  try {
+    payload = event.data ? (event.data.json() as { title?: string; body?: string }) : {};
+  } catch {
+    // Payload absent ou non-JSON — repli sur le titre générique ci-dessous.
+  }
+  const title = payload.title || "Communication d'entreprise";
+  const body = payload.body || '';
+
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(title, {
+        body,
+        icon: '/icons/pwa-192x192.png',
+        badge: '/icons/favicon-48x48.png',
+        tag: 'comm',
+      }),
+      // Pastille simple sans chiffre (v1) — non supporté partout (pas de
+      // Badging API sur Firefox/Safari), best-effort.
+      'setAppBadge' in navigator ? navigator.setAppBadge() : Promise.resolve(),
+    ])
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      // Pas de route "Communication d'entreprise" adressable par URL : la
+      // navigation de l'app est un état interne (NavigationProvider), pas
+      // un chemin — impossible de deep-link precisément avec
+      // clients.openWindow() en l'état actuel. On focus une fenêtre déjà
+      // ouverte si elle existe (sans forcer sa navigation interne, aucun
+      // canal de message dédié n'existe pour ça), sinon on ouvre le
+      // start_url : l'utilisateur atterrit sur l'accueil, pas directement
+      // sur l'écran Communications.
+      const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      const existing = allClients[0];
+      if (existing) {
+        await existing.focus();
+      } else {
+        await self.clients.openWindow('/');
+      }
+    })()
+  );
+});

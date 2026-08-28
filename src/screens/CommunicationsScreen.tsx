@@ -12,6 +12,7 @@ import {
 } from '../lib/communications';
 import type { Communication } from '../types/database';
 import { ConfirmSheet } from '../components/ConfirmSheet';
+import { PushNotificationsToggle } from '../components/PushNotificationsToggle';
 import { colors, fonts, radius, textA } from '../styles/tokens';
 
 // pdf.js (~1 MB with its worker) is only needed once a preview is actually
@@ -119,8 +120,11 @@ export function CommunicationsScreen() {
   useEffect(() => {
     // Marque "lu" dès l'ouverture de l'écran (pas seulement après chargement
     // de la liste) : voir/masquer la pastille de l'accueil ne dépend que de
-    // la visite de cet écran, pas de son contenu.
+    // la visite de cet écran, pas de son contenu. Efface aussi la pastille
+    // d'icône (Badging API, brique 3b) posée par le SW sur réception d'un
+    // push — même geste "lu" que localStorage, best-effort selon le support.
     localStorage.setItem(COMM_LAST_SEEN_KEY, new Date().toISOString());
+    if ('clearAppBadge' in navigator) void navigator.clearAppBadge();
   }, []);
 
   useEffect(() => {
@@ -306,6 +310,10 @@ export function CommunicationsScreen() {
             />
           </label>
         )}
+      </div>
+
+      <div style={{ flex: 'none' }}>
+        <PushNotificationsToggle />
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
