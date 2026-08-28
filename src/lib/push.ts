@@ -60,9 +60,6 @@ export async function subscribeToPush(): Promise<PushSubscription> {
   });
   if (error) throw error;
 
-  // TODO retirer après validation brique 3b
-  console.log(JSON.stringify(json));
-
   return sub;
 }
 
