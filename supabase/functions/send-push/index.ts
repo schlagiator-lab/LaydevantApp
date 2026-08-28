@@ -1,9 +1,10 @@
 // Edge Function "send-push" — brique 4 des notifications push.
 //
 // Envoie une notification Web Push à TOUS les abonnés de push_subscriptions.
-// Sera déclenchée en brique 5 par un Database Webhook sur INSERT dans
-// `communications` ; pour l'instant le payload {title, body} est libre pour
-// permettre un test manuel (curl/Postman) avant que ce câblage existe.
+// Déclenchée en brique 5 par un Database Webhook sur INSERT dans
+// `communications` (payload imposé { record, ... }, record.titre mappé vers
+// le corps de la notif) ; accepte aussi { title, body } libre pour les tests
+// manuels (curl/Postman).
 //
 // Auth : verify_jwt DOIT être désactivé au déploiement (comme enroll,
 // `supabase functions deploy send-push --no-verify-jwt`) — l'appelant est un
@@ -36,6 +37,22 @@ interface SubscriptionRow {
   auth: string;
 }
 
+// Nettoie `communications.titre` (nom de fichier brut déposé à l'upload,
+// CLAUDE.md §17 — pas une phrase soignée) pour l'affichage dans le corps de
+// la notif : retire l'extension finale, remplace '_'/'-' par des espaces,
+// collapse les espaces multiples, trim, puis tronque à ~120 caractères.
+function cleanTitreForNotif(titre: string | null | undefined): string {
+  const fallback = 'Une nouvelle communication est disponible';
+  if (!titre) return fallback;
+  const cleaned = titre
+    .replace(/\.[a-zA-Z0-9]{1,10}$/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return fallback;
+  return cleaned.length > 120 ? cleaned.slice(0, 120).trim() : cleaned;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') {
@@ -55,18 +72,40 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: 'Erreur serveur' }, 500);
   }
 
-  // 2) Payload — libre pour l'instant (test manuel) ; la brique 5 mappera le
-  // titre/corps depuis la communication publiée.
-  // test_user_id : réservé aux tests manuels, absent en production.
-  let body: { title?: string; body?: string; test_user_id?: string };
+  // 2) Payload — deux formats acceptés :
+  // - { record, ... } : format imposé par le Database Webhook Supabase
+  //   (brique 5, INSERT sur communications) — `record` est la ligne insérée.
+  // - { title, body } : format libre pour les tests manuels (curl/Postman),
+  //   comportement inchangé.
+  // test_user_id : réservé aux tests manuels, absent en production, valide
+  // dans les deux formats.
+  let body: {
+    title?: string;
+    body?: string;
+    test_user_id?: string;
+    record?: { titre?: string | null; deleted_at?: string | null };
+  };
   try {
     body = await req.json();
   } catch {
     body = {};
   }
-  const title = body.title || "Communication d'entreprise";
-  const notifBody = body.body || 'Nouvelle communication disponible';
   const testUserId = (body.test_user_id ?? '').trim() || null;
+
+  let title: string;
+  let notifBody: string;
+  if (body.record) {
+    // Sécurité : ne jamais notifier une ligne déjà soft-deletée (deleted_at
+    // posé entre l'INSERT et l'appel webhook, ou webhook rejoué).
+    if (body.record.deleted_at) {
+      return json({ sent: 0 }, 200);
+    }
+    title = 'Nouvelle communication';
+    notifBody = cleanTitreForNotif(body.record.titre);
+  } else {
+    title = body.title || "Communication d'entreprise";
+    notifBody = body.body || 'Nouvelle communication disponible';
+  }
 
   // 3) Abonnés — service_role : push_subscriptions a sa RLS verrouillée,
   // aucun accès direct possible depuis le front (contournement par design).
