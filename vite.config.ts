@@ -8,6 +8,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // SW custom (src/sw.ts) requis pour les handlers push à venir (brique 3
+      // notifications) — generateSW ne permet pas d'ajouter du code SW
+      // arbitraire. Le comportement de précache/cache runtime ci-dessous est
+      // répliqué à l'identique dans src/sw.ts (cf. commentaires du fichier).
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       includeAssets: ['icons/favicon-48x48.png', 'icons/apple-touch-icon-180x180.png'],
       manifest: {
         name: 'Laydevant SA — Documentation technique',
@@ -29,28 +36,15 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
+      injectManifest: {
         // Document PDFs are handled by our own Cache API logic (§4 of CLAUDE.md),
         // not by workbox — this only precaches the app shell.
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2,mjs,jpg,jpeg,webp,avif,gif,mp3}'],
         // tetris_audio.mp3 (~6.9 Mo) exceeds the 2 Mo default precache limit —
         // excluded from precache (would otherwise be forced onto every install)
-        // and served instead via the runtimeCaching rule below (cached on first
-        // online playback, then available offline).
+        // and served instead via the runtime CacheFirst route in src/sw.ts
+        // (cached on first online playback, then available offline).
         globIgnores: ['**/tetris_audio.mp3'],
-        runtimeCaching: [
-          {
-            urlPattern: /\/tetris_audio\.mp3$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'tetris-music',
-              expiration: {
-                maxEntries: 1,
-                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 jours
-              },
-            },
-          },
-        ],
       },
     }),
   ],

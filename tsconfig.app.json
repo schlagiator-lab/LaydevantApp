@@ -22,5 +22,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // src/sw.ts tourne dans ServiceWorkerGlobalScope (self.__WB_MANIFEST) —
+  // incompatible avec le lib DOM (self: Window) ci-dessus. Compilé à part via
+  // tsconfig.sw.json (lib WebWorker), référencé depuis tsconfig.json.
+  "exclude": ["src/sw.ts"]
 }
