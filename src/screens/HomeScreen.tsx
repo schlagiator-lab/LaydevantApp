@@ -11,6 +11,7 @@ import {
 } from '../lib/vaultAdmin';
 import { countNouvellesDemandes } from '../lib/demandes';
 import { useToolsFlag } from '../lib/useToolsFlag';
+import { useCommunicationsUnread } from '../lib/useCommunicationsUnread';
 import type { Department } from '../types/database';
 import type { RecentDocument } from '../lib/db';
 import { StatusPill } from '../components/StatusPill';
@@ -25,6 +26,7 @@ export function HomeScreen() {
   const nav = useNavigation();
   const { showToast } = useToast();
   const { toolsColor } = useToolsFlag();
+  const hasUnreadComms = useCommunicationsUnread();
 
   const [departments, setDepartments] = useState<Department[]>([]);
   const [recentDocs, setRecentDocs] = useState<RecentDocument[]>([]);
@@ -337,6 +339,7 @@ export function HomeScreen() {
           type="button"
           onClick={nav.goCommunications}
           style={{
+            position: 'relative',
             display: 'flex',
             alignItems: 'center',
             gap: 12,
@@ -352,6 +355,20 @@ export function HomeScreen() {
             boxSizing: 'border-box',
           }}
         >
+          {hasUnreadComms && (
+            <span
+              aria-hidden="true"
+              style={{
+                position: 'absolute',
+                top: 6,
+                right: 10,
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: colors.accent,
+              }}
+            />
+          )}
           <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: colors.text }}>
             Communication d'entreprise
           </span>

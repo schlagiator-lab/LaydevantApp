@@ -6,6 +6,28 @@ import { supabase } from './supabase';
 import { getAccessToken, getPhotoObjectUrl, sanitizeFilename, uploadPhotoBytes } from './dossiers';
 import type { Communication, ProfileRole } from '../types/database';
 
+// Clé localStorage du badge "non-lu" de l'accueil (useCommunicationsUnread) —
+// pur front, aucune table dédiée. Partagée avec CommunicationsScreen (marquage
+// "lu" au montage) pour éviter deux chaînes en dur qui pourraient diverger.
+export const COMM_LAST_SEEN_KEY = 'comm_last_seen_at';
+
+/**
+ * Date de la communication non supprimée la plus récente — utilisée
+ * uniquement par le badge "non-lu" de l'accueil (useCommunicationsUnread),
+ * pas pour l'affichage (listCommunications, qui passe par la vue jointe pour
+ * auteur_nom, inutile ici).
+ */
+export async function getLastCommunicationAt(): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('communications')
+    .select('created_at')
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return data && data.length > 0 ? (data[0] as { created_at: string }).created_at : null;
+}
+
 export async function listCommunications(): Promise<Communication[]> {
   const { data, error } = await supabase
     .from('communications_view')

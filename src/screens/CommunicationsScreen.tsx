@@ -4,6 +4,7 @@ import { useNavigation } from '../lib/useNavigation';
 import { useToast } from '../lib/useToast';
 import {
   canPublishCommunications,
+  COMM_LAST_SEEN_KEY,
   getCommunicationBlob,
   listCommunications,
   softDeleteCommunication,
@@ -113,6 +114,13 @@ export function CommunicationsScreen() {
     // async, pattern fetch-on-mount voulu.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
+  }, []);
+
+  useEffect(() => {
+    // Marque "lu" dès l'ouverture de l'écran (pas seulement après chargement
+    // de la liste) : voir/masquer la pastille de l'accueil ne dépend que de
+    // la visite de cet écran, pas de son contenu.
+    localStorage.setItem(COMM_LAST_SEEN_KEY, new Date().toISOString());
   }, []);
 
   useEffect(() => {
