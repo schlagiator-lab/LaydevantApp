@@ -74,6 +74,9 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
   const [openedError, setOpenedError] = useState<string | null>(null);
   // iOS uniquement : mesuré une fois le Blob obtenu, jamais sur Android/desktop.
   const [tooDetailedForIos, setTooDetailedForIos] = useState(false);
+  // Bouton "Partager" de l'en-tête de l'overlay — état local à ce bouton,
+  // indépendant du `sharing` interne à PlanTooDetailedCard (chemin > 30 Mpx).
+  const [sharingOpenedPlan, setSharingOpenedPlan] = useState(false);
 
   // Vignettes uniquement pour les plans image — jamais de fetch pour
   // pdf/dwg/file avant un clic explicite (pas de preview pour ces types,
@@ -230,6 +233,43 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
       showToast(err instanceof Error ? err.message : 'Échec du téléchargement.');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  /**
+   * Bouton "Partager" de l'overlay plein écran (openedPlan/openedBlob) —
+   * porte de sortie iOS vers le visionneur natif (Fichiers/Aperçu), où le PDF
+   * s'affiche net contrairement au canvas <PdfViewer> (échelle fixe, sans
+   * devicePixelRatio, jamais re-rendu au zoom). Réutilise le Blob déjà en
+   * mémoire pour cet overlay : un `await` avant navigator.share casserait le
+   * geste utilisateur sur Safari iOS — même contrainte que
+   * handleOpenPdfNative. Dupliqué depuis PlanTooDetailedCard.handleShare
+   * (même patron que VaultSheet.handleShareFile/CarnetSection.handleExportPhoto)
+   * plutôt que réutilisé : chemin > 30 Mpx laissé intact.
+   */
+  const handleShareOpened = async () => {
+    if (!openedPlan || !openedBlob || sharingOpenedPlan) return;
+    setSharingOpenedPlan(true);
+    try {
+      const file = new File([openedBlob], planFileName(openedPlan), { type: 'application/pdf' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: planLabel(openedPlan) });
+      } else {
+        const objectUrl = URL.createObjectURL(openedBlob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = planFileName(openedPlan);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (err) {
+      // Annulation volontaire du partage natif : comportement normal, pas une erreur.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      showToast(err instanceof Error ? err.message : 'Échec du partage.');
+    } finally {
+      setSharingOpenedPlan(false);
     }
   };
 
@@ -437,6 +477,26 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
             >
               {planLabel(openedPlan)}
             </span>
+            <button
+              type="button"
+              onClick={() => void handleShareOpened()}
+              disabled={!openedBlob || sharingOpenedPlan}
+              style={{
+                flex: 'none',
+                height: 32,
+                borderRadius: radius.pill,
+                background: textA(0.1),
+                border: 'none',
+                color: colors.text,
+                fontSize: 13,
+                fontWeight: 700,
+                padding: '0 14px',
+                cursor: 'pointer',
+                opacity: !openedBlob || sharingOpenedPlan ? 0.5 : 1,
+              }}
+            >
+              {sharingOpenedPlan ? 'Partage…' : 'Partager'}
+            </button>
           </div>
           <div
             style={{
