@@ -237,6 +237,23 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
   };
 
   /**
+   * Bouton "Ouvrir" de l'overlay plein écran — ouverture directe dans l'onglet
+   * PDF natif de Safari (net, contrairement au canvas <PdfViewer>), sans
+   * passer par la feuille de partage. Synchrone, PAS d'await avant
+   * window.open : openedBlob est déjà résolu en mémoire à ce stade, donc le
+   * geste utilisateur reste "frais" pour Safari iOS — même mécanisme que
+   * DocumentScreen.handleOpenFullscreen, qui fonctionne déjà sur iOS pour
+   * cette raison. Contrairement à handleOpenPdfNative (await avant
+   * window.open), qui casse ce geste et reste donc exclu sur iOS.
+   */
+  const handleOpenNative = () => {
+    if (!openedBlob) return;
+    const url = URL.createObjectURL(openedBlob);
+    window.open(url, '_blank', 'noopener');
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+
+  /**
    * Bouton "Partager" de l'overlay plein écran (openedPlan/openedBlob) —
    * porte de sortie iOS vers le visionneur natif (Fichiers/Aperçu), où le PDF
    * s'affiche net contrairement au canvas <PdfViewer> (échelle fixe, sans
@@ -477,6 +494,26 @@ export function PlansSection({ isOnline, plans, onPlansChanged }: PlansSectionPr
             >
               {planLabel(openedPlan)}
             </span>
+            <button
+              type="button"
+              onClick={handleOpenNative}
+              disabled={!openedBlob}
+              style={{
+                flex: 'none',
+                height: 32,
+                borderRadius: radius.pill,
+                background: textA(0.1),
+                border: 'none',
+                color: colors.text,
+                fontSize: 13,
+                fontWeight: 700,
+                padding: '0 14px',
+                cursor: 'pointer',
+                opacity: !openedBlob ? 0.5 : 1,
+              }}
+            >
+              Ouvrir
+            </button>
             <button
               type="button"
               onClick={() => void handleShareOpened()}
