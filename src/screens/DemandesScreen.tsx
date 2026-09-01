@@ -70,6 +70,7 @@ export function DemandesScreen() {
   // un échec réseau ne casse pas l'affichage.
   useEffect(() => {
     if (mode !== 'equipment') return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- setState survient après l'await réseau dans reloadEquipment, pas de façon synchrone (faux positif, même motif que reload() ci-dessus)
     void reloadEquipment();
     void acknowledgeEquipmentRequests().catch(() => {});
   }, [mode]);
