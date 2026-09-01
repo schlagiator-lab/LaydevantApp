@@ -13,6 +13,9 @@ export interface CollapsibleSectionProps {
    * (préserve l'état interne des enfants). false (défaut) : démonté à la
    * fermeture. */
   keepMounted?: boolean;
+  /** true : en-tête colorée en orange (accent) — signal visuel ponctuel
+   * (ex. coffre configuré). false (défaut) : en-tête inchangée. */
+  accentHeader?: boolean;
   children: ReactNode;
 }
 
@@ -23,6 +26,7 @@ export function CollapsibleSection({
   action,
   defaultOpen = false,
   keepMounted = false,
+  accentHeader = false,
   children,
 }: CollapsibleSectionProps) {
   const [open, setOpen] = useState(defaultOpen);
@@ -30,7 +34,12 @@ export function CollapsibleSection({
   return (
     <section>
       <div style={headerRowStyle}>
-        <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} style={toggleButtonStyle}>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          style={accentHeader ? accentToggleButtonStyle : toggleButtonStyle}
+        >
           <span style={titleRowStyle}>
             <span style={titleTextStyle}>{title}</span>
             {badge}
@@ -82,6 +91,12 @@ const toggleButtonStyle: React.CSSProperties = {
   fontFamily: 'inherit',
   cursor: 'pointer',
   textAlign: 'left',
+};
+
+const accentToggleButtonStyle: React.CSSProperties = {
+  ...toggleButtonStyle,
+  background: colors.accent,
+  color: '#132146',
 };
 
 const titleRowStyle: React.CSSProperties = {

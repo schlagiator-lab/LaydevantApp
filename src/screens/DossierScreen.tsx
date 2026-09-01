@@ -773,7 +773,12 @@ export function DossierScreen({ dossierId }: { dossierId: string }) {
             </div>
           </CollapsibleSection>
 
-          <CollapsibleSection title="Données sensibles" badge={renderEncryptedBadge(vaultBadgeExtra)} keepMounted>
+          <CollapsibleSection
+            title="Données sensibles"
+            badge={renderEncryptedBadge(vaultBadgeExtra)}
+            keepMounted
+            accentHeader={vaultBadgeExtra === 'configure'}
+          >
             <button
               type="button"
               onClick={() => setShowVault(true)}
