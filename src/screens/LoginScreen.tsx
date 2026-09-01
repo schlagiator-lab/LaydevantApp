@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/useAuth';
+import { PasswordInput } from '../components/PasswordInput';
 import { colors, fonts, textA } from '../styles/tokens';
 
 export interface LoginScreenProps {
@@ -76,8 +77,7 @@ export function LoginScreen({ onEnroll }: LoginScreenProps) {
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ fontSize: 12.5, fontWeight: 600, color: textA(0.6) }}>Mot de passe</span>
-          <input
-            type="password"
+          <PasswordInput
             autoComplete="current-password"
             required
             value={password}

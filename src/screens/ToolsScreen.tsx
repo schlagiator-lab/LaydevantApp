@@ -18,7 +18,7 @@ export function ToolsScreen() {
     { key: 'demandes', label: 'Mes demandes', letter: 'M', onClick: nav.goDemandes, flag: feedbackColor },
     { key: 'addCatalogNotice', label: 'Ajouter une notice', letter: 'N', onClick: nav.goAddCatalogNotice, flag: null },
     { key: 'diagnostic', label: 'Diagnostic stockage', letter: 'D', onClick: nav.goDiagnostic, flag: null },
-    { key: 'vaultEnroll', label: 'Coffre (enrôlement)', letter: 'C', onClick: nav.goVaultEnroll, flag: null },
+    { key: 'vaultEnroll', label: 'Coffre (enregistrement)', letter: 'C', onClick: nav.goVaultEnroll, flag: null },
   ];
 
   return (

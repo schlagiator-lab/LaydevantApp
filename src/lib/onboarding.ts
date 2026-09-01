@@ -70,7 +70,7 @@ export async function enroll(input: {
     }),
   });
   if (!res.ok) {
-    let message = `Enrôlement échoué (HTTP ${res.status})`;
+    let message = `Enregistrement échoué (HTTP ${res.status})`;
     try {
       const body = (await res.json()) as { error?: string };
       if (body?.error) message = body.error;

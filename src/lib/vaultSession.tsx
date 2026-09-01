@@ -65,7 +65,7 @@ export function VaultSessionProvider({ children }: { children: ReactNode }) {
         // pour ne pas être masqué par "Mot de passe incorrect", qui induirait
         // en erreur quelqu'un qui n'a en réalité jamais rien configuré.
         if (!record) {
-          setError('Aucune clé de coffre pour ce compte — enrôlement requis.');
+          setError('Aucune clé de coffre pour ce compte — enregistrement requis.');
           return false;
         }
         const key = await unlockWithPassword(password, record);
@@ -91,7 +91,7 @@ export function VaultSessionProvider({ children }: { children: ReactNode }) {
       try {
         const record = await getOwnVaultKeyRecord(userId);
         if (!record) {
-          setError('Aucune clé de coffre pour ce compte — enrôlement requis.');
+          setError('Aucune clé de coffre pour ce compte — enregistrement requis.');
           return false;
         }
         const key = await unlockWithRecovery(recoveryKey, record);

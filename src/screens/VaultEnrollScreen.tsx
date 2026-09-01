@@ -121,7 +121,7 @@ export function VaultEnrollScreen() {
             <button type="button" onClick={nav.goHome} aria-label="Retour" style={backButtonStyle}>
               ‹
             </button>
-            <span style={eyebrowStyle}>Coffre — Enrôlement</span>
+            <span style={eyebrowStyle}>Coffre — Enregistrement</span>
           </div>
           <StatusPill online={isOnline} />
         </div>
@@ -147,7 +147,7 @@ export function VaultEnrollScreen() {
           <div style={{ textAlign: 'center', padding: '60px 20px 20px' }}>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>Coffre déjà configuré</div>
             <div style={{ fontSize: 14, color: textA(0.6), lineHeight: 1.5 }}>
-              Ce compte a déjà une clé de coffre. Le ré-enrôlement n'est pas géré par cet écran.
+              Ce compte a déjà une clé de coffre. Le ré-enregistrement n'est pas géré par cet écran.
             </div>
           </div>
         )}

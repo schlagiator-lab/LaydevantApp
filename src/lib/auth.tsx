@@ -69,7 +69,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithPassword: AuthContextValue['signInWithPassword'] = async (email, password) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error?.message ?? null };
+    if (!error) return { error: null };
+    // Supabase renvoie "Invalid login credentials" (email ou mot de passe erroné,
+    // volontairement indifférencié côté serveur) — traduit pour l'utilisateur.
+    const message = error.message === 'Invalid login credentials' ? 'Mot de passe invalide.' : error.message;
+    return { error: message };
   };
 
   const signOut = async () => {

@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
   // Message identique "invité ou pas" pour ne pas révéler qui est sur la liste
   // (un attaquant ne doit pas pouvoir sonder les emails invités de tes collègues).
   if (!invite || invite.consumed_at) {
-    return json({ error: "Cet email n'est pas autorisé à s'enrôler." }, 403);
+    return json({ error: "Cet email n'est pas autorisé à s'enregistrer." }, 403);
   }
 
   // 2) Créer le compte. email_confirm: true => pas d'email de confirmation,

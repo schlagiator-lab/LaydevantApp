@@ -226,7 +226,7 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
  * enrôlés au coffre — `listAllProfiles`, croisée avec `accounts`, la liste
  * `vault_user_keys` déjà chargée par le panneau pour l'onglet "Accès). Un
  * monteur qui n'a jamais touché au coffre apparaît donc ici aussi, avec un
- * badge neutre "Coffre : non enrôlé" — c'est justement ce qui permet de le
+ * badge neutre "Coffre : non enregistré" — c'est justement ce qui permet de le
  * supprimer sans détour par l'onglet "Accès".
  *
  * Suppression (bouton "Supprimer le compte") : jamais pour un admin, et
@@ -319,12 +319,12 @@ function AccountsTab({
               <Badge label={p.role === 'admin' ? 'Admin' : 'Monteur'} active={p.role === 'admin'} />
               {vault ? (
                 <>
-                  <Badge label="Enrôlé" active={vault.public_key !== null} />
+                  <Badge label="Enregistré" active={vault.public_key !== null} />
                   <Badge label="Accès coffre" active={vault.access_enabled} />
                   <Badge label="Récupérateur" active={vault.is_recovery_admin} />
                 </>
               ) : (
-                <Badge label="Coffre : non enrôlé" active={false} />
+                <Badge label="Coffre : non enregistré" active={false} />
               )}
               {/* Sans effet sur un admin (canPublishCommunications = admin OU
                   publisher) : badge et bouton réservés aux monteurs pour ne
@@ -612,7 +612,7 @@ function AccessTab({ accounts, onAccountsChanged }: { accounts: AccountsPhase; o
         <p style={{ fontSize: 13.5, color: colors.accent, lineHeight: 1.5 }}>Erreur : {accounts.message}</p>
       )}
       {accounts.kind === 'loaded' && rows.length === 0 && (
-        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucun compte enrôlé.</p>
+        <p style={{ fontSize: 13, color: textA(0.55) }}>Aucun compte enregistré.</p>
       )}
 
       {(activation.kind === 'done' || activation.kind === 'error') && (
@@ -1005,7 +1005,7 @@ function OnboardingTab() {
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
               <Badge label={inv.role === 'admin' ? 'Admin' : 'Monteur'} active={inv.role === 'admin'} />
               {inv.consumed_at ? (
-                <StatusChip label={`Enrôlé le ${formatDate(inv.consumed_at)}`} kind="success" />
+                <StatusChip label={`Enregistré le ${formatDate(inv.consumed_at)}`} kind="success" />
               ) : (
                 <StatusChip label="En attente" kind="pending" />
               )}
@@ -1016,7 +1016,7 @@ function OnboardingTab() {
       {pendingRemove && (
         <ConfirmSheet
           title="Retirer cette invitation ?"
-          message={`« ${pendingRemove.email} » ne pourra plus s'enrôler avec ce lien tant qu'elle n'est pas réinvitée.`}
+          message={`« ${pendingRemove.email} » ne pourra plus s'enregistrer avec ce lien tant qu'elle n'est pas réinvitée.`}
           confirmLabel="Retirer"
           onCancel={() => setPendingRemove(null)}
           onConfirm={() => void handleConfirmRemove()}
