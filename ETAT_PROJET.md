@@ -6,7 +6,7 @@ chaque avancée (pas complété) : une dette réglée en disparaît, une feature
 passe en « fonctionne ». Pour le POURQUOI d'une décision, voir les HANDOFF datés
 (l'archive). Pour la spec technique de Claude Code, voir `CLAUDE.md` (le repo).
 
-À jour au 26 août 2026.
+À jour au 1er septembre 2026.
 
 ---
 
@@ -67,6 +67,11 @@ zero-knowledge, comme les notes. Détail en section dédiée.
   Android), **pas de routeur d'URL**. Une spécialité s'affiche selon
   `specialties.display_mode` : `'documents'` ou `'galerie'`. L'écran d'un dossier
   est en **sections accordéon** (`CollapsibleSection`).
+- **Service worker — `injectManifest` (`src/sw.ts` + `tsconfig.sw.json`)** : depuis
+  l'ajout des notifications push, le SW est **écrit à la main** (plus `generateSW`).
+  On est donc **auteur** du précache (`precacheAndRoute(self.__WB_MANIFEST)`) ET du
+  runtime caching (routes `registerRoute`/`CacheFirst` recopiées à l'identique lors
+  de la bascule). Contient aussi les handlers `push` / `notificationclick`.
 - **Bifurcation plateforme** : `isIosDevice()` (helper, dans `src/lib/pdfMeasure.ts`).
 - **Backend** : Supabase (Postgres, Auth, RLS, Edge Functions). Storage Supabase
   n'héberge plus de PDF. Project ref `iixqfajflyxrnizlqdsn`.
@@ -74,8 +79,10 @@ zero-knowledge, comme les notes. Détail en section dédiée.
   Cloudflare R2, bucket `laydevant-photos`, via binding natif Worker (`/api/photos`).
 - **Bibliothèque PDF sur R2** : `documents.storage_provider` (tous en `'r2'`) et
   `documents.file_path` (clé NUE). **Clé R2 = `documents/` + file_path**.
-- **Ouverture des PDF (pdf.js)** : `<PdfViewer>` in-app partagé. Polyfill
-  `Map`/`WeakMap` `getOrInsert`/`getOrInsertComputed` obligatoire au démarrage.
+- **Ouverture des PDF (pdf.js, `pdfjs-dist` 6.3.x)** : `<PdfViewer>` in-app partagé.
+  Polyfill `Map`/`WeakMap` `getOrInsert`/`getOrInsertComputed` obligatoire au démarrage.
+- **Notifications push (Web Push / VAPID)** : `send-push` (Edge Function) + trigger
+  SQL `notify_new_communication` via `pg_net`. Section dédiée.
 - **Backups** : Cloudflare R2, bucket `laydevant-backups`, écrit par n8n (S3).
 - **Hébergement front** : Cloudflare Workers (`laydevant-app`), déploiement auto sur
   push `main`. Le Worker `worker/index.js` part au push, pas de déploiement séparé.
@@ -90,6 +97,10 @@ zero-knowledge, comme les notes. Détail en section dédiée.
 (`sb_secret_`) côté Edge Functions et n8n. Credential R2 S3 (endpoint sans nom de bucket,
 `Force Path Style: ON`, région `auto`). Côté recherche web : Serper, Gemini, Perplexity
 et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les exports.
+**VAPID** : clé publique dans `VITE_VAPID_PUBLIC_KEY` (front, publique par conception,
+**variable de build du Worker** `laydevant-app`, Settings → Build + `.env`) ; clé privée +
+`VAPID_SUBJECT` + `PUSH_HOOK_SECRET` en **secrets Supabase** (Edge Function), jamais dans
+le front/Git/chat.
 
 ---
 
@@ -125,12 +136,21 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
   (le monteur repart d'une paire neuve en **libre-service**, un admin **répare
   l'accès**), deux admins-récupérateurs. Section dédiée.
 - **Communication d'entreprise** : espace GLOBAL de diffusion de PDF par
-  publisher/admin. Ouverture in-app (viewer partagé).
+  publisher/admin. Ouverture in-app (viewer partagé). **Notifications push** à chaque
+  nouvelle communication (section dédiée).
+- **Notifications push d'entreprise (Web Push, 5 briques — FONCTIONNE)** : la
+  secrétaire poste une communication → une **notification** tombe sur les téléphones
+  abonnés + une **pastille** sur l'icône, **sans aucune intervention**. Section dédiée.
 - **Carnet public** (notes + photos par dossier) : en clair, RLS « tout authentifié
   lit/écrit ». Photos sur R2, compression client.
 - **Annotation de photos du carnet — non destructive** : calque vectoriel
   rééditable, 4 outils, rendu partout, export image à la demande.
 - **Galerie photo, Plans de dossier, Onboarding par liste blanche**.
+- **Connexion / enregistrement — UX** : composant partagé **`PasswordInput`** (bouton
+  afficher/masquer, bascule `type=password`/`text`) sur le mot de passe de `LoginScreen` et
+  les deux champs (mot de passe + confirmation) d'`EnrollScreen` ; l'erreur Supabase
+  générique `Invalid login credentials` est traduite en « **Mot de passe invalide.** » dans
+  `auth.tsx`. **Vocabulaire affiché = « enregistrement »** (le code garde « enroll »).
 - **Ingestion n8n (écrit dans R2)** : formulaire, webhook `ingest-from-url`, lot,
   **promotion de notice de staging** (`promote-equipment-notice`, section dédiée).
 - **Backup quotidien** : export JSON n8n vers R2.
@@ -138,6 +158,104 @@ et Anthropic vivent en credentials n8n (Header Auth ou natif), jamais dans les e
   `dossier_documents`, `vault_files`, `dossier_equipment_request_files` (hard delete
   assumé — staging).
 - **Mini-jeu Tetris + classement + bruitages + mode duo en ligne** : sections dédiées.
+
+---
+
+## Notifications push d'entreprise (Web Push, 5 briques)
+
+**Objectif** : signaler « nouvelle communication » sur le téléphone du monteur, même
+appli fermée. Le besoin d'origine était la **pastille sur l'icône** ; la bannière est
+un **bonus imposé par la plateforme** (voir contraintes). Décomposé et validé
+brique par brique.
+
+**Contraintes plateforme (structurantes, à connaître) :**
+- **Une pastille silencieuse seule est impossible appli fermée** : le seul canal qui
+  réveille une PWA fermée est **Web Push**, et `userVisibleOnly` (obligatoire sur
+  Chrome/Android **et** iOS) **impose une notification visible**. On a donc toujours
+  **bannière + pastille**, jamais pastille seule.
+- **Pastille d'icône (`setAppBadge`) = bonus selon le launcher Android** : certains
+  lanceurs n'affichent pas le badge d'une PWA installée. La bannière + la pastille
+  orange in-app (brique 1) portent l'essentiel ; le badge d'icône est un plus.
+- **iOS** : push seulement pour une PWA **installée à l'écran d'accueil** (iOS 16.4+).
+  Le bouton d'activation le détecte (`isIosDevice()` + `display-mode: standalone`) et
+  affiche sinon « ajoutez l'app à l'écran d'accueil ».
+- **Les abonnements meurent** à chaque redéploiement du SW (révocation → `410`).
+  D'où l'**auto-purge** côté Edge Function (voir brique 4).
+
+**Brique 1 — pastille orange in-app (front only, pas d'infra).** Sur la tuile
+« Communication d'entreprise » de l'accueil, une pastille orange si une communication
+non lue existe. État = `localStorage['comm_last_seen_at']` (par appareil, assumé).
+Au montage/retour accueil : compare le `created_at` de la dernière communication non
+supprimée (SDK, `is('deleted_at', null)`) à `comm_last_seen_at`. Écriture de
+`comm_last_seen_at` au montage de `CommunicationsScreen.tsx` (+ `clearAppBadge()`).
+
+**Brique 2 — table `push_subscriptions` + RPC d'écriture.**
+- Colonnes : `id`, `user_id` (FK auth.users), `endpoint` (**unique**, = jeton de
+  capacité), `p256dh`, `auth`, `user_agent`, `created_at`, `updated_at`.
+- **RLS activée, ZÉRO policy** (accès direct interdit) ; `REVOKE ALL ... FROM anon,
+  authenticated`. Écriture **par RPC uniquement**, lecture **par Edge Function
+  service_role** (contourne la RLS par design).
+- RPC `upsert_push_subscription(endpoint,p256dh,auth,user_agent)` et
+  `delete_push_subscription(endpoint)` — **SECURITY DEFINER**, bornées `auth.uid()`,
+  `on conflict (endpoint)` pour gérer le **hand-off d'appareil** (un iPhone prêté).
+- **Piège Supabase corrigé** : les default privileges accordent `EXECUTE` à `anon`
+  malgré `revoke ... from public` → **`revoke execute ... from anon` explicite** en plus.
+
+**Brique 3a — migration SW `generateSW → injectManifest`.** Précache **et** runtime
+caching (dont la route musique CacheFirst) réécrits à la main dans `src/sw.ts`.
+Validée par **test offline mode avion sur vrai téléphone** (app se lance, PDF servis,
+recherche interne OK). *(A exhumé une dette préexistante sur la musique Tetris, voir
+Dettes.)*
+
+**Brique 3b — handlers push + bouton d'activation.**
+- SW : handler `push` → `showNotification({title,body,tag:'comm'})` **+**
+  `setAppBadge()` ; handler `notificationclick` → `focus`/`openWindow('/')`.
+- Bouton « Activer les notifications » : garde iOS (installé + standalone),
+  `Notification.requestPermission()` dans le **geste utilisateur** (requis iOS),
+  `pushManager.subscribe({ userVisibleOnly:true, applicationServerKey:
+  urlBase64ToUint8Array(VITE_VAPID_PUBLIC_KEY) })`, puis RPC `upsert_push_subscription`.
+  Bouton « Désactiver » → `unsubscribe()` + RPC `delete_push_subscription`.
+
+**Brique 4 — Edge Function `send-push`.**
+- Lit `push_subscriptions` en **service_role**, `setVapidDetails`, envoie à tous
+  (`Promise.allSettled`).
+- **Protégée par header `x-push-secret` = `PUSH_HOOK_SECRET`** (401 fail-closed si
+  absent/faux, y compris si le secret n'est pas configuré).
+- **Auto-purge** : tout endpoint répondant `404`/`410` est supprimé de la base.
+- **Filtre de test** : champ optionnel `test_user_id` (uuid) → n'envoie qu'à cet
+  utilisateur ; absent → envoi à **tous** (comportement prod). Réservé aux tests.
+- **Double format d'entrée** : `{title,body}` (tests manuels) OU `{record}` (trigger).
+  En format `record`, `body` = `record.titre` **nettoyé** (extension retirée, `_`/`-`
+  → espaces, tronqué ~120, fallback « Une nouvelle communication est disponible »),
+  `title` fixe « Nouvelle communication ». Ignore si `record.deleted_at` non null.
+- Secrets Supabase : `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`,
+  `PUSH_HOOK_SECRET`. Déployée en **`--no-verify-jwt`** (l'appelant est le trigger,
+  pas un utilisateur ; la garde est le header).
+
+**Brique 5 — déclencheur : trigger SQL maison (PAS le webhook natif).** Le Database
+Webhook natif du dashboard est **indisponible sur ce projet** (`schema
+"supabase_functions" does not exist`). Remplacé par notre propre mécanique, plus
+maîtrisable et versionnable :
+- **`create extension if not exists pg_net;`** (moteur des appels HTTP sortants).
+- Schéma **`private`** + table **`private.config`** (`send_push_url`,
+  `push_hook_secret`) — non exposée par PostgREST, le secret n'est jamais lisible côté
+  client.
+- Fonction **`notify_new_communication()`** (SECURITY DEFINER) : lit la config, garde
+  soft-delete (`new.deleted_at is null`), appelle **`net.http_post`** vers `send-push`
+  avec le header `x-push-secret` et un payload `{type,table,record:{titre,deleted_at}}`.
+  Appel **asynchrone** → n'échoue jamais l'INSERT de la communication.
+- Trigger **`trg_notify_new_communication` AFTER INSERT ON communications**.
+
+**Test grandeur nature validé** : ajout d'une communication depuis l'appli →
+notification (titre de fichier nettoyé) sur le téléphone, sans terminal.
+**Garde-fou** : le trigger envoie à **tous** les abonnés (plus de `test_user_id`) —
+vérifier `push_subscriptions` avant un test si des monteurs sont abonnés.
+
+**Fichiers/objets clés** : `supabase/functions/send-push/index.ts`, `src/sw.ts`,
+bouton d'activation (écran Communication / réglages), table `push_subscriptions`,
+`private.config`, trigger `trg_notify_new_communication`. SQL archivé sous
+`notifications_push_subscriptions.sql` (+ correctif anon) et
+`notifications_push_trigger_communication.sql`.
 
 ---
 
@@ -360,10 +478,33 @@ les FEK (jamais les octets R2), dans la transaction de `rotate_vault_secret`. Ta
 
 ## Ouverture des PDF — règle de plateforme
 
-[inchangé] Sur iOS, `window.open` après un `await` est bloqué → viewer in-app
-`<PdfViewer>`. Sur non-iOS → lecteur natif. Jamais de pré-ouverture synchrone
+Sur iOS, `window.open` après un `await` est bloqué → viewer in-app `<PdfViewer>`. Sur
+non-iOS → lecteur natif. Jamais de pré-ouverture synchrone
 `window.open('','_blank','noopener')`. Polyfill pdf.js obligatoire (WebKit iOS).
-Garde-fou « plan trop détaillé » (iOS, `pdfImageMegapixels`, seuil 30 Mpx).
+**`pdfjs-dist` en 6.3.289** (bump de sécurité, GHSA-hq66-cqwq-w95j — exécution JS à
+l'ouverture d'un PDF malveillant, vecteur réaliste = notice tierce téléchargée par la
+recherche web ; même majeure que 6.1, API stable).
+
+**Garde-fou « plan trop détaillé »** (iOS, `pdfImageMegapixels`, seuil 30 Mpx, dans
+`src/lib/pdfMeasure.ts`) : au-delà du seuil, le plan n'est **PAS** monté dans `<PdfViewer>`
+(risque de crash canvas WebKit) — `PlanTooDetailedCard` s'affiche à la place (bouton de
+partage, pas d'aperçu). Le garde-fou protège du **crash**, pas du **flou**.
+
+**Plans/schémas grand format sur iOS — porte de sortie native (FONCTIONNE).** Un rendu
+pdf.js sur un **seul canvas** ne peut pas afficher un très grand plan à la fois net ET sans
+crasher iOS. Sous le seuil de 30 Mpx, `<PdfViewer>` rend **une fois à échelle fixe** (sans
+`devicePixelRatio`) puis laisse le CSS zoomer → aperçu **flou**, pire au zoom. La correction
+n'est pas de rendre l'aperçu in-app plus net, mais de **passer le plan au visionneur natif
+iOS** (Fichiers / Aperçu), qui rend **tuilé à la demande**, net à tout niveau de zoom.
+L'overlay plein écran des plans (`PlansSection.tsx`) expose donc sur iOS **deux boutons** :
+**« Ouvrir »** (ouvre le PDF directement dans le visionneur natif) et **« Partager »**
+(feuille de partage → Fichiers/Livres/Aperçu). Les deux réutilisent le **blob déjà en
+mémoire** — **aucun `await` avant** `window.open`/`navigator.share`, sinon le geste
+utilisateur est cassé sur Safari (exactement pourquoi la bibliothèque restait nette : elle
+échappait déjà en synchrone vers le natif). Le flou de l'aperçu in-app est **assumé** : sur
+du très grand format, la sortie native EST la réponse, pas un pis-aller. *(Le chemin > 30 Mpx
+via `PlanTooDetailedCard.handleShare` reste inchangé et testé ; le nouveau handler de
+l'overlay est autonome, pas une extraction du chemin testé.)*
 
 ---
 
@@ -372,7 +513,8 @@ Garde-fou « plan trop détaillé » (iOS, `pdfImageMegapixels`, seuil 30 Mpx).
 [inchangés — voir ETAT précédent et HANDOFF dédiés] Sections accordéon (ordre
 Équipements → Documentation → Plans → Carnet → Données sensibles, `keepMounted` sur
 le coffre). Communication d'entreprise (R2, soft-delete, RPC
-`soft_delete_communication`). Suppression de dossier en deux chemins
+`soft_delete_communication`) — désormais **déclencheur des notifications push**
+(trigger `notify_new_communication`). Suppression de dossier en deux chemins
 (`delete_dossier_if_empty` / `destroy_dossier_vault`). Tetris solo + classement +
 bruitages + **mode duo en ligne** (table `duo_matches` + 5 RPC, compteur d'attaques
 cumulatif, seed partagé).
@@ -412,6 +554,21 @@ cumulatif, seed partagé).
   (INSERT → conflit PK). Un **récupérateur est exclu** du libre-service (RPC + UI).
 - **Coffre — `dossier_has_vault` distingue « absent » de « masqué »** : pré-check
   d'ouverture à 4 étages, sinon un ré-enrôlé sans accès voit à tort « coffre vide ».
+- **Notifications push — `userVisibleOnly` impose une bannière** (Android + iOS) : pas
+  de pastille silencieuse appli fermée. Le **badge d'icône** (`setAppBadge`) dépend du
+  **launcher** (bonus). iOS = PWA **installée** requise. Les abonnements **meurent au
+  redéploiement SW** (`410`) → `send-push` **auto-purge** ; toute RPC/fonction push
+  reste **RPC-only + service_role**, jamais d'accès client direct à `push_subscriptions`.
+- **RPC `authenticated`-only sous Supabase** : `revoke ... from public` **ne suffit
+  pas** — les default privileges accordent `EXECUTE` à `anon`. Toujours ajouter
+  **`revoke execute ... from anon` explicite**.
+- **Database Webhook natif indisponible sur ce projet** (`schema supabase_functions`
+  absent) : pour déclencher une Edge Function sur un INSERT, utiliser un **trigger SQL +
+  `pg_net`** (`net.http_post`, appel **async**), avec URL + secret rangés dans
+  **`private.config`** (jamais en dur, jamais exposé PostgREST).
+- **Un seul Codespace actif** : Claude Code dans un terminal, **tes manips (git, SQL,
+  `supabase deploy`) dans un SECOND terminal du MÊME Codespace** — jamais deux
+  Codespaces (désync `git pull`, fonction « introuvable » car non déployée là où tu es).
 - **Recherche web — validation AVANT le juge** : le juge choisit parmi des URL
   **vérifiées** (`link_ok`/`content_type`) et **corroborées** (`engine_count`) ; il
   n'invente/ne modifie JAMAIS une URL ; `content_type` fait autorité sur `is_pdf`.
@@ -433,6 +590,35 @@ cumulatif, seed partagé).
 - **Gemini** : `thinkingBudget:0` obligatoire (sinon réponse sans `candidates`) ;
   URL de grounding = redirections `vertexaisearch` à résoudre.
 - **Ouverture PDF = règle de plateforme** ; **pdf.js** = polyfill au démarrage.
+- **Plans grand format sur iOS = sortie native** (« Ouvrir » / « Partager » depuis
+  l'overlay `PlansSection`, sur le **blob déjà en mémoire**, **aucun `await` avant**
+  `window.open`/`navigator.share` — sinon le geste utilisateur est cassé sur Safari). Le
+  flou de l'aperçu in-app est **assumé** ; on ne re-render pas dans l'app.
+- **Tout `VITE_*` est PUBLIC** (inliné dans le bundle livré) : n'y mettre QUE des valeurs
+  publiques (URL Supabase, clé publishable, VAPID publique). `VITE_N8N_INGEST_SECRET` viole
+  cette règle (dette). Un vrai secret ne transite JAMAIS par le front.
+- **Preview de branche Cloudflare Workers = inutilisable ici** : les builds de branches
+  **hors-production ne reçoivent PAS les `VITE_*`** de build (limitation produit, pas un bug
+  de config) → l'app crashe `Missing VITE_SUPABASE_URL`. Pour tester une branche :
+  **atelier local** (`.env.local` de `VITE_*` publiques + `npm run preview -- --host`, port
+  forwardé) OU **merge-et-test-prod avec `git revert` prêt** (retenu pour les changements à
+  faible risque, ex. bump de dépendance : pdf.js lazy-loaded, revert = un commit).
+- **Vocabulaire affiché = « enregistrement », code = « enroll »** : les libellés UI disent
+  « (ré-)enregistrement » (`EnrollScreen`, `VaultEnrollScreen`, `VaultAdminScreen`,
+  `ToolsScreen`, `onboarding.ts`, **message de l'Edge Function `enroll`**) ; les
+  **identifiants de code restent inchangés** (`EnrollScreen.tsx`, `vaultEnroll.ts`,
+  `enroll()`, RPC `reenroll_vault_user`, `submitVaultEnrollment`, préfixe R2, etc.). Ne PAS
+  renommer le code pour « suivre » le libellé (refactor large hors périmètre).
+- **Erreur de connexion** : `auth.tsx` traduit le message Supabase générique
+  `Invalid login credentials` (renvoyé indifféremment pour email OU mot de passe erroné) en
+  « Mot de passe invalide. » ; les autres erreurs Supabase (compte désactivé, trop de
+  tentatives…) restent affichées **telles quelles**, jamais masquées sous ce message.
+- **`PasswordInput` = composant partagé** (afficher/masquer) : réutiliser sur tout champ mot
+  de passe (LoginScreen, EnrollScreen) plutôt qu'un `<input type=password>` nu.
+- **Lint = 0 erreur** : `npm run lint` doit rester propre. 1 warning
+  `react-refresh/only-export-components` sur `AnnotationOverlay.tsx` **assumé** (Fast Refresh
+  dev only). Ne pas lancer `--fix` en aveugle ; une règle hooks (`set-state-in-effect`,
+  `exhaustive-deps`) se corrige **après inspection**, jamais par réflexe.
 - **Coffre — enveloppe FEK** ; ne jamais modifier `vault.js` sans le harnais (30/30).
 - **Bibliothèque PDF sur R2** : `file_path` = clé NUE ; clé R2 = `'documents/' +
   file_path` ; toujours un Blob des deux côtés.
@@ -451,12 +637,14 @@ cumulatif, seed partagé).
 - **`auth.uid()` NULL dans le SQL Editor** ; simuler via `set_config('request.jwt.
   claims', …, true)` dans un même run (utile pour tester une RPC SECURITY DEFINER
   en `begin; … rollback;`). Une RPC qui **écrit** (ex. `acknowledge_my_*`,
-  `reenroll_vault_user`) ne se lance PAS à blanc dans l'éditeur — c'est l'app qui
-  l'appelle ; on ne teste que sa **création** (harnais) et son comportement via l'app.
-- **Edge Function : le push ne déploie PAS** → `npx supabase functions deploy`.
+  `reenroll_vault_user`, `upsert_push_subscription`) ne se lance PAS à blanc dans
+  l'éditeur — c'est l'app qui l'appelle ; on ne teste que sa **création** (harnais).
+- **Edge Function : le push ne déploie PAS** → `npx supabase functions deploy` (et
+  `--no-verify-jwt` si l'appelant n'est pas un utilisateur authentifié — ex. `send-push`).
 - **Après un push, fermer/rouvrir la PWA** (cache SW) ; changement SW → rouvrir EN
   LIGNE 1-2×.
-- **Secrets** : Publishable/anon OK en clair ; Secret/tokens jamais dans code/Git/chat.
+- **Secrets** : Publishable/anon OK en clair ; Secret/tokens/VAPID privée jamais dans
+  code/Git/chat.
 - **Le travail n'existe que poussé/publié** : commit + push depuis le terminal ; voir
   le diff avant commit ; **publier** les workflows n8n après édition.
 
@@ -464,6 +652,40 @@ cumulatif, seed partagé).
 
 ## Dettes ouvertes
 
+- **Musique Tetris hors-ligne (confort de jeu, non bloquant)** : `/tetris_audio.mp3`
+  (~6,9 Mo, same-origin, joué via `new Audio()` → **requêtes Range 206**) ne se sert en
+  avion QUE tant que la page n'est pas rechargée (buffer RAM). Route CacheFirst
+  `tetris-music` dans `src/sw.ts`, fichier **exclu du précache** (trop gros). Correctif
+  tenté (`CacheableResponsePlugin [0,200,206]` + `RangeRequestsPlugin`) **insuffisant** :
+  RangeRequests sait DÉCOUPER une entrée complète, pas en FABRIQUER une ; or rien ne
+  dépose jamais le fichier ENTIER (que du 206). **Défaut préexistant** à la migration
+  injectManifest (déjà absent en generateSW, commit `07fe286`), pas une régression.
+  **Correctif prévu (brique isolée)** : amorcer un `fetch('/tetris_audio.mp3')` **sans
+  Range** (→ 200 complet) via `primeMusicAudio()` pour déposer l'entrée pleine ; les
+  Range se serviront ensuite depuis elle. Alternative écartée : précacher (impose 6,9 Mo
+  à tous, y compris non-joueurs).
+- **`npm audit` — 7 vulns résiduelles, toutes build/CLI (non corrigées volontairement)** :
+  `postcss` (moderate) + `undici`→`miniflare`→`wrangler` (high). Aucune n'atteint le bundle
+  livré (front statique, pas de process Node exposé côté utilisateur) → correctif sans
+  bénéfice runtime, et bumper `wrangler`/PostCSS casserait la toolchain. **Ne PAS
+  `npm audit fix --force`.** La seule vuln **runtime** (`pdfjs-dist`) a été corrigée (bump
+  6.3.289). Test décisif : `npm audit --omit=dev` doit rester à **0**.
+- **Secret d'ingestion n8n exposé dans le bundle** : `VITE_N8N_INGEST_SECRET` est préfixé
+  `VITE_` → **inliné en clair** dans le JS livré (tout `VITE_*` l'est). Le webhook
+  d'ingestion n8n n'est donc **pas réellement protégé** par ce secret (lisible dans les
+  DevTools de n'importe quel utilisateur). À reprendre à froid : protéger le webhook
+  autrement (côté n8n), sans secret transitant par le front.
+- **Aperçu in-app des plans grand format sur iOS = flou (assumé, non bloquant)** : la sortie
+  native (« Ouvrir » / « Partager » de l'overlay `PlansSection`) est la réponse retenue. Le
+  net **sans quitter l'app** exigerait un re-rendu pdf.js au zoom (`devicePixelRatio` +
+  `page.render()` au niveau demandé) dans `<PdfViewer>` — composant partagé par 5 écrans,
+  surface de test large. À décider à froid seulement si le besoin apparaît.
+- **Clic notification → écran Communication (hors périmètre voulu)** : le clic rouvre
+  l'appli sur l'**accueil** (`focus`/`openWindow('/')`), pas sur Communication.
+  NON VOULU au départ (objectif = pastille ; bannière = bonus). App **sans router**
+  (navigation état React), donc pas de deep-link direct. Solution si un jour souhaité :
+  `focus` + `postMessage({type:'navigate',screen:'communications'})` (appli ouverte) +
+  `openWindow('/?screen=communications')` lu au boot (cold-start). Diagnostic fait.
 - **Nettoyage staging `equipment-requests/`** : après copie vers `documents/`, l'objet
   de staging reste orphelin. Le cleanup DOIT se faire côté **n8n** (DeleteObject R2
   best-effort en fin du workflow de promotion) — l'Edge Function ne peut pas (DELETE
@@ -490,7 +712,9 @@ cumulatif, seed partagé).
   `game_scores`, `duo_matches`, `galerie_items`, `galerie_photos`, `dossier_plans`,
   `dossier_deletion_requests`, `dossier_equipment_requests`,
   **`dossier_equipment_request_files`**, **`demandes`**, `communications`, `vault_files` ;
-  activer Schedule + purge.
+  activer Schedule + purge. **EXCLURE `push_subscriptions`** (jetons éphémères régénérés
+  par le client — comme `documents.content`) ; **`private.config`** contient un secret
+  (à traiter avec précaution si un jour inclus).
 - **Cache offline — Galerie, Plans, fichiers du coffre, annotation photo** : online-only.
 - **Communication d'entreprise — aperçu offline** : online-only (placeholder).
 - **Garde-fou « PDF trop détaillé » sur les fichiers du coffre** : non appliqué.
@@ -499,24 +723,39 @@ cumulatif, seed partagé).
 - **`gol-1-media.bmp`** reste en BMP (non bloquant).
 - **`formatDate` dupliqué** (~4-5 copies) ; **`planLabel` bugué** (coupe au 1er tiret) ;
   **chevrons `goHome` vs `goBack`** à normaliser.
+- **Patron de partage `navigator.share` + repli `<a download>` dupliqué ~4×**
+  (`PlanTooDetailedCard.handleShare`, overlay plans « Ouvrir »/« Partager »,
+  `VaultSheet.handleShareFile`, `CarnetSection.handleExportPhoto`) — extraire en helper
+  partagé dans une **brique isolée** (ne pas mêler à une feature ; le chemin testé reste
+  intact tant qu'on ne l'a pas fait).
+- **Lint — propre (1 warning assumé)** : `npm run lint` = **0 erreur**. Reste **1 warning**
+  `react-refresh/only-export-components` sur `AnnotationOverlay.tsx` (Fast Refresh dev
+  uniquement, zéro impact prod) — **assumé**, non corrigé (le fix déplacerait une constante
+  hors d'un fichier qui marche).
 - **Comptes de test à supprimer** avant exploitation. **pg_cron** installé mais inutilisé.
 
 ---
 
 ## Prochain chantier
 
-1. **Nettoyage staging + convergence `resolve`** : DeleteObject n8n best-effort dans le
+1. **Notifications push — finitions optionnelles** : (a) confirmer la **pastille
+   d'icône** sur un vrai Android du parc (dépend du launcher) ; (b) si voulu, le **clic
+   → écran Communication** (postMessage + query param, cf. dette) ; (c) éventuel
+   **compteur** de non-lus (brique 5 initiale) plutôt qu'une pastille simple.
+2. **Musique Tetris offline** : `primeMusicAudio()` (fetch sans Range → entrée pleine
+   en cache), brique isolée testée en avion.
+3. **Nettoyage staging + convergence `resolve`** : DeleteObject n8n best-effort dans le
    workflow de promotion, puis refactor de `resolve_dossier_equipment_request` sur
    `upsert_dossier_product` (brique isolée, testée).
-2. **Recherche web — remplir le contexte du job** (equipment_type…) côté front, puis
+4. **Recherche web — remplir le contexte du job** (equipment_type…) côté front, puis
    **nettoyer** l'ancien chemin (colonnes, Edge Function, workflows, clé orpheline).
-3. **Canal email (Brevo)** : débloque demandes de suppression/équipement, confirmation
+5. **Canal email (Brevo)** : débloque demandes de suppression/équipement, confirmation
    onboarding, alerte suppression en masse. Le blocage le plus rentable à lever.
-4. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
-5. **Protection des données** : Schedule backup + purge, avec toutes les tables
+6. **Cache offline** — Galerie, Plans, fichiers du coffre, annotation photo.
+7. **Protection des données** : Schedule backup + purge, avec toutes les tables
    récentes (`web_search_results`, `vault_files`, `dossier_equipment_request_files`,
-   `demandes`, `duo_matches` inclus).
-6. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
+   `demandes`, `communications`, `duo_matches` inclus), **`push_subscriptions` exclue**.
+8. **Nettoyage granularité produits** (Bticino, Comelit, Swisscom, Burri).
 
 ---
 
@@ -532,6 +771,11 @@ cumulatif, seed partagé).
     `dossier_has_vault` et pré-check à 4 étages).
   - **`HANDOFF_recherche_web_ensemble_juge.md`** (Ensemble Search : 3 moteurs + juge +
     validation-avant-juge, et le bêtisier).
+- **Les notifications push** : tout est dans la section « Notifications push
+  d'entreprise » ci-dessus (5 briques, contraintes plateforme, trigger SQL maison en
+  remplacement du webhook natif). SQL archivé : `notifications_push_subscriptions.sql`
+  (+ correctif anon), `notifications_push_trigger_communication.sql`. Pas de HANDOFF
+  dédié — la section de cet ETAT fait foi.
 - **Le flag « Outils » + le canal équipement de « Mes demandes »** : briques légères
   (colonnes `seen_by_requester_at` + RPC `acknowledge_my_*`, flag dérivé, 4ᵉ onglet) —
   pas de HANDOFF dédié, tout est dans la section « Mes demandes & flag Outils » ci-dessus.
