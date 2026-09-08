@@ -11,6 +11,7 @@ import { EnrollScreen } from './screens/EnrollScreen';
 import { HomeScreen } from './screens/HomeScreen';
 import { DepartmentScreen } from './screens/DepartmentScreen';
 import { GalerieScreen } from './screens/GalerieScreen';
+import { ListePrixScreen } from './screens/ListePrixScreen';
 import { SearchScreen } from './screens/SearchScreen';
 import { DocumentScreen } from './screens/DocumentScreen';
 import { DiagnosticScreen } from './screens/DiagnosticScreen';
@@ -37,6 +38,8 @@ function Screens() {
       return <DepartmentScreen department={nav.state.department} />;
     case 'galerie':
       return <GalerieScreen key={nav.state.specialty.id} specialty={nav.state.specialty} />;
+    case 'listePrix':
+      return <ListePrixScreen key={nav.state.specialty.id} specialty={nav.state.specialty} />;
     case 'search':
       return <SearchScreen params={nav.state.params} />;
     case 'document':

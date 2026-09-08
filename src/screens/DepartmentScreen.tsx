@@ -26,10 +26,13 @@ export function DepartmentScreen({ department }: { department: Department }) {
       setSpecialties(local);
       // Counts require a network round-trip (no local index of document
       // counts) — skip it offline rather than show a stale or fabricated number.
-      // Galerie specialties are excluded entirely: they have no `documents`
-      // rows by nature, so a count would always read 0 — indistinguishable
-      // from "empty" even though the specialty has content (its galerie items).
-      const documentSpecialtyIds = local.filter((s) => s.display_mode !== 'galerie').map((s) => s.id);
+      // Galerie/liste_prix specialties are excluded entirely: they have no
+      // `documents` rows by nature, so a count would always read 0 —
+      // indistinguishable from "empty" even though the specialty has content
+      // (its galerie items / price list articles).
+      const documentSpecialtyIds = local
+        .filter((s) => s.display_mode !== 'galerie' && s.display_mode !== 'liste_prix')
+        .map((s) => s.id);
       if (isOnline && documentSpecialtyIds.length > 0) {
         try {
           const result = await countDocumentsBySpecialty(documentSpecialtyIds);
@@ -51,6 +54,10 @@ export function DepartmentScreen({ department }: { department: Department }) {
   const openSpecialty = (specialty: Specialty) => {
     if (specialty.display_mode === 'galerie') {
       nav.goGalerie(specialty);
+      return;
+    }
+    if (specialty.display_mode === 'liste_prix') {
+      nav.goListePrix(specialty);
       return;
     }
     nav.goSearch({

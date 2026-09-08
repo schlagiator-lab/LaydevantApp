@@ -91,6 +91,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const goHome = () => setStack([HOME]);
   const goDepartment = (department: Department) => push({ screen: 'department', department });
   const goGalerie = (specialty: Specialty) => push({ screen: 'galerie', specialty });
+  const goListePrix = (specialty: Specialty) => push({ screen: 'listePrix', specialty });
   const goSearchBlank = () => push({ screen: 'search', params: BLANK_SEARCH });
   const goPinned = () => push({ screen: 'search', params: { ...BLANK_SEARCH, pinnedOnly: true } });
   const goSearch = (params: SearchParams) => push({ screen: 'search', params });
@@ -132,6 +133,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         goHome,
         goDepartment,
         goGalerie,
+        goListePrix,
         goSearchBlank,
         goPinned,
         goSearch,

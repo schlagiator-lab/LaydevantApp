@@ -22,6 +22,7 @@ export type NavState =
   | { screen: 'home' }
   | { screen: 'department'; department: Department }
   | { screen: 'galerie'; specialty: Specialty }
+  | { screen: 'listePrix'; specialty: Specialty }
   | { screen: 'search'; params: SearchParams }
   | { screen: 'document'; documentId: string }
   | { screen: 'diagnostic' }
@@ -59,6 +60,8 @@ export interface NavigationContextValue {
   goDepartment: (department: Department) => void;
   /** Spécialité en display_mode 'galerie' (CLAUDE.md §4) — grille de pastilles produit, pas de liste de documents. */
   goGalerie: (specialty: Specialty) => void;
+  /** Spécialité en display_mode 'liste_prix' (CLAUDE.md §4) — liste d'articles en saisie libre, sans rapport avec `products`. */
+  goListePrix: (specialty: Specialty) => void;
   /** Blank search — used by the home search bar and "Toute la documentation". */
   goSearchBlank: () => void;
   goPinned: () => void;

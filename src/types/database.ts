@@ -14,8 +14,9 @@ export type DocType =
 
 export type ProfileRole = 'monteur' | 'admin';
 
-/** How a specialty's content is browsed — plain document list, or the photo-grid "galerie" mode. */
-export type DisplayMode = 'documents' | 'galerie';
+/** How a specialty's content is browsed — plain document list, the photo-grid
+ * "galerie" mode, or the free-form "liste_prix" price list. */
+export type DisplayMode = 'documents' | 'galerie' | 'liste_prix';
 
 export interface Department {
   id: string;
@@ -287,6 +288,21 @@ export interface GalerieItem {
   updated_at: string;
   nb_photos: number;
   photos: GaleriePhoto[];
+}
+
+// Liste de prix — mode d'affichage alternatif d'une spécialité (saisie libre
+// d'articles avec un prix de vente HT, sans rapport avec `products`). Table
+// `prix_articles` déjà en place côté Supabase, non modifiable depuis cette app.
+
+export interface PrixArticle {
+  id: string;
+  specialty_id: string;
+  nom: string;
+  remarque: string | null;
+  prix_vente_ht: number | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface OnboardingInvitation {
