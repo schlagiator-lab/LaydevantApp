@@ -8,6 +8,7 @@ import {
   countPendingDeletionRequests,
   countPendingEquipmentRequests,
   countActiveDeletionAlerts,
+  countDownWebSearchEngines,
 } from '../lib/vaultAdmin';
 import { countNouvellesDemandes } from '../lib/demandes';
 import { useToolsFlag } from '../lib/useToolsFlag';
@@ -55,14 +56,16 @@ export function HomeScreen() {
   // Flag "Coffre (admin)" en rouge s'il y a des demandes à traiter dans
   // l'onglet "Demandes" — admin uniquement (isVaultAdmin()), un monteur ne
   // verrait sinon que ses propres demandes via la RLS, pas un vrai signal
-  // global. Quatre sources indépendantes : remontées terrain (`demandes`,
+  // global. Cinq sources indépendantes : remontées terrain (`demandes`,
   // statut 'nouvelle'), équipement manquant (`dossier_equipment_requests`,
   // status 'pending'), suppression de dossier (`dossier_deletion_requests`,
-  // status 'pending') et alertes de suppression massive (§ nouvelle alerte,
+  // status 'pending'), alertes de suppression massive (§ nouvelle alerte,
   // `get_deletion_activity` + seuils front, acquittement local déjà déduit
-  // par `countActiveDeletionAlerts`) — le flag doit sommer les quatre, pas
-  // seulement le premier. Best-effort : en ligne uniquement, échec silencieux
-  // (comme canPublishCommunications), jamais de blocage de l'accueil pour ça.
+  // par `countActiveDeletionAlerts`) et moteurs de recherche web hors service
+  // (`get_web_search_engine_health`, `countDownWebSearchEngines`) — le flag
+  // doit sommer les cinq, pas seulement le premier. Best-effort : en ligne
+  // uniquement, échec silencieux (comme canPublishCommunications), jamais de
+  // blocage de l'accueil pour ça.
   useEffect(() => {
     if (!isOnline) return;
     let cancelled = false;
@@ -70,13 +73,16 @@ export function HomeScreen() {
       try {
         const admin = await isVaultAdmin();
         if (!admin || cancelled) return;
-        const [nouvelles, equipement, suppressions, alertesSuppression] = await Promise.all([
+        const [nouvelles, equipement, suppressions, alertesSuppression, moteursHorsService] = await Promise.all([
           countNouvellesDemandes(),
           countPendingEquipmentRequests(),
           countPendingDeletionRequests(),
           countActiveDeletionAlerts(),
+          countDownWebSearchEngines(),
         ]);
-        if (!cancelled) setNouvellesDemandes(nouvelles + equipement + suppressions + alertesSuppression);
+        if (!cancelled) {
+          setNouvellesDemandes(nouvelles + equipement + suppressions + alertesSuppression + moteursHorsService);
+        }
       } catch {
         // Reste à 0 en cas d'échec — pas de flag affiché à tort.
       }

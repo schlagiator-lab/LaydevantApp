@@ -21,12 +21,15 @@ import {
   reconcileDeletionAlerts,
   acknowledgeDeletionAlert,
   SEUIL_RAFALE,
+  getWebSearchEngineHealth,
   type VaultUserKeySummary,
   type VaultDossierSummary,
   type DossierDeletionRequestSummary,
   type DeletionActivityRow,
   type DeletionAlertLevel,
   type DeletionAlertHistoryRow,
+  type WebSearchEngineHealth,
+  type WebSearchEngineHealthRow,
 } from '../lib/vaultAdmin';
 import { upsertDossierAccessRow } from '../lib/vaultSecrets';
 import { unwrapDek, wrapDekForUser } from '../lib/vault.js';
@@ -1054,6 +1057,11 @@ type EquipmentRequestsPhase =
  * (anciennement son propre onglet "Suppressions", devenu impossible à
  * repérer une fois la barre à six onglets sur écran de téléphone). Flux
  * d'INFORMATION, lecture seule : rien à approuver, seulement à acquitter.
+ *
+ * "Recherche web" — `EngineHealthSection`, même famille que le bloc
+ * ci-dessus (INFORMATION, lecture seule) mais sans rien à acquitter : elle
+ * ne s'affiche que si un moteur est tombé (`alerte === true` côté RPC),
+ * silencieuse sinon plutôt que d'encombrer l'onglet.
  */
 function DemandesTab() {
   return (
@@ -1089,6 +1097,8 @@ function DemandesTab() {
         </p>
         <DeletionActivityTab />
       </div>
+
+      <EngineHealthSection />
     </div>
   );
 }
@@ -1925,6 +1935,112 @@ function DeletionAlertHistorySection({ history }: { history: DeletionAlertHistor
         </div>
       )}
     </CollapsibleSection>
+  );
+}
+
+const ENGINE_LABEL: Record<WebSearchEngineHealthRow['moteur'], string> = {
+  serper: 'Serper',
+  gemini: 'Gemini',
+  perplexity: 'Perplexity',
+};
+
+/**
+ * Bloc "Recherche web" de l'onglet "Notifications" — drapeau rouge si un
+ * moteur (serper/gemini/perplexity) est mort sur ses derniers runs (RPC
+ * `get_web_search_engine_health`, CLAUDE.md §9). Chargée une seule fois au
+ * montage, comme `DeletionActivityTab` juste au-dessus (pas de
+ * `setInterval` : un admin qui veut rafraîchir rouvre l'onglet).
+ * `getWebSearchEngineHealth` retombe déjà sur `null` pour un non-admin ou un
+ * échec réseau (§ vaultAdmin.ts) — ce composant ne fait donc aucune
+ * distinction d'erreur, juste "rien à afficher" hors du cas `alerte: true`,
+ * pour ne jamais encombrer l'onglet d'un état neutre.
+ */
+function EngineHealthSection() {
+  const [health, setHealth] = useState<WebSearchEngineHealth | null>(null);
+
+  const loadHealth = useCallback(async () => {
+    const result = await getWebSearchEngineHealth();
+    setHealth(result);
+  }, []);
+
+  useEffect(() => {
+    // Chargement au montage via callback mémoïsée ; setState après await,
+    // pattern voulu dans ce fichier.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadHealth();
+  }, [loadHealth]);
+
+  if (!health?.alerte) return null;
+
+  const enPanne = health.moteurs.filter((m) => m.etat === 'rouge').length;
+
+  return (
+    <div style={{ paddingTop: 20, borderTop: `1px solid ${textA(0.12)}` }}>
+      <CollapsibleSection
+        title="Recherche web : moteur(s) hors service"
+        badge={<EngineHealthBadge count={enPanne} />}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {health.moteurs.map((m) => (
+            <EngineHealthRow key={m.moteur} row={m} />
+          ))}
+          <p style={{ fontSize: 11.5, color: textA(0.45) }}>
+            Fenêtre des {health.fenetre} derniers runs · généré le {formatDateTime(health.genere_le)}
+          </p>
+        </div>
+      </CollapsibleSection>
+    </div>
+  );
+}
+
+/** Même formule visuelle que `DeletionAlertBadge`/`DemandeStatutBadge` (dot +
+ * pill) — pas de composant partagé, seule la palette est commune. */
+function EngineHealthBadge({ count }: { count: number }) {
+  return (
+    <span
+      style={{
+        flex: 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 9px',
+        borderRadius: 100,
+        background: 'rgba(209, 67, 67, 0.18)',
+        color: DANGER,
+        fontSize: 11.5,
+        fontWeight: 700,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: DANGER }} />
+      {count}
+    </span>
+  );
+}
+
+/**
+ * Une ligne par moteur dans le détail déplié. 'rouge' en rouge/gras (le seul
+ * état à signaler), 'inconnu' en gris neutre (pas assez de runs, jamais une
+ * alerte), 'ok' discret — les trois moteurs restent visibles pour que
+ * l'admin voie d'un coup d'œil lesquels sont vérifiés vs. en cause.
+ */
+function EngineHealthRow({ row }: { row: WebSearchEngineHealthRow }) {
+  const color = row.etat === 'rouge' ? DANGER : row.etat === 'inconnu' ? textA(0.45) : textA(0.55);
+  const label = row.etat === 'rouge' ? 'Hors service' : row.etat === 'inconnu' ? 'Pas assez de données' : 'OK';
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, fontWeight: row.etat === 'rouge' ? 700 : 500, color: row.etat === 'rouge' ? DANGER : colors.text }}>
+          {ENGINE_LABEL[row.moteur] ?? row.moteur}
+        </div>
+        <div style={{ fontSize: 11.5, color: textA(0.5), marginTop: 2 }}>
+          {row.runs} run{row.runs === 1 ? '' : 's'} · {row.erreurs} erreur{row.erreurs === 1 ? '' : 's'}
+          {row.dernier_signe_de_vie ? ` · dernier signe de vie le ${formatDateTime(row.dernier_signe_de_vie)}` : ' · aucun signe de vie'}
+        </div>
+      </div>
+      <span style={{ flex: 'none', fontSize: 11.5, fontWeight: 700, color }}>{label}</span>
+    </div>
   );
 }
 

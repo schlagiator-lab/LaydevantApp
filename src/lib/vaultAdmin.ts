@@ -607,3 +607,58 @@ export async function countActiveDeletionAlerts(): Promise<number> {
   const [rows, history] = await Promise.all([getDeletionActivity(), getDeletionAlertHistory()]);
   return reconcileDeletionAlerts(rows, history).filter((a) => !a.acknowledged).length;
 }
+
+export type WebSearchEngineEtat = 'ok' | 'rouge' | 'inconnu';
+
+export interface WebSearchEngineHealthRow {
+  moteur: 'serper' | 'gemini' | 'perplexity';
+  etat: WebSearchEngineEtat;
+  runs: number;
+  erreurs: number;
+  dernier_signe_de_vie: string | null;
+  derniere_tentative: string | null;
+}
+
+export interface WebSearchEngineHealth {
+  fenetre: number;
+  genere_le: string;
+  /** true dès qu'un moteur est 'rouge' — c'est ce champ, pas une relecture
+   * de `moteurs`, qui porte la sémantique d'alerte (§ RPC, calculé côté base). */
+  alerte: boolean;
+  moteurs: WebSearchEngineHealthRow[];
+}
+
+/**
+ * État des moteurs de recherche web (RPC `get_web_search_engine_health`,
+ * `SECURITY DEFINER`, admin-only, fenêtre par défaut de 5 runs) — alimente le
+ * drapeau de l'onglet "Notifications" (§ EngineHealthSection,
+ * VaultAdminScreen) et le flag "Coffre (admin)" de l'accueil
+ * (`countDownWebSearchEngines` ci-dessous). Ne lit jamais `web_search_results`
+ * directement (service-only, RLS sans policy, CLAUDE.md §9) — cette RPC est
+ * la seule porte d'entrée. `insufficient_privilege` (42501, non-admin) ET
+ * toute autre erreur (réseau, RPC absente) retombent sur `null` : signal
+ * secondaire, best-effort partout où il est appelé — jamais de plantage, et
+ * surtout jamais de faux rouge affiché sur un échec d'appel. C'est pourquoi
+ * ce module dévie ici de la convention "throw sauf 42501" du reste du
+ * fichier (ex. `getDeletionActivity`).
+ */
+export async function getWebSearchEngineHealth(): Promise<WebSearchEngineHealth | null> {
+  try {
+    const { data, error } = await supabase.rpc('get_web_search_engine_health');
+    if (error) return null;
+    return (data ?? null) as WebSearchEngineHealth | null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nombre de moteurs 'rouge' — alimente le flag "Coffre (admin)" de l'accueil,
+ * même chemin que les autres compteurs (HomeScreen.tsx) : sommé avec eux,
+ * best-effort. 0 si `alerte` est faux ou si l'appel a échoué.
+ */
+export async function countDownWebSearchEngines(): Promise<number> {
+  const health = await getWebSearchEngineHealth();
+  if (!health?.alerte) return 0;
+  return health.moteurs.filter((m) => m.etat === 'rouge').length;
+}
