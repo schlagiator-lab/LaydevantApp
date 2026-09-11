@@ -146,6 +146,10 @@ le front/Git/chat.
 - **Annotation de photos du carnet — non destructive** : calque vectoriel
   rééditable, 4 outils, rendu partout, export image à la demande.
 - **Galerie photo, Plans de dossier, Onboarding par liste blanche**.
+- **Liste de prix** (`display_mode: 'liste_prix'` sur une spécialité) : articles
+  (nom, remarque, prix de vente HT) saisis librement pour le département portes
+  automatiques, sans rapport avec `products`. Ajout, modification et
+  **suppression** (soft delete) depuis `PrixArticleFormSheet`.
 - **Connexion / enregistrement — UX** : composant partagé **`PasswordInput`** (bouton
   afficher/masquer, bascule `type=password`/`text`) sur le mot de passe de `LoginScreen` et
   les deux champs (mot de passe + confirmation) d'`EnrollScreen` ; l'erreur Supabase
