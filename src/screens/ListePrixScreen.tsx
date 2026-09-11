@@ -250,6 +250,10 @@ export function ListePrixScreen({ specialty }: { specialty: Specialty }) {
             setArticleSheet(null);
             setReloadKey((k) => k + 1);
           }}
+          onDeleted={() => {
+            setArticleSheet(null);
+            setReloadKey((k) => k + 1);
+          }}
         />
       )}
     </div>

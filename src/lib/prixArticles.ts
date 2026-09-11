@@ -37,3 +37,13 @@ export async function updatePrixArticle(id: string, input: UpdatePrixArticleInpu
   const { error } = await supabase.from('prix_articles').update(input).eq('id', id);
   if (error) throw error;
 }
+
+/** Soft delete — même motif que `deleteDossierNote` (src/lib/dossiers.ts). */
+export async function deletePrixArticle(id: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from('prix_articles')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
+    .eq('id', id);
+  if (error) throw error;
+}

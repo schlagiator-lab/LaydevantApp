@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { createPrixArticle, updatePrixArticle } from '../lib/prixArticles';
+import { createPrixArticle, deletePrixArticle, updatePrixArticle } from '../lib/prixArticles';
 import type { PrixArticle } from '../types/database';
 import { colors, fonts, textA } from '../styles/tokens';
+import { ConfirmSheet } from './ConfirmSheet';
 
 export interface PrixArticleFormSheetProps {
   specialtyId: string;
@@ -9,6 +10,8 @@ export interface PrixArticleFormSheetProps {
   article: PrixArticle | null;
   onClose: () => void;
   onSaved: () => void;
+  /** Appelé après suppression réussie — absent lors d'une création, pas de bouton "Supprimer" alors. */
+  onDeleted?: () => void;
 }
 
 /** Convertit une saisie prix (virgule ou point) en nombre, ou null si vide. */
@@ -20,14 +23,30 @@ function parsePrice(raw: string): number | null {
 }
 
 /** Ajout ou édition d'un article de la liste de prix — nom requis, remarque et prix optionnels. */
-export function PrixArticleFormSheet({ specialtyId, article, onClose, onSaved }: PrixArticleFormSheetProps) {
+export function PrixArticleFormSheet({ specialtyId, article, onClose, onSaved, onDeleted }: PrixArticleFormSheetProps) {
   const [nom, setNom] = useState(article?.nom ?? '');
   const [remarque, setRemarque] = useState(article?.remarque ?? '');
   const [prix, setPrix] = useState(article?.prix_vente_ht != null ? String(article.prix_vente_ht) : '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const canSubmit = nom.trim().length > 0 && !submitting;
+
+  const handleDelete = async () => {
+    if (!article) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deletePrixArticle(article.id);
+      onDeleted?.();
+    } catch (err) {
+      setDeleting(false);
+      setConfirmingDelete(false);
+      setError(err instanceof Error ? err.message : 'Échec de la suppression.');
+    }
+  };
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -130,7 +149,40 @@ export function PrixArticleFormSheet({ specialtyId, article, onClose, onSaved }:
             {submitting ? 'Enregistrement…' : article ? 'Enregistrer' : 'Ajouter l’article'}
           </button>
         </div>
+
+        {article && (
+          <button
+            type="button"
+            onClick={() => setConfirmingDelete(true)}
+            style={{
+              width: '100%',
+              marginTop: 12,
+              height: 44,
+              borderRadius: 12,
+              border: 'none',
+              background: 'transparent',
+              color: colors.accent,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Supprimer l’article
+          </button>
+        )}
       </div>
+
+      {confirmingDelete && (
+        <ConfirmSheet
+          title="Supprimer cet article ?"
+          message="Cet article sera définitivement retiré de la liste de prix."
+          confirmLabel={deleting ? 'Suppression…' : 'Supprimer'}
+          danger
+          confirmDisabled={deleting}
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
     </div>
   );
 }
