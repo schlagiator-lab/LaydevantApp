@@ -38,12 +38,14 @@ export async function updatePrixArticle(id: string, input: UpdatePrixArticleInpu
   if (error) throw error;
 }
 
-/** Soft delete — même motif que `deleteDossierNote` (src/lib/dossiers.ts). */
+/**
+ * Soft delete via RPC `SECURITY DEFINER` — un `.update()` direct posant
+ * `deleted_at` échoue en 42501 (piège RETURNING/policy SELECT documenté en
+ * CLAUDE.md §3, même motif que `soft_delete_communication`) : la policy
+ * SELECT de `prix_articles` filtre `deleted_at IS NULL`, et PostgREST génère
+ * un RETURNING implicite que Postgres revérifie contre cette policy.
+ */
 export async function deletePrixArticle(id: string): Promise<void> {
-  const { data: userData } = await supabase.auth.getUser();
-  const { error } = await supabase
-    .from('prix_articles')
-    .update({ deleted_at: new Date().toISOString(), deleted_by: userData.user?.id ?? null })
-    .eq('id', id);
+  const { error } = await supabase.rpc('soft_delete_prix_article', { p_id: id });
   if (error) throw error;
 }
