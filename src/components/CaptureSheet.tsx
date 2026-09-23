@@ -48,7 +48,10 @@ export function CaptureSheet({ result, brand, model, onClose, onCaptured }: Capt
       const [depts, specs] = await Promise.all([getLocalDepartments(), getLocalSpecialties()]);
       if (cancelled) return;
       setDepartments(depts);
-      setSpecialties(specs);
+      // Sélecteur monteur : spécialités `hidden` exclues (undefined, vieux
+      // cache, = visible jusqu'à la prochaine syncReferentiel). Les sélecteurs
+      // admin, eux, ne filtrent pas — ils doivent pouvoir les réafficher.
+      setSpecialties(specs.filter((s) => !s.hidden));
     })();
     return () => {
       cancelled = true;

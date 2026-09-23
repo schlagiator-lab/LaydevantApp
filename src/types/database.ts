@@ -33,6 +33,8 @@ export interface Specialty {
   slug: string;
   sort_order: number;
   display_mode: DisplayMode;
+  /** Masquée de la navigation monteur (DepartmentScreen), sans être supprimée. */
+  hidden: boolean;
 }
 
 export interface Product {

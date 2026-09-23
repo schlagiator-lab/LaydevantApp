@@ -21,7 +21,12 @@ export function DepartmentScreen({ department }: { department: Department }) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const local = await getLocalSpecialties(department.id);
+      // `hidden` ne masque que cette navigation monteur — les sélecteurs
+      // (capture, demandes d'équipement, panneau admin) lisent toujours
+      // getLocalSpecialties() sans filtre. Une ligne en cache IndexedDB
+      // antérieure à la colonne n'a pas `hidden` : undefined = visible, jusqu'à
+      // la prochaine syncReferentiel.
+      const local = (await getLocalSpecialties(department.id)).filter((s) => !s.hidden);
       if (cancelled) return;
       setSpecialties(local);
       // Counts require a network round-trip (no local index of document
