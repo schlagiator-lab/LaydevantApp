@@ -1,3 +1,7 @@
+-- ATTENTION : snapshot ANTÉRIEUR au durcissement des droits anon du 2026-10-02
+-- (migration 20261002120000_durcissement_droits_anon.sql). Ses GRANT à anon
+-- sur les vues et les fonctions sont PÉRIMÉS — ne pas s'y fier pour auditer
+-- les droits anon actuels.
 
 
 

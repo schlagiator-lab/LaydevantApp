@@ -325,6 +325,41 @@ Les tables à policy `SELECT` `using(true)` (`dossier_plans`/`dossier_notes`/
 `dossier_photos`) y échappent structurellement — pas de conflit possible.
 `dossier_equipment_requests` n'a pas été vérifiée pour ce piège précis.
 
+### Droits du rôle anon (convention SQL)
+
+Durcissement appliqué le 2026-10-02, consigné dans
+`supabase/migrations/20261002120000_durcissement_droits_anon.sql`
+(`supabase/_schema_snapshot.sql` lui est antérieur : ses `GRANT` à anon sur
+les vues et fonctions sont périmés).
+
+Droits du rôle anon (visiteur non connecté) : anon n'a **aucun** droit
+d'exécution sur les fonctions du schéma public ni de lecture sur les vues.
+Toute nouvelle fonction `SECURITY DEFINER` se termine dans sa migration par :
+
+```sql
+revoke execute on function <signature> from public, anon;
+grant execute on function <signature> to authenticated;
+```
+
+Toute nouvelle vue se termine par :
+
+```sql
+revoke all on <vue> from anon;
+grant select on <vue> to authenticated;
+```
+
+Toute nouvelle policy précise explicitement `TO authenticated` (jamais de
+policy sans clause `TO`, qui s'appliquerait à `PUBLIC` donc à anon). Depuis
+le 2026-10-02, les droits par défaut ne donnent plus `EXECUTE` à anon sur les
+nouvelles fonctions, mais Supabase continue d'ouvrir les nouvelles **vues**
+et **tables** à anon : il faut les retirer explicitement à chaque fois. Seule
+exception d'accès anon légitime : la sonde réseau `HEAD` sur `departments`
+(`src/lib/network.ts`), dont les policies sont `TO authenticated`. Les
+inscriptions publiques Supabase sont désactivées : un compte ne se crée QUE
+via l'Edge Function `enroll` (liste blanche, §7). Après toute nouvelle table,
+vue ou fonction, John relance le test d'intrusion anon (curl avec la seule
+clé publique).
+
 ### Stockage
 
 Les PDF de la bibliothèque vivent dans le bucket **Cloudflare R2**
