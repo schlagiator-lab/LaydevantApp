@@ -42,15 +42,18 @@ uniquement.
   métier (photos carnet, galerie, plans — sur R2) atterrir dans `public/`
   ou `dist/` : seul le shell applicatif doit être précaché.
 - **@supabase/supabase-js** pour la base, le stockage, l'authentification et
-  l'appel à l'Edge Function de recherche web
+  l'appel aux Edge Functions
 - **pdfjs-dist** pour l'aperçu PDF in-app (chargé en lazy/code-split, ~1 Mo,
   seulement à l'ouverture d'une fiche document)
 - **MiniSearch** pour l'index de recherche hors ligne (côté client)
 - **idb** pour IndexedDB
 - **Cache API** pour le stockage des PDF (pas IndexedDB : mieux adapté aux
   binaires volumineux)
-- **Supabase Edge Functions (Deno)** pour la recherche web de notices — seule
-  pièce du système qui appelle l'API Anthropic
+- **Supabase Edge Functions (Deno)** pour les gestes qui exigent un secret
+  serveur ou service_role (`enroll`, `delete-account`, ajout/promotion de
+  notices, `send-push`) — `verify_jwt` versionné dans `supabase/config.toml`
+  (§13). Aucune n'appelle l'API Anthropic (le juge de la recherche web vit
+  dans n8n, §9)
 - **Cloudflare Workers** (static assets) pour l'hébergement, avec une route
   API (`/api/photos`, `worker/index.js`) qui sert de proxy authentifié vers
   le bucket **Cloudflare R2** `laydevant-photos` (binding `PHOTOS_BUCKET`) —
@@ -156,8 +159,9 @@ ajouter une en fin de liste — voir la migration `titre` en exemple.
 web_search_log   id, user_id, brand, model, created_at
 ```
 
-Journalise chaque appel à l'Edge Function `web-search-notices` : garde-fou de
-coût (plafond quotidien par utilisateur) et traçabilité. Voir §9.
+Journal de l'ancienne recherche web par Edge Function (supprimée du dépôt le
+2026-10-02) : plus alimenté depuis le passage au pipeline n8n `web_search_jobs`
+(§9). Table conservée en base, nettoyage différé.
 
 ### Onboarding (allowlist)
 
@@ -511,9 +515,8 @@ Deux mesures indissociables :
 - **Inscriptions publiques Supabase désactivées** (sinon `signUp()` anon
   contourne toute la liste — elle deviendrait décorative).
 - **Edge Function `enroll` (service_role)** : vérifie que l'email est bien
-  pending et non consommé AVANT de créer le compte. Même pattern que
-  `web-search-notices` (§9) : une fonction serveur tient le secret et fait le
-  contrôle.
+  pending et non consommé AVANT de créer le compte : une fonction serveur
+  tient le secret et fait le contrôle.
 
 Flux : admin ajoute email + rôle (monteur/admin) → personne saisit email +
 mot de passe + nom → `enroll` valide le pending, `auth.admin.createUser(...,
@@ -647,8 +650,9 @@ ci-dessous) et la capture d'un résultat vers la bibliothèque (webhook n8n
 refonte complète, terminée et déployée — est dans
 `HANDOFF_recherche_web_ensemble_juge.md` ; état courant résumé dans
 `ETAT_PROJET.md`. Ce document remplace l'ancienne architecture à 2 moteurs
-(Anthropic + Perplexity, chacun sa colonne) et l'ancienne Edge Function
-`web-search-notices` (Anthropic direct, sync) — les deux **abandonnées**.
+(Anthropic + Perplexity, chacun sa colonne) et l'ancienne Edge Function de
+recherche (Anthropic direct, sync) — les deux **abandonnées** ; l'Edge
+Function n'est plus déployée et a été supprimée du dépôt le 2026-10-02.
 
 ### Recherche — pipeline back-end (3 moteurs + juge LLM)
 
@@ -666,9 +670,7 @@ PWA → INSERT web_search_jobs (status='pending')
   `specialty_name` optionnels) puis poll `status_final`/`final_results` sur
   la même table jusqu'à `'done'` (ou `'error'`), avec un filet de timeout
   client (`HARD_LIMIT_MS` ~300 s → `WebSearchTimeoutError`, « recherche
-  interrompue »). L'ancienne Edge Function `web-search-notices` n'est plus
-  appelée par le front (débranchement effectif côté code applicatif —
-  dépôt/redéploiement Supabase à confirmer séparément).
+  interrompue »).
 - Le trigger Postgres `notify_n8n_web_search()` (`SECURITY DEFINER`,
   `AFTER INSERT WHEN status='pending'`) appelle **un seul** webhook n8n
   (`notices-search`, `net.http_post`, header
@@ -722,9 +724,8 @@ PWA → INSERT web_search_jobs (status='pending')
   **RLS activée, zéro policy** (service-only) : le front ne la lit jamais,
   il poll uniquement `web_search_jobs`.
 - Dette connue (voir `ETAT_PROJET.md`, « Dettes ouvertes ») : nettoyer les
-  colonnes par moteur obsolètes de `web_search_jobs`, supprimer/débrancher
-  pour de bon l'Edge Function `web-search-notices` et les anciens workflows
-  n8n Anthropic/Perplexity, purger la clé orpheline
+  colonnes par moteur obsolètes de `web_search_jobs`, débrancher pour de bon
+  les anciens workflows n8n Anthropic/Perplexity, purger la clé orpheline
   `private_config.n8n_webhook_url_pplx`. Le contexte du job
   (`equipment_type`/`department_name`/`specialty_name`) est le signal le
   plus fort du juge contre les homonymes (ex. « ALADIN » récepteur radio vs
@@ -759,7 +760,7 @@ PWA → webhook n8n "ingest-from-url" → télécharge le PDF → mêmes étapes
 La capture ne concerne que la **documentation fabricant librement diffusée**
 (notices, manuels, fiches techniques) — pratique standard du métier. Elle ne
 doit **jamais** servir à aspirer du contenu sous licence de tiers : normes
-payantes type NIN/NIBT, contenus sous licence. Le prompt de l'Edge Function
+payantes type NIN/NIBT, contenus sous licence. Le prompt du juge (n8n, §9)
 privilégie déjà les sources fabricant officielles et exclut explicitement
 places de marché, revendeurs, forums — mais la responsabilité finale reste
 humaine (vérification en `CaptureSheet` avant envoi).
@@ -928,6 +929,11 @@ espacement disloque le mot.
 - **`ANTHROPIC_API_KEY` ne vit que dans les credentials du workflow n8n**
   (nœud Juge, Header Auth `x-api-key`, §9) — jamais dans le front, jamais
   dans une Edge Function Supabase, jamais dans Git.
+- **`verify_jwt` est versionné dans `supabase/config.toml`** ; toute Edge
+  Function identifie son appelant par `auth.getUser` côté serveur, jamais par
+  décodage local du JWT. `verify_jwt = false` n'est admis qu'avec un contrôle
+  de remplacement documenté dans `config.toml` (`enroll` : liste blanche
+  d'invitation ; `send-push` : en-tête `x-push-secret`).
 - `VITE_N8N_INGEST_SECRET` (header `x-webhook-secret` du webhook de capture)
   n'est **pas** un vrai secret. Comme tout `VITE_*`, il est figé au build donc
   inscrit en dur dans le bundle JS — lui-même servi en static asset public,

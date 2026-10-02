@@ -33,3 +33,7 @@ supabase/.temp/
 *.njsproj
 *.sln
 *.sw?
+
+# Secrets locaux Wrangler (jamais versionnés)
+.dev.vars
+.dev.vars.*

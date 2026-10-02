@@ -2,10 +2,11 @@
 // `enroll` côté suppression de compte.
 //
 // Auth : verify_jwt reste ACTIVÉ (contrairement à enroll) — seul un
-// utilisateur déjà authentifié atteint ce code. Le JWT est décodé (pas
-// revérifié : Supabase l'a déjà fait au niveau de la passerelle avant
-// d'invoquer la fonction, même convention que web-search-notices) pour
-// identifier l'appelant.
+// utilisateur déjà authentifié atteint ce code. L'appelant est malgré tout
+// identifié par auth.getUser(jwt) côté serveur (même façon de faire que
+// add-catalog-notice), jamais par décodage local du JWT : la sécurité de la
+// fonction ne dépend pas du seul réglage verify_jwt de la passerelle
+// (SECURITY_AUDIT.md E2).
 //
 // Toutes les lectures de contrôle (rôle de l'appelant, rôle et statut coffre
 // de la cible) passent par service_role plutôt que par un client "rejoue le
@@ -24,27 +25,25 @@ const cors = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-function userIdFromAuthHeader(authHeader: string | null): string | null {
-  if (!authHeader?.startsWith('Bearer ')) return null;
-  try {
-    const token = authHeader.slice('Bearer '.length);
-    const payloadSegment = token.split('.')[1];
-    const json = atob(payloadSegment.replace(/-/g, '+').replace(/_/g, '/'));
-    const sub = JSON.parse(json).sub;
-    return typeof sub === 'string' ? sub : null;
-  } catch {
-    return null;
-  }
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') {
     return json({ error: 'Méthode non autorisée' }, 405);
   }
 
-  const callerId = userIdFromAuthHeader(req.headers.get('Authorization'));
-  if (!callerId) return json({ error: 'Non authentifié' }, 401);
+  // 0) Identité de l'appelant, vérifiée par Supabase Auth (signature +
+  // expiration) — aucune autre opération avant ce contrôle.
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) return json({ error: 'Non authentifié' }, 401);
+  const jwt = authHeader.slice('Bearer '.length);
+
+  const caller = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { data: userData, error: userErr } = await caller.auth.getUser(jwt);
+  if (userErr || !userData?.user) return json({ error: 'Non authentifié' }, 401);
+  const callerId = userData.user.id;
 
   let body: { userId?: string };
   try {

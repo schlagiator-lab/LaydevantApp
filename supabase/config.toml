@@ -1,0 +1,34 @@
+# Configuration Supabase CLI — versionnée pour figer `verify_jwt` de chaque
+# Edge Function (SECURITY_AUDIT.md E2). Valeurs relevées dans le dashboard
+# Supabase le 2026-10-02. AUCUN secret ici : les secrets des fonctions vivent
+# dans `supabase secrets` (lus via Deno.env.get), jamais dans ce fichier.
+#
+# Quelle que soit la valeur de verify_jwt, toute fonction qui a besoin de
+# l'identité de l'appelant la vérifie elle-même par auth.getUser côté serveur
+# (CLAUDE.md §13), jamais par décodage local du JWT.
+
+# Identifiant local du projet pour le CLI (pas la référence du projet distant).
+project_id = "LaydevantApp"
+
+[functions.add-catalog-notice]
+verify_jwt = true
+
+[functions.add-dossier-equipment-notice]
+verify_jwt = true
+
+[functions.promote-equipment-notice]
+verify_jwt = true
+
+[functions.delete-account]
+verify_jwt = true
+
+# Appelée par une personne qui n'a pas encore de compte. Contrôle de
+# remplacement : l'email doit figurer dans onboarding_invitations (pending,
+# non consommé), liste blanche lue en service_role (CLAUDE.md §7).
+[functions.enroll]
+verify_jwt = false
+
+# Appelée côté serveur (trigger/n8n), sans JWT utilisateur. Contrôle de
+# remplacement : en-tête x-push-secret comparé à PUSH_HOOK_SECRET.
+[functions.send-push]
+verify_jwt = false
