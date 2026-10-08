@@ -4,6 +4,7 @@ import { useAuth } from '../lib/useAuth';
 import { useNavigation } from '../lib/useNavigation';
 import { searchWebNotices, WebSearchFailedError, WebSearchTimeoutError } from '../lib/webSearch';
 import { docTypeLabel } from '../lib/docType';
+import { safeExternalUrl } from '../lib/safeOpen';
 import type { WebSearchResult } from '../types/webSearch';
 import { StatusPill } from '../components/StatusPill';
 import { CaptureSheet } from '../components/CaptureSheet';
@@ -206,7 +207,8 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
   };
 
   const handleOpen = (result: WebSearchResult) => {
-    window.open(result.url, '_blank', 'noopener');
+    const url = safeExternalUrl(result.url);
+    if (url) window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const handleCaptured = () => {
@@ -332,6 +334,9 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {orderedResults.map((result, i) => {
               const isVideo = result.type === 'video';
+              // URL produite par n8n (juge LLM nourri de contenu web) : hors
+              // http(s), ni ouverture ni capture (SECURITY_AUDIT.md M1).
+              const hasSafeUrl = safeExternalUrl(result.url) !== null;
               return (
                 <Fragment key={`${result.url}-${i}`}>
                   {i === firstVideoIndex && <div style={videoSeparatorStyle}>Tutoriels vidéo</div>}
@@ -358,10 +363,13 @@ export function WebSearchScreen({ context }: { context: WebSearchContext }) {
                         )}
                       </div>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <button type="button" onClick={() => handleOpen(result)} style={smallSecondaryButtonStyle}>
-                          {result.is_pdf ? 'Consulter' : 'Ouvrir'}
-                        </button>
-                        {result.is_pdf && result.type !== 'video' && (
+                        {!hasSafeUrl && <span style={{ fontSize: 11.5, color: textA(0.55) }}>Lien invalide</span>}
+                        {hasSafeUrl && (
+                          <button type="button" onClick={() => handleOpen(result)} style={smallSecondaryButtonStyle}>
+                            {result.is_pdf ? 'Consulter' : 'Ouvrir'}
+                          </button>
+                        )}
+                        {hasSafeUrl && result.is_pdf && result.type !== 'video' && (
                           <button type="button" onClick={() => setCaptureTarget(result)} style={smallPrimaryButtonStyle}>
                             Ajouter à la bibliothèque
                           </button>

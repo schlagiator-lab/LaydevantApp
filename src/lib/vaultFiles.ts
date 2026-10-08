@@ -15,6 +15,7 @@
 import { supabase } from './supabase';
 import { getAccessToken, uploadPhotoBytes } from './dossiers';
 import { getVaultSecret, bootstrapDossierVault } from './vaultSecrets';
+import { safeMimeForOpen } from './safeOpen';
 import {
   generateFek,
   encryptBytes,
@@ -154,7 +155,7 @@ export async function openVaultFile(row: VaultFileRow, dek: CryptoKey): Promise<
   const metaPlain = await decryptContent(fek, row.meta_ciphertext, row.meta_iv);
   const meta = JSON.parse(metaPlain) as DecryptedFileMeta;
   const plainBytes = await decryptBytes(fek, encryptedBytes, row.file_iv);
-  return new Blob([plainBytes], { type: meta.mime || 'application/octet-stream' });
+  return new Blob([plainBytes], { type: safeMimeForOpen(meta.mime) });
 }
 
 /**

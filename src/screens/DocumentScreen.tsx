@@ -10,6 +10,7 @@ import { getPdf } from '../lib/pdfCache';
 import { pinDocument, unpinDocument, isPinnedOnAccount } from '../lib/pinning';
 import { StatusPill } from '../components/StatusPill';
 import { docTypeLabel } from '../lib/docType';
+import { safeExternalUrl } from '../lib/safeOpen';
 import { colors, fonts, textA, successA } from '../styles/tokens';
 
 // pdf.js (~1 MB with its worker) is only needed once a document is actually
@@ -168,6 +169,8 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
   };
 
   const fetchedDate = doc ? formatFetchedDate(doc.retrieved_at) : null;
+  // Hors http(s), pas de lien du tout (SECURITY_AUDIT.md M1).
+  const sourceUrl = safeExternalUrl(doc?.source_url);
   const viewerBlocked = !doc || (!pdfBlob && !isPinnedOnDevice && !pdfError);
 
   return (
@@ -441,8 +444,8 @@ export function DocumentScreen({ documentId }: { documentId: string }) {
           }}
         >
           <span>{fetchedDate ? `Récupéré le ${fetchedDate}` : ''}</span>
-          {doc.source_url && (
-            <a href={doc.source_url} target="_blank" rel="noreferrer" style={{ color: colors.accent, textDecoration: 'none', fontWeight: 600 }}>
+          {sourceUrl && (
+            <a href={sourceUrl} target="_blank" rel="noopener noreferrer" style={{ color: colors.accent, textDecoration: 'none', fontWeight: 600 }}>
               Source fabricant ›
             </a>
           )}

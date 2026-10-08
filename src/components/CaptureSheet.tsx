@@ -5,6 +5,7 @@ import { getLocalDepartments, getLocalSpecialties } from '../lib/db';
 import { submitIngestFromUrl } from '../lib/captureIngest';
 import { useToast } from '../lib/useToast';
 import { docTypeLabel } from '../lib/docType';
+import { safeExternalUrl } from '../lib/safeOpen';
 import { colors, fonts, textA } from '../styles/tokens';
 
 const DOC_TYPES: Exclude<WebSearchResultType, 'video'>[] = [
@@ -75,18 +76,23 @@ export function CaptureSheet({ result, brand, model, onClose, onCaptured }: Capt
     if (!canSubmit) return;
     const specialty = specialties.find((s) => s.id === specialtyId);
     if (!specialty) return;
+    const url = safeExternalUrl(result.url);
+    if (!url) {
+      setError('Lien invalide : seules les adresses http(s) peuvent être ajoutées.');
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
     try {
       await submitIngestFromUrl({
-        pdf_url: result.url,
+        pdf_url: url,
         brand: brandField.trim(),
         model: modelField.trim(),
         specialty_slug: specialty.slug,
         doc_type: docType,
         title: title.trim(),
-        source_url: result.url,
+        source_url: url,
       });
       showToast('Document ajouté à la bibliothèque.');
       onCaptured();

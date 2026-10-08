@@ -1,5 +1,7 @@
 // Cache API storage for pinned PDFs (CLAUDE.md §4) — IndexedDB is a poor fit
 // for large binaries, Cache API is built for exactly this.
+import { safeMimeForOpen, withSafeMime } from './safeOpen';
+
 const CACHE_NAME = 'laydevant-offline-pdfs';
 
 function keyFor(documentId: string): string {
@@ -16,13 +18,17 @@ function keyFor(documentId: string): string {
  */
 export async function putPdf(documentId: string, blob: Blob, mimeType: string): Promise<void> {
   const cache = await caches.open(CACHE_NAME);
-  await cache.put(keyFor(documentId), new Response(blob, { headers: { 'Content-Type': mimeType } }));
+  await cache.put(keyFor(documentId), new Response(blob, { headers: { 'Content-Type': safeMimeForOpen(mimeType) } }));
 }
 
 export async function getPdf(documentId: string): Promise<Blob | undefined> {
   const cache = await caches.open(CACHE_NAME);
   const response = await cache.match(keyFor(documentId));
-  return response ? await response.blob() : undefined;
+  if (!response) return undefined;
+  // Re-typé aussi à la lecture : couvre les entrées mises en cache avant le
+  // filtrage de putPdf (SECURITY_AUDIT.md E1).
+  const blob = await response.blob();
+  return withSafeMime(blob, blob.type);
 }
 
 export async function hasPdf(documentId: string): Promise<boolean> {

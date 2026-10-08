@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { withSafeMime } from './safeOpen';
 import type {
   Dossier,
   SearchDossiersResult,
@@ -695,7 +696,8 @@ export async function getPhotoObjectUrl(storageKey: string): Promise<string> {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`Chargement photo échoué (HTTP ${res.status})`);
-  return URL.createObjectURL(await res.blob());
+  const blob = await res.blob();
+  return URL.createObjectURL(withSafeMime(blob, blob.type));
 }
 
 export async function updateDossierPhotoTitre(photoId: string, titre: string | null): Promise<void> {

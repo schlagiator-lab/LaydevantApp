@@ -25,6 +25,7 @@ import { isOwnRecoveryAdmin, reenrollVaultUser } from '../lib/vaultEnroll';
 import { unwrapDek, decryptContent, encryptContent } from '../lib/vault.js';
 import { formatBytes } from '../lib/storagePersistence';
 import { isIosDevice } from '../lib/pdfMeasure';
+import { isOpenableMime, OPENABLE_ACCEPT, safeMimeForOpen } from '../lib/safeOpen';
 import { ConfirmSheet } from './ConfirmSheet';
 import { CollapsibleSection } from './CollapsibleSection';
 import { colors, fonts, textA } from '../styles/tokens';
@@ -543,6 +544,11 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     for (let i = 0; i < filesToUpload.length; i++) {
       touch();
       const file = filesToUpload[i];
+      if (!isOpenableMime(file.type)) {
+        errors.push(`${file.name} : type non autorisé (PDF, JPEG, PNG, WebP ou GIF uniquement)`);
+        setUploadProgress({ done: i + 1, total: filesToUpload.length });
+        continue;
+      }
       try {
         await uploadVaultFile(dossierId, activeDek, file);
         if (!activeDek) {
@@ -577,7 +583,10 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
    *   après un await, même motif que PlansSection.handleOpenPdf) ;
    * - PDF ailleurs (Android/desktop) -> lecteur natif, calqué EXACTEMENT sur
    *   PlansSection.handleOpenPdfNative : pas de pré-ouverture synchrone, pas
-   *   de fallback download, window.open direct après l'await, revoke différé.
+   *   de fallback download, window.open direct après l'await, revoke différé ;
+   * - tout autre type -> téléchargement inerte, jamais ouvert dans l'app.
+   * Le branchement se fait sur `blob.type`, déjà filtré par safeMimeForOpen
+   * dans openVaultFile, jamais sur `row.mime` brut (SECURITY_AUDIT.md E1).
    */
   async function handleOpenFile(row: VaultFileListItem) {
     if (content.kind !== 'ready' || openingFileId) return;
@@ -585,8 +594,17 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     touch();
     try {
       const blob = await openVaultFile(row, content.dek);
-      if (row.mime.startsWith('image/')) {
+      if (blob.type.startsWith('image/')) {
         setViewedFile({ kind: 'image', row, url: URL.createObjectURL(blob) });
+      } else if (blob.type !== 'application/pdf') {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = row.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
       } else if (isIosDevice()) {
         setViewedFile({ kind: 'pdf', row, blob });
       } else {
@@ -617,7 +635,7 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
     touch();
     try {
       const blob = await openVaultFile(row, content.dek);
-      const file = new File([blob], row.name, { type: row.mime });
+      const file = new File([blob], row.name, { type: safeMimeForOpen(row.mime) });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], title: row.name });
       } else {
@@ -1064,7 +1082,7 @@ export function VaultSheet({ dossierId, onClose, onNotesCountChange, onDestroyed
             <input
               ref={fileInputRef}
               type="file"
-              accept="application/pdf,image/*"
+              accept={OPENABLE_ACCEPT}
               multiple
               onChange={(e) => {
                 void handleFilesUpload(e.target.files);

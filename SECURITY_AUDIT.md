@@ -70,6 +70,8 @@ forcent déjà `application/pdf`. Ils sont corrects.
   `image/png|jpeg|webp|gif`). Refuser `image/svg+xml` en dehors de `<img>`.
 - En complément, ajouter une CSP (voir M2).
 
+**Statut : RÉSOLU côté client (2026-10-08).** Helper unique `safeMimeForOpen` (`src/lib/safeOpen.ts`) : liste blanche stricte `application/pdf`, `image/jpeg|png|webp|gif`, tout le reste (SVG, HTML, texte, vide, inconnu) devient `application/octet-stream`. Appliqué à `vaultFiles.ts` (`openVaultFile`), `VaultSheet.tsx` (le branchement d'ouverture se fait sur le type filtré ; un type hors liste part en téléchargement, jamais en `window.open` ; `File` du partage re-typé), `documents.ts` (`fetchPdfBlob`, `fetchPdfBlobR2`), `pdfCache.ts` (à l'écriture et à la lecture, pour les entrées déjà en cache) et `dossiers.ts` (`getPhotoObjectUrl` : photos du carnet, galerie, plans image et téléchargements DWG, dont le type venait du `Content-Type` renvoyé par le Worker). Plans PDF, notices de demande et communications forçaient déjà `application/pdf` : inchangés. Côté envoi, le sélecteur du coffre est restreint à la liste blanche et tout fichier hors liste est refusé avec un message ; les demandes d'équipement étaient déjà limitées au PDF. Reste ouvert : le `Content-Type` stocké par le Worker (M3) et la CSP (M2).
+
 ### E2 — `delete-account` identifie l'appelant à partir d'un JWT non vérifié
 
 **Où :**
@@ -129,6 +131,8 @@ neutralise `javascript:` dans `href`, mais pas les autres schémas.
   `protocol ∈ {'http:','https:'}`, sinon le lien n'est pas rendu.
 - L'appliquer à `window.open`, au `href` de `source_url` et avant l'envoi de
   `CaptureSheet`.
+
+**Statut : RÉSOLU (2026-10-08).** Helper `safeExternalUrl` (`src/lib/safeOpen.ts`) : `new URL()` puis `http:`/`https:` uniquement, sinon `null`. Appliqué dans `WebSearchScreen.tsx` (une URL rejetée n'affiche ni « Consulter » ni « Ajouter à la bibliothèque », seulement « Lien invalide » ; `window.open` en `noopener,noreferrer`), `CaptureSheet.tsx` (refus avant envoi à n8n) et `DocumentScreen.tsx` (lien « Source fabricant » non rendu si rejeté, `rel="noopener noreferrer"`). Les communications et les notes n'affichent aucune URL issue des données.
 
 ### M2 — Aucun en-tête de sécurité HTTP
 

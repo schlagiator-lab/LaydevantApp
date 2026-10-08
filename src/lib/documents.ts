@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { getAccessToken } from './dossiers';
+import { withSafeMime } from './safeOpen';
 import type { BrowseDocumentRow, SearchDocumentsResult } from '../types/database';
 
 /** Online search across the full corpus (CLAUDE.md §3). Requires a query. */
@@ -80,7 +81,7 @@ export async function fetchPdfBlob(filePath: string, mimeType: string | null): P
   const response = await fetch(signedUrl);
   if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
   const blob = await response.blob();
-  return new Blob([blob], { type: mimeType || 'application/pdf' });
+  return withSafeMime(blob, mimeType || 'application/pdf');
 }
 
 /**
@@ -97,5 +98,5 @@ export async function fetchPdfBlobR2(filePath: string, mimeType: string | null):
   });
   if (!response.ok) throw new Error(`Téléchargement du PDF impossible (${response.status}).`);
   const blob = await response.blob();
-  return new Blob([blob], { type: mimeType || 'application/pdf' });
+  return withSafeMime(blob, mimeType || 'application/pdf');
 }
